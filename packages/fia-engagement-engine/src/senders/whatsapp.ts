@@ -123,21 +123,38 @@ export async function sendWhatsAppMessage(
     return false;
   }
 
-  // Send based on configured provider
-  const result =
-    config.whatsapp.provider === "twilio"
-      ? await sendViaTwilio(whatsappNumber, message.text)
-      : await sendViaCloudApi(whatsappNumber, message.text);
-
-  // Log to engagement_log
-  await insertEngagementLog({
+  // First, insert the engagement_log to get the ID for click tracking
+  const logEntry = await insertEngagementLog({
     user_id: opportunity.userId,
     journey_name: message.journeyName,
     mensaje_enviado: message.text,
     whatsapp_number: whatsappNumber,
     deep_link: message.deepLink,
-    status: result.success ? "sent" : "failed",
+    status: "sent", // optimistic — updated to "failed" if send fails
   });
+
+  // Replace direct deep link with tracked redirect URL
+  const engineBaseUrl = process.env["ENGINE_BASE_URL"] ?? "https://engine.axeljutoran.com";
+  let finalMessage = message.text;
+  if (logEntry?.id) {
+    const trackedLink = `${engineBaseUrl}/r/${logEntry.id}`;
+    finalMessage = message.text.replace(message.deepLink, trackedLink);
+  }
+
+  // Send based on configured provider
+  const result =
+    config.whatsapp.provider === "twilio"
+      ? await sendViaTwilio(whatsappNumber, finalMessage)
+      : await sendViaCloudApi(whatsappNumber, finalMessage);
+
+  // Update status to "failed" if send failed
+  if (!result.success && logEntry?.id) {
+    const { getSupabaseClient } = await import("../db/supabase");
+    await getSupabaseClient()
+      .from("engagement_log")
+      .update({ status: "failed" })
+      .eq("id", logEntry.id);
+  }
 
   if (result.success) {
     logger.info(

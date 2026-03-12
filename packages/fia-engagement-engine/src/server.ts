@@ -4,6 +4,7 @@
  * 2. Admin engagement API (stats, logs)
  * 3. Health check
  * 4. Manual trigger endpoint
+ * 5. Click tracking redirects (/r/:logId)
  */
 import http from "http";
 import { config } from "./config";
@@ -12,6 +13,7 @@ import { processIncomingResponse } from "./senders/responses";
 import { sendWhatsAppMessage } from "./senders/whatsapp";
 import { getSupabaseClient } from "./db/supabase";
 import { runAllDetectors, runSponsorReports } from "./orchestrator";
+import { getAdminPanelHtml } from "./admin/panel";
 
 function parseBody(req: http.IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -240,6 +242,56 @@ async function handleEngagementLogs(
   }
 }
 
+/**
+ * GET /r/:logId — Click tracking redirect.
+ *
+ * Deep links in WhatsApp messages point here instead of directly to FIA Copilot.
+ * When the user clicks, we mark clicked=true in engagement_log and redirect
+ * to the real destination.
+ *
+ * Example: engine.axeljutoran.com/r/abc-123 → marks click → 302 → fiacopilot.com/capsulas/5
+ */
+async function handleClickRedirect(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  logId: string,
+): Promise<void> {
+  try {
+    const supabase = getSupabaseClient();
+
+    // Fetch the engagement log entry
+    const { data: logEntry, error } = await supabase
+      .from("engagement_log")
+      .select("deep_link")
+      .eq("id", logId)
+      .single();
+
+    if (error || !logEntry) {
+      // If not found, redirect to homepage
+      res.writeHead(302, { Location: config.engine.appBaseUrl });
+      res.end();
+      return;
+    }
+
+    // Mark as clicked (fire-and-forget)
+    supabase
+      .from("engagement_log")
+      .update({ clicked: true })
+      .eq("id", logId)
+      .then(() => {
+        logger.info({ logId }, "Click tracked");
+      });
+
+    // Redirect to actual destination
+    res.writeHead(302, { Location: logEntry.deep_link });
+    res.end();
+  } catch (error) {
+    logger.error({ error, logId }, "Click redirect failed");
+    res.writeHead(302, { Location: config.engine.appBaseUrl });
+    res.end();
+  }
+}
+
 // ─── Router ───
 
 async function router(
@@ -282,6 +334,20 @@ async function router(
 
   if (url === "/api/engagement/logs" && method === "GET") {
     return handleEngagementLogs(req, res);
+  }
+
+  // Admin panel
+  if (url === "/admin/engagement" && method === "GET") {
+    const html = getAdminPanelHtml(config.engine.appBaseUrl);
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(html);
+    return;
+  }
+
+  // Click tracking: /r/:logId
+  const clickMatch = url.match(/^\/r\/([a-f0-9-]+)$/);
+  if (clickMatch && method === "GET") {
+    return handleClickRedirect(req, res, clickMatch[1]);
   }
 
   jsonResponse(res, 404, { error: "Not found" });

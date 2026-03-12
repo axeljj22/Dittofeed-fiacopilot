@@ -70,6 +70,7 @@ services:
       - TWILIO_WHATSAPP_FROM=${TWILIO_WHATSAPP_FROM:-}
       # Engine
       - FIA_APP_BASE_URL=${FIA_APP_BASE_URL:-https://fiacopilot.com}
+      - ENGINE_BASE_URL=${ENGINE_BASE_URL:-https://engine.axeljutoran.com}
       - ENGINE_PORT=3001
       - ADMIN_API_TOKEN=${ADMIN_API_TOKEN:-admin-secret}
       - LOG_LEVEL=${ENGINE_LOG_LEVEL:-info}

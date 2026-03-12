@@ -1,0 +1,99 @@
+name: Deploy FIA Engagement Engine
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packages/fia-engagement-engine/**"
+      - "deploy/**"
+      - ".github/workflows/fia-engine-deploy.yaml"
+
+  workflow_dispatch:
+    inputs:
+      deploy_target:
+        description: "Deploy target"
+        required: false
+        default: "all"
+        type: choice
+        options:
+          - all
+          - engine-only
+          - dittofeed-only
+
+jobs:
+  test:
+    name: Type check & lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: yarn
+
+      - name: Install dependencies
+        run: yarn install --immutable
+
+      - name: Type check
+        run: yarn workspace fia-engagement-engine check
+
+  deploy:
+    name: Deploy to VPS
+    runs-on: ubuntu-latest
+    needs: test
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.VPS_SSH_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.VPS_HOST }} >> ~/.ssh/known_hosts
+
+      - name: Create remote directories
+        run: |
+          ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
+            "mkdir -p /opt/dittofeed/fia-engine"
+
+      - name: Copy engine source
+        run: |
+          scp -r packages/fia-engagement-engine/src \
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/opt/dittofeed/fia-engine/
+          scp packages/fia-engagement-engine/package.json \
+            packages/fia-engagement-engine/tsconfig.json \
+            packages/fia-engagement-engine/tsconfig.build.json \
+            packages/fia-engagement-engine/Dockerfile \
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/opt/dittofeed/fia-engine/
+
+      - name: Copy deployment files
+        run: |
+          scp deploy/docker-compose.yml \
+            ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/opt/dittofeed/
+
+      - name: Build and restart engine
+        run: |
+          ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} "
+            cd /opt/dittofeed
+            docker compose build fia-engine
+            docker compose up -d fia-engine
+            docker compose ps
+          "
+
+      - name: Health check
+        run: |
+          sleep 10
+          ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
+            "curl -sf http://localhost:3001/health || exit 1"
+
+      - name: Notify success
+        if: success()
+        run: echo "✅ FIA Engine deployed successfully"
+
+      - name: Show logs on failure
+        if: failure()
+        run: |
+          ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
+            "cd /opt/dittofeed && docker compose logs --tail=50 fia-engine"
