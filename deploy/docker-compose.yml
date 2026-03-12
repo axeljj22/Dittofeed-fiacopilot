@@ -1,0 +1,108 @@
+version: "3.9"
+
+services:
+  # Dittofeed Lite - All-in-one (Dashboard + API + Worker)
+  dittofeed-lite:
+    image: dittofeed/dittofeed-lite:${IMAGE_TAG:-v0.23.0}
+    restart: always
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      temporal:
+        condition: service_started
+    environment:
+      - DATABASE_HOST=postgres
+      - DATABASE_PORT=5432
+      - DATABASE_USER=postgres
+      - DATABASE_PASSWORD=${DATABASE_PASSWORD:-dittofeed_secret}
+      - CLICKHOUSE_HOST=http://clickhouse:8123
+      - CLICKHOUSE_USER=dittofeed
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-dittofeed_click}
+      - TEMPORAL_ADDRESS=temporal:7233
+      - SECRET_KEY=${SECRET_KEY:-change-me-to-a-random-64-char-string}
+      - PASSWORD=${ADMIN_PASSWORD:-admin123}
+      - WORKSPACE_NAME=${WORKSPACE_NAME:-Default}
+      - AUTH_MODE=single-tenant
+      - NODE_ENV=production
+      - DASHBOARD_API_BASE=https://ditto.axeljutoran.com
+      - BOOTSTRAP=true
+      - PORT=3000
+      - HOST=0.0.0.0
+    deploy:
+      resources:
+        limits:
+          memory: 1024M
+    networks:
+      - dittofeed-net
+
+  # PostgreSQL - Main database
+  postgres:
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=${DATABASE_PASSWORD:-dittofeed_secret}
+      - POSTGRES_DB=dittofeed
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - dittofeed-net
+
+  # ClickHouse - Analytics database
+  clickhouse:
+    image: clickhouse/clickhouse-server:24.12.6.70-alpine
+    restart: always
+    environment:
+      - CLICKHOUSE_USER=dittofeed
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-dittofeed_click}
+      - CLICKHOUSE_DB=dittofeed
+      - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
+    volumes:
+      - clickhouse_data:/var/lib/clickhouse
+      - clickhouse_logs:/var/log/clickhouse-server
+    healthcheck:
+      test: ["CMD-SHELL", "clickhouse-client --user dittofeed --password ${CLICKHOUSE_PASSWORD:-dittofeed_click} -q 'SELECT 1'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 2048M
+    networks:
+      - dittofeed-net
+
+  # Temporal - Workflow engine
+  temporal:
+    image: temporalio/auto-setup:1.22.4
+    restart: always
+    environment:
+      - DB=postgresql
+      - DB_PORT=5432
+      - POSTGRES_USER=postgres
+      - POSTGRES_PWD=${DATABASE_PASSWORD:-dittofeed_secret}
+      - POSTGRES_SEEDS=postgres
+      - DYNAMIC_CONFIG_FILE_PATH=config/dynamicconfig/development-sql.yaml
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - dittofeed-net
+
+volumes:
+  postgres_data:
+  clickhouse_data:
+  clickhouse_logs:
+
+networks:
+  dittofeed-net:
+    driver: bridge
