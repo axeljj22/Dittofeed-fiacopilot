@@ -4,7 +4,7 @@
  * Genera mensajes personalizados usando el contexto real del usuario:
  * perfil, Bóveda, scores, progreso de cápsulas.
  */
-import Anthropic from "anthropic";
+import Anthropic from "@anthropic-ai/sdk";
 import { config } from "../config";
 import { logger } from "../logger";
 import {

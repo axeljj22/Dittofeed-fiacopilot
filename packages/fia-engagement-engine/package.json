@@ -9,12 +9,13 @@
     "dev": "ts-node --watch src/index.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.30.0",
     "@supabase/supabase-js": "^2.45.0",
-    "anthropic": "^0.30.0",
     "axios": "^1.4.0",
     "date-fns": "^2.29.3",
     "dotenv": "^16.0.3",
     "node-cron": "^3.0.3",
+    "pg": "^8.13.1",
     "pino": "9.3.1",
     "pino-pretty": "11.2.1",
     "uuid": "^9.0.0"
