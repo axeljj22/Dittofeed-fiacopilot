@@ -5,10 +5,16 @@
  * de engagement, genera mensajes con Claude, y entrega por WhatsApp.
  *
  * No modifica FIA Copilot. Solo lee la DB y escribe en engagement_log.
+ *
+ * Modes:
+ *   (default)  Start scheduler + HTTP server
+ *   --once     Run all detectors once and exit
+ *   --server   Start HTTP server only (no scheduler)
  */
 import cron from "node-cron";
 import { config } from "./config";
 import { logger } from "./logger";
+import { startServer } from "./server";
 import {
   runEventDetectors,
   runSegmentDetectors,
@@ -50,9 +56,9 @@ function startScheduler(): void {
 // ─── CLI entry point ───
 
 const args = process.argv.slice(2);
+const port = parseInt(process.env["ENGINE_PORT"] ?? "3001", 10);
 
 if (args.includes("--once")) {
-  // Run all detectors once and exit (useful for testing)
   logger.info("Running all detectors once (--once mode)");
   runAllDetectors()
     .then(() => {
@@ -63,7 +69,10 @@ if (args.includes("--once")) {
       logger.error({ error }, "Single run failed");
       process.exit(1);
     });
+} else if (args.includes("--server")) {
+  startServer(port);
 } else {
-  // Default: start the scheduler
+  // Default: both scheduler + server
   startScheduler();
+  startServer(port);
 }

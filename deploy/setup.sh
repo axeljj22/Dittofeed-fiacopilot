@@ -1,11 +1,11 @@
 #!/bin/bash
-# Dittofeed VPS Setup Script
+# Dittofeed + FIA Engine VPS Setup Script
 # Run this on your Hetzner VPS (Ubuntu/Debian)
 # Usage: ssh root@77.42.40.0 'bash -s' < setup.sh
 
 set -euo pipefail
 
-echo "=== Dittofeed VPS Setup ==="
+echo "=== Dittofeed + FIA Engine VPS Setup ==="
 
 # Update system
 apt-get update && apt-get upgrade -y
@@ -24,14 +24,45 @@ if ! docker compose version &> /dev/null; then
     apt-get install -y docker-compose-plugin
 fi
 
+# Install Nginx if not present
+if ! command -v nginx &> /dev/null; then
+    echo "Installing Nginx..."
+    apt-get install -y nginx
+    systemctl enable nginx
+    systemctl start nginx
+fi
+
+# Install Certbot for SSL
+if ! command -v certbot &> /dev/null; then
+    echo "Installing Certbot..."
+    apt-get install -y certbot python3-certbot-nginx
+fi
+
 # Create app directory
 mkdir -p /opt/dittofeed
-cd /opt/dittofeed
 
-echo "=== Docker installed successfully ==="
+# Setup firewall
+if command -v ufw &> /dev/null; then
+    echo "Configuring firewall..."
+    ufw allow 22/tcp
+    ufw allow 80/tcp
+    ufw allow 443/tcp
+    ufw --force enable
+fi
+
+echo ""
+echo "=== Setup complete ==="
 echo ""
 echo "Next steps:"
-echo "1. Copy docker-compose.yml and .env to /opt/dittofeed/"
-echo "2. Edit .env with secure passwords"
-echo "3. Run: cd /opt/dittofeed && docker compose up -d"
-echo "4. Access Dittofeed at http://77.42.40.0:3000"
+echo "1. Point DNS records:"
+echo "   ditto.axeljutoran.com  → 77.42.40.0"
+echo "   engine.axeljutoran.com → 77.42.40.0"
+echo ""
+echo "2. Copy files to VPS:"
+echo "   Run: ./deploy.sh from your local machine"
+echo ""
+echo "3. Setup SSL:"
+echo "   certbot --nginx -d ditto.axeljutoran.com -d engine.axeljutoran.com"
+echo ""
+echo "4. Run the FIA Copilot SQL migration:"
+echo "   Execute sql/001_engagement_log.sql in your Supabase SQL Editor"

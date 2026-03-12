@@ -1,7 +1,9 @@
 version: "3.9"
 
 services:
+  # ═══════════════════════════════════════════
   # Dittofeed Lite - All-in-one (Dashboard + API + Worker)
+  # ═══════════════════════════════════════════
   dittofeed-lite:
     image: dittofeed/dittofeed-lite:${IMAGE_TAG:-v0.23.0}
     restart: always
@@ -39,7 +41,54 @@ services:
     networks:
       - dittofeed-net
 
-  # PostgreSQL - Main database
+  # ═══════════════════════════════════════════
+  # FIA Engagement Engine
+  # Sidecar independiente: lee Supabase → Claude → WhatsApp
+  # ═══════════════════════════════════════════
+  fia-engine:
+    build:
+      context: ../packages/fia-engagement-engine
+      dockerfile: Dockerfile
+    image: fia-engagement-engine:latest
+    restart: always
+    ports:
+      - "127.0.0.1:3001:3001"
+    environment:
+      # Supabase (FIA Copilot DB — read-only)
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
+      # Claude API
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-claude-sonnet-4-20250514}
+      # WhatsApp
+      - WHATSAPP_PROVIDER=${WHATSAPP_PROVIDER:-cloud_api}
+      - WHATSAPP_CLOUD_API_TOKEN=${WHATSAPP_CLOUD_API_TOKEN:-}
+      - WHATSAPP_PHONE_NUMBER_ID=${WHATSAPP_PHONE_NUMBER_ID:-}
+      - WHATSAPP_VERIFY_TOKEN=${WHATSAPP_VERIFY_TOKEN:-fia-engine}
+      - TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID:-}
+      - TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN:-}
+      - TWILIO_WHATSAPP_FROM=${TWILIO_WHATSAPP_FROM:-}
+      # Engine
+      - FIA_APP_BASE_URL=${FIA_APP_BASE_URL:-https://fiacopilot.com}
+      - ENGINE_PORT=3001
+      - ADMIN_API_TOKEN=${ADMIN_API_TOKEN:-admin-secret}
+      - LOG_LEVEL=${ENGINE_LOG_LEVEL:-info}
+      - NODE_ENV=production
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3001/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+    networks:
+      - dittofeed-net
+
+  # ═══════════════════════════════════════════
+  # PostgreSQL - Dittofeed's own database
+  # ═══════════════════════════════════════════
   postgres:
     image: postgres:15-alpine
     restart: always
@@ -57,7 +106,9 @@ services:
     networks:
       - dittofeed-net
 
+  # ═══════════════════════════════════════════
   # ClickHouse - Analytics database
+  # ═══════════════════════════════════════════
   clickhouse:
     image: clickhouse/clickhouse-server:24.12.6.70-alpine
     restart: always
@@ -81,7 +132,9 @@ services:
     networks:
       - dittofeed-net
 
+  # ═══════════════════════════════════════════
   # Temporal - Workflow engine
+  # ═══════════════════════════════════════════
   temporal:
     image: temporalio/auto-setup:1.22.4
     restart: always
