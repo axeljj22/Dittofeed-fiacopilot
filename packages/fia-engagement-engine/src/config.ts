@@ -21,9 +21,9 @@ export const config = {
     serviceRoleKey: requireEnv("SUPABASE_SERVICE_ROLE_KEY"),
   },
 
-  // Claude API — message generation
+  // Claude API — message generation (optional: falls back to templates)
   anthropic: {
-    apiKey: requireEnv("ANTHROPIC_API_KEY"),
+    apiKey: optionalEnv("ANTHROPIC_API_KEY", ""),
     model: optionalEnv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
     maxTokens: parseInt(optionalEnv("ANTHROPIC_MAX_TOKENS", "1024"), 10),
   },
