@@ -1,0 +1,29 @@
+{
+  "name": "fia-engagement-engine",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "build": "tsc --build tsconfig.build.json",
+    "start": "ts-node src/index.ts",
+    "check": "tsc --build",
+    "dev": "ts-node --watch src/index.ts"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "anthropic": "^0.30.0",
+    "axios": "^1.4.0",
+    "date-fns": "^2.29.3",
+    "dotenv": "^16.0.3",
+    "node-cron": "^3.0.3",
+    "pino": "9.3.1",
+    "pino-pretty": "11.2.1",
+    "uuid": "^9.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "20.14.8",
+    "@types/node-cron": "^3.0.11",
+    "@types/uuid": "^9.0.1",
+    "ts-node": "10.9.1",
+    "typescript": "5.6.3"
+  }
+}
