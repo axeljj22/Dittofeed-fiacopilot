@@ -1,543 +1,627 @@
 /**
- * Admin Dashboard — Full platform overview for CEO & Coaches.
- *
- * Accessible at /admin/engagement
- * Consumes /api/dashboard endpoint for comprehensive data.
- * Shows: user funnel, capsule bottlenecks, stuck users, scores,
- *        activity timeline, vault stats, engagement metrics.
+ * FIA Copilot — Data Dashboard
+ * Full platform analytics for CEO & Coaches.
+ * Consumes /api/dashboard for ALL database data.
  */
 
-export function getAdminPanelHtml(baseUrl: string): string {
+export function getAdminPanelHtml(_baseUrl: string): string {
   return `<!DOCTYPE html>
 <html lang="es">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>FIA Copilot — Dashboard</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #0f1117; color: #e4e4e7; line-height: 1.6; }
-    .container { max-width: 1400px; margin: 0 auto; padding: 24px; }
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>FIA Copilot — Data Dashboard</title>
+<style>
+:root{--bg:#0a0b10;--bg2:#12131a;--bg3:#1a1b25;--bg4:#24253a;--border:#2a2b3d;--text:#e4e4ef;--text2:#9394a5;--text3:#5d5e72;--accent:#6366f1;--accent2:#818cf8;--green:#22c55e;--green2:#4ade80;--yellow:#eab308;--yellow2:#facc15;--red:#ef4444;--red2:#f87171;--blue:#3b82f6;--blue2:#60a5fa;--purple:#a855f7;--purple2:#c084fc;--cyan:#06b6d4;--orange:#f97316}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);line-height:1.5;font-size:13px;overflow-x:hidden}
 
-    /* Header */
-    .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 32px; flex-wrap: wrap; gap: 12px; }
-    h1 { font-size: 24px; color: #fff; }
-    .subtitle { color: #71717a; font-size: 14px; }
-    .refresh-info { font-size: 12px; color: #52525b; }
-    .btn { background: #3b82f6; color: #fff; border: none; padding: 8px 16px; border-radius: 8px; cursor: pointer; font-weight: 600; font-size: 13px; font-family: inherit; }
-    .btn:hover { background: #2563eb; }
-    .btn-secondary { background: #27272a; }
-    .btn-secondary:hover { background: #3f3f46; }
+/* Layout */
+.layout{display:flex;min-height:100vh}
+.sidebar{width:240px;background:var(--bg2);border-right:1px solid var(--border);padding:20px 0;position:fixed;top:0;left:0;bottom:0;overflow-y:auto;z-index:100}
+.sidebar-brand{padding:0 20px 20px;border-bottom:1px solid var(--border);margin-bottom:8px}
+.sidebar-brand h1{font-size:16px;color:#fff;font-weight:700}
+.sidebar-brand p{font-size:11px;color:var(--text3);margin-top:2px}
+.nav-item{display:flex;align-items:center;gap:10px;padding:10px 20px;color:var(--text2);cursor:pointer;font-size:13px;font-weight:500;transition:all .15s;border-left:3px solid transparent}
+.nav-item:hover{background:var(--bg3);color:var(--text)}
+.nav-item.active{background:var(--bg3);color:var(--accent2);border-left-color:var(--accent)}
+.nav-icon{width:18px;text-align:center;font-size:15px;opacity:.7}
+.nav-section{font-size:10px;text-transform:uppercase;letter-spacing:.1em;color:var(--text3);padding:16px 20px 6px;font-weight:700}
+.main{margin-left:240px;flex:1;padding:24px 32px;min-height:100vh}
 
-    /* Tabs */
-    .tabs { display: flex; gap: 4px; margin-bottom: 24px; border-bottom: 1px solid #27272a; padding-bottom: 0; }
-    .tab { padding: 10px 20px; cursor: pointer; color: #71717a; font-size: 14px; font-weight: 500; border-bottom: 2px solid transparent; transition: all 0.2s; }
-    .tab:hover { color: #a1a1aa; }
-    .tab.active { color: #fff; border-bottom-color: #3b82f6; }
-    .tab-content { display: none; }
-    .tab-content.active { display: block; }
+/* Header */
+.page-header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:24px;flex-wrap:wrap;gap:12px}
+.page-title{font-size:22px;font-weight:700;color:#fff}
+.page-sub{font-size:12px;color:var(--text3);margin-top:2px}
+.header-actions{display:flex;gap:8px;align-items:center}
+.btn{font-family:inherit;font-size:12px;font-weight:600;padding:7px 14px;border-radius:7px;border:1px solid var(--border);cursor:pointer;transition:all .15s;background:var(--bg3);color:var(--text)}
+.btn:hover{background:var(--bg4);border-color:var(--accent)}
+.btn-primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+.btn-primary:hover{background:#4f46e5}
+.timestamp{font-size:11px;color:var(--text3)}
 
-    /* Section headers */
-    h2 { font-size: 18px; margin: 0 0 16px; color: #fff; }
-    h3 { font-size: 15px; margin: 0 0 12px; color: #a1a1aa; }
+/* Page sections */
+.page{display:none}
+.page.active{display:block}
 
-    /* Stats grid */
-    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 32px; }
-    .card { background: #1c1c22; border: 1px solid #27272a; border-radius: 12px; padding: 20px; }
-    .card-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: #71717a; margin-bottom: 4px; }
-    .card-value { font-size: 32px; font-weight: 700; color: #fff; }
-    .card-value.green { color: #4ade80; }
-    .card-value.blue { color: #60a5fa; }
-    .card-value.yellow { color: #facc15; }
-    .card-value.red { color: #f87171; }
-    .card-value.purple { color: #c084fc; }
-    .card-sub { font-size: 12px; color: #52525b; margin-top: 4px; }
+/* KPI Grid */
+.kpi-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:12px;margin-bottom:24px}
+.kpi{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:16px}
+.kpi-label{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--text3);margin-bottom:2px}
+.kpi-value{font-size:28px;font-weight:800;color:#fff;line-height:1.2}
+.kpi-value.green{color:var(--green2)}.kpi-value.blue{color:var(--blue2)}.kpi-value.yellow{color:var(--yellow2)}.kpi-value.red{color:var(--red2)}.kpi-value.purple{color:var(--purple2)}.kpi-value.cyan{color:var(--cyan)}.kpi-value.orange{color:var(--orange)}
+.kpi-sub{font-size:11px;color:var(--text3);margin-top:2px}
 
-    /* Two-column layout */
-    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 32px; }
+/* Panels */
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
+.grid-3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:16px;margin-bottom:16px}
+.panel{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:18px;margin-bottom:16px}
+.panel-title{font-size:13px;font-weight:700;color:#fff;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+.panel-title .icon{font-size:15px;opacity:.6}
 
-    /* Panel block */
-    .panel { background: #1c1c22; border: 1px solid #27272a; border-radius: 12px; padding: 20px; margin-bottom: 24px; }
+/* Funnel */
+.funnel-step{display:flex;align-items:center;gap:10px;margin-bottom:6px}
+.funnel-label{font-size:12px;color:var(--text2);min-width:140px;text-align:right}
+.funnel-bar-wrap{flex:1;height:26px;background:var(--bg);border-radius:5px;overflow:hidden;position:relative}
+.funnel-bar{height:100%;border-radius:5px;display:flex;align-items:center;padding:0 10px;font-size:11px;font-weight:700;color:#fff;transition:width .6s ease;min-width:fit-content}
+.funnel-pct{font-size:11px;color:var(--text3);min-width:40px;text-align:right}
 
-    /* Funnel */
-    .funnel { display: flex; flex-direction: column; gap: 8px; }
-    .funnel-step { display: flex; align-items: center; gap: 12px; }
-    .funnel-bar { height: 32px; border-radius: 6px; display: flex; align-items: center; padding: 0 12px; font-size: 13px; font-weight: 600; color: #fff; min-width: 40px; transition: width 0.5s; }
-    .funnel-label { font-size: 13px; color: #a1a1aa; white-space: nowrap; min-width: 120px; }
-    .funnel-count { font-size: 13px; color: #71717a; min-width: 30px; text-align: right; }
+/* Horizontal bars */
+.hbar{display:flex;flex-direction:column;gap:5px}
+.hbar-row{display:flex;align-items:center;gap:8px}
+.hbar-label{font-size:11px;color:var(--text2);min-width:90px;text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.hbar-track{flex:1;height:20px;background:var(--bg);border-radius:4px;overflow:hidden}
+.hbar-fill{height:100%;border-radius:4px;display:flex;align-items:center;padding:0 8px;font-size:10px;font-weight:700;color:#fff;transition:width .5s;min-width:fit-content}
+.hbar-val{font-size:11px;color:var(--text3);min-width:28px}
 
-    /* Horizontal bar chart */
-    .bar-chart { display: flex; flex-direction: column; gap: 6px; }
-    .bar-row { display: flex; align-items: center; gap: 8px; }
-    .bar-label { font-size: 12px; color: #a1a1aa; min-width: 100px; text-align: right; }
-    .bar-track { flex: 1; height: 22px; background: #27272a; border-radius: 4px; overflow: hidden; }
-    .bar-fill { height: 100%; border-radius: 4px; display: flex; align-items: center; padding: 0 8px; font-size: 11px; font-weight: 600; color: #fff; min-width: fit-content; transition: width 0.5s; }
-    .bar-value { font-size: 12px; color: #71717a; min-width: 30px; }
+/* Sparkline (CSS mini chart) */
+.spark{display:flex;align-items:flex-end;gap:2px;height:50px;padding:4px 0}
+.spark-bar{flex:1;background:var(--accent);border-radius:2px 2px 0 0;min-width:4px;transition:height .3s;position:relative}
+.spark-bar:hover{opacity:.8}
+.spark-bar:hover::after{content:attr(data-tip);position:absolute;bottom:100%;left:50%;transform:translateX(-50%);background:#000;color:#fff;padding:2px 6px;border-radius:4px;font-size:10px;white-space:nowrap;z-index:10}
 
-    /* Donut placeholder */
-    .donut-container { display: flex; align-items: center; gap: 24px; }
-    .donut-legend { display: flex; flex-direction: column; gap: 6px; }
-    .legend-item { display: flex; align-items: center; gap: 8px; font-size: 13px; }
-    .legend-dot { width: 10px; height: 10px; border-radius: 50%; }
+/* Heatmap (capsule grid) */
+.heatmap{display:grid;grid-template-columns:repeat(5,1fr);gap:4px}
+.heat-cell{aspect-ratio:1;border-radius:6px;display:flex;flex-direction:column;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#fff;position:relative;cursor:default;transition:transform .15s}
+.heat-cell:hover{transform:scale(1.08);z-index:2}
+.heat-cell .cap-num{font-size:16px;font-weight:800}
+.heat-cell .cap-sub{font-size:9px;opacity:.8}
 
-    /* Table */
-    .table-wrap { overflow-x: auto; }
-    table { width: 100%; border-collapse: collapse; font-size: 13px; }
-    th { text-align: left; padding: 10px 12px; background: #18181b; color: #a1a1aa; font-weight: 600; border-bottom: 1px solid #27272a; position: sticky; top: 0; }
-    td { padding: 10px 12px; border-bottom: 1px solid #1c1c22; }
-    tr:hover td { background: #1c1c22; }
-    .badge { display: inline-block; padding: 2px 8px; border-radius: 9999px; font-size: 11px; font-weight: 600; }
-    .badge-danger { background: #7f1d1d; color: #f87171; }
-    .badge-warning { background: #78350f; color: #fbbf24; }
-    .badge-success { background: #166534; color: #4ade80; }
-    .badge-info { background: #1e3a5f; color: #60a5fa; }
-    .badge-sent { background: #166534; color: #4ade80; }
-    .badge-failed { background: #7f1d1d; color: #f87171; }
-    .badge-opted_out { background: #78350f; color: #fbbf24; }
+/* Table */
+.table-wrap{overflow-x:auto;max-height:500px;overflow-y:auto}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th{text-align:left;padding:8px 10px;background:var(--bg3);color:var(--text2);font-weight:700;border-bottom:1px solid var(--border);position:sticky;top:0;z-index:5;font-size:11px;text-transform:uppercase;letter-spacing:.03em}
+td{padding:8px 10px;border-bottom:1px solid var(--bg3)}
+tr:hover td{background:var(--bg3)}
+.badge{display:inline-block;padding:2px 8px;border-radius:9999px;font-size:10px;font-weight:700;white-space:nowrap}
+.b-green{background:#052e16;color:var(--green2)}.b-blue{background:#172554;color:var(--blue2)}.b-yellow{background:#422006;color:var(--yellow2)}.b-red{background:#450a0a;color:var(--red2)}.b-purple{background:#2e1065;color:var(--purple2)}.b-gray{background:var(--bg4);color:var(--text3)}.b-cyan{background:#083344;color:var(--cyan)}.b-orange{background:#431407;color:var(--orange)}
 
-    /* Pill tags */
-    .pills { display: flex; flex-wrap: wrap; gap: 6px; }
-    .pill { display: inline-flex; align-items: center; gap: 6px; background: #27272a; border-radius: 9999px; padding: 4px 12px; font-size: 12px; color: #a1a1aa; }
-    .pill-count { font-weight: 700; color: #fff; }
+/* Suggestion cards */
+.suggestion{background:var(--bg3);border:1px solid var(--border);border-radius:8px;padding:14px;margin-bottom:8px;border-left:3px solid var(--accent)}
+.suggestion.alta{border-left-color:var(--red)}.suggestion.media{border-left-color:var(--yellow)}.suggestion.baja{border-left-color:var(--blue)}
+.suggestion-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:4px}
+.suggestion-type{font-size:10px;text-transform:uppercase;letter-spacing:.05em;font-weight:700;color:var(--text3)}
+.suggestion-msg{font-size:13px;color:var(--text)}
+.suggestion-data{margin-top:8px;font-size:11px;color:var(--text2)}
 
-    /* Controls */
-    .controls { display: flex; gap: 12px; margin-bottom: 16px; align-items: center; flex-wrap: wrap; }
-    input[type="text"] { background: #1c1c22; border: 1px solid #27272a; color: #fff; padding: 8px 12px; border-radius: 8px; width: 300px; font-family: inherit; font-size: 13px; }
+/* Pills */
+.pills{display:flex;flex-wrap:wrap;gap:6px}
+.pill{background:var(--bg);border:1px solid var(--border);border-radius:9999px;padding:4px 12px;font-size:11px;color:var(--text2);display:inline-flex;align-items:center;gap:6px}
+.pill b{color:#fff}
 
-    .loading-overlay { position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(15,17,23,0.8); display: flex; align-items: center; justify-content: center; z-index: 1000; }
-    .loading-spinner { font-size: 18px; color: #3b82f6; }
-    .hidden { display: none; }
+/* Search */
+.search-bar{display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap}
+.search-bar input{background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:7px 12px;border-radius:7px;font-size:12px;font-family:inherit;min-width:250px}
+.search-bar input:focus{outline:none;border-color:var(--accent)}
+.search-bar select{background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:7px 12px;border-radius:7px;font-size:12px;font-family:inherit}
 
-    /* Empty state */
-    .empty { text-align: center; padding: 40px 20px; color: #52525b; }
-    .empty-icon { font-size: 48px; margin-bottom: 12px; }
+/* Score gauge */
+.gauge-row{display:flex;align-items:center;gap:10px;margin-bottom:8px}
+.gauge-label{font-size:12px;color:var(--text2);min-width:80px}
+.gauge-track{flex:1;height:10px;background:var(--bg);border-radius:5px;overflow:hidden}
+.gauge-fill{height:100%;border-radius:5px;transition:width .5s}
+.gauge-val{font-size:13px;font-weight:700;min-width:35px;text-align:right}
 
-    @media (max-width: 768px) {
-      .grid-2 { grid-template-columns: 1fr; }
-      .stats { grid-template-columns: repeat(2, 1fr); }
-      input[type="text"] { width: 100%; }
-    }
-  </style>
+/* Legend */
+.legend{display:flex;flex-wrap:wrap;gap:12px;margin-top:8px}
+.legend-item{display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text2)}
+.legend-dot{width:8px;height:8px;border-radius:50%}
+
+/* Responsive */
+@media(max-width:1024px){
+  .sidebar{width:60px}.sidebar-brand h1,.sidebar-brand p,.nav-item span:not(.nav-icon),.nav-section{display:none}.nav-item{justify-content:center;padding:12px}.main{margin-left:60px;padding:16px}
+  .grid-2,.grid-3{grid-template-columns:1fr}
+}
+@media(max-width:640px){.sidebar{display:none}.main{margin-left:0}}
+
+/* Loading */
+#loading{position:fixed;inset:0;background:var(--bg);display:flex;flex-direction:column;align-items:center;justify-content:center;z-index:9999}
+#loading .spinner{width:40px;height:40px;border:3px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+#loading p{margin-top:12px;color:var(--text2);font-size:13px}
+.hidden{display:none!important}
+</style>
 </head>
 <body>
-  <div id="loading" class="loading-overlay">
-    <div class="loading-spinner">Cargando dashboard...</div>
-  </div>
 
-  <div class="container">
-    <div class="header">
-      <div>
-        <h1>FIA Copilot Dashboard</h1>
-        <p class="subtitle">Vista ejecutiva de la plataforma</p>
+<div id="loading"><div class="spinner"></div><p>Cargando data...</p></div>
+
+<div class="layout">
+  <!-- Sidebar -->
+  <nav class="sidebar">
+    <div class="sidebar-brand"><h1>FIA Copilot</h1><p>Data Dashboard</p></div>
+    <div class="nav-section">Analytics</div>
+    <div class="nav-item active" data-page="overview"><span class="nav-icon">&#9678;</span><span>Overview</span></div>
+    <div class="nav-item" data-page="users"><span class="nav-icon">&#9823;</span><span>Usuarios</span></div>
+    <div class="nav-item" data-page="capsules"><span class="nav-icon">&#9635;</span><span>Capsulas</span></div>
+    <div class="nav-item" data-page="scores"><span class="nav-icon">&#9733;</span><span>Scoring</span></div>
+    <div class="nav-item" data-page="vault"><span class="nav-icon">&#9830;</span><span>Boveda</span></div>
+    <div class="nav-section">Comunicaciones</div>
+    <div class="nav-item" data-page="engagement"><span class="nav-icon">&#9993;</span><span>Engagement</span></div>
+    <div class="nav-item" data-page="logs"><span class="nav-icon">&#9776;</span><span>Logs</span></div>
+    <div class="nav-section">Inteligencia</div>
+    <div class="nav-item" data-page="suggestions"><span class="nav-icon">&#9889;</span><span>Sugerencias IA</span></div>
+  </nav>
+
+  <!-- Main -->
+  <main class="main">
+    <!-- ═══════ OVERVIEW ═══════ -->
+    <div class="page active" id="p-overview">
+      <div class="page-header">
+        <div><div class="page-title">Overview</div><div class="page-sub">Vista ejecutiva de toda la plataforma</div></div>
+        <div class="header-actions"><span class="timestamp" id="ts"></span><button class="btn btn-primary" onclick="reload()">Actualizar</button></div>
       </div>
-      <div style="display:flex;gap:8px;align-items:center">
-        <span class="refresh-info" id="last-refresh"></span>
-        <button class="btn" onclick="loadAll()">Actualizar</button>
-        <button class="btn btn-secondary" onclick="triggerDetectors()">Ejecutar detectors</button>
-      </div>
-    </div>
-
-    <!-- Tabs -->
-    <div class="tabs">
-      <div class="tab active" data-tab="overview" onclick="switchTab('overview')">Overview</div>
-      <div class="tab" data-tab="users" onclick="switchTab('users')">Usuarios</div>
-      <div class="tab" data-tab="capsules" onclick="switchTab('capsules')">Capsulas</div>
-      <div class="tab" data-tab="engagement" onclick="switchTab('engagement')">Engagement</div>
-      <div class="tab" data-tab="logs" onclick="switchTab('logs')">Logs</div>
-    </div>
-
-    <!-- TAB: Overview -->
-    <div class="tab-content active" id="tab-overview">
-      <div class="stats" id="overview-stats"></div>
+      <div class="kpi-grid" id="kpi-main"></div>
       <div class="grid-2">
-        <div class="panel">
-          <h3>Funnel de usuarios</h3>
-          <div class="funnel" id="funnel"></div>
-        </div>
-        <div class="panel">
-          <h3>Distribucion de scores</h3>
-          <div id="score-dist"></div>
-        </div>
+        <div class="panel"><div class="panel-title"><span class="icon">&#9660;</span>Funnel de conversion</div><div id="funnel"></div></div>
+        <div class="panel"><div class="panel-title"><span class="icon">&#9636;</span>Actividad diaria (30d)</div><div class="spark" id="spark-events"></div><div class="legend" id="spark-legend"></div></div>
       </div>
       <div class="grid-2">
-        <div class="panel">
-          <h3>Actividad esta semana</h3>
-          <div class="bar-chart" id="activity-chart"></div>
-          <div class="empty hidden" id="activity-empty">Sin actividad esta semana</div>
-        </div>
-        <div class="panel">
-          <h3>Usuarios en riesgo (top 10)</h3>
-          <div class="table-wrap">
-            <table id="risk-table">
-              <thead><tr><th>Usuario</th><th>Empresa</th><th>Capsula</th><th>Dias inactivo</th></tr></thead>
-              <tbody id="risk-body"></tbody>
-            </table>
-          </div>
-          <div class="empty hidden" id="risk-empty">Sin usuarios en riesgo</div>
-        </div>
+        <div class="panel"><div class="panel-title"><span class="icon">&#9733;</span>Distribucion de Scores</div><div id="score-overview"></div></div>
+        <div class="panel"><div class="panel-title"><span class="icon">&#9823;</span>Usuarios activos diarios (7d)</div><div class="spark" id="spark-dau"></div></div>
       </div>
+      <div class="panel"><div class="panel-title"><span class="icon">&#9889;</span>Sugerencias prioritarias</div><div id="top-suggestions"></div></div>
     </div>
 
-    <!-- TAB: Users -->
-    <div class="tab-content" id="tab-users">
-      <div class="stats" id="user-stats"></div>
-      <div class="grid-2">
-        <div class="panel">
-          <h3>Por plan</h3>
-          <div class="pills" id="plan-pills"></div>
+    <!-- ═══════ USERS ═══════ -->
+    <div class="page" id="p-users">
+      <div class="page-header"><div><div class="page-title">Usuarios</div><div class="page-sub">Detalle completo de cada usuario de la plataforma</div></div></div>
+      <div class="kpi-grid" id="kpi-users"></div>
+      <div class="grid-3">
+        <div class="panel"><div class="panel-title">Por plan</div><div class="pills" id="pills-plan"></div></div>
+        <div class="panel"><div class="panel-title">Por industria</div><div class="pills" id="pills-industry"></div></div>
+        <div class="panel"><div class="panel-title">Por rol</div><div class="pills" id="pills-rol"></div></div>
+      </div>
+      <div class="panel"><div class="panel-title">Registros por semana</div><div class="spark" id="spark-signups"></div></div>
+      <div class="panel">
+        <div class="panel-title">Tabla de usuarios</div>
+        <div class="search-bar">
+          <input type="text" id="user-search" placeholder="Buscar nombre, empresa, email..." oninput="filterUsers()">
+          <select id="user-status-filter" onchange="filterUsers()"><option value="">Todos los estados</option><option value="activo">Activo</option><option value="inactivo">Inactivo</option><option value="inactivo_critico">Critico</option><option value="diagnosticado">Diagnosticado</option><option value="registrado">Registrado</option><option value="graduado">Graduado</option></select>
+          <select id="user-plan-filter" onchange="filterUsers()"><option value="">Todos los planes</option></select>
         </div>
-        <div class="panel">
-          <h3>Por industria</h3>
-          <div class="pills" id="industry-pills"></div>
-        </div>
-      </div>
-      <div class="panel">
-        <h3>Scores promedio</h3>
-        <div class="bar-chart" id="score-bars"></div>
-      </div>
-    </div>
-
-    <!-- TAB: Capsules -->
-    <div class="tab-content" id="tab-capsules">
-      <div class="stats" id="capsule-stats"></div>
-      <div class="panel">
-        <h3>Capsulas con mas usuarios trabados</h3>
-        <div class="bar-chart" id="bottleneck-chart"></div>
-        <div class="empty hidden" id="bottleneck-empty">Sin datos de capsulas aun</div>
-      </div>
-      <div class="panel">
-        <h3>Todos los usuarios en riesgo</h3>
         <div class="table-wrap">
-          <table>
-            <thead><tr><th>Usuario</th><th>Empresa</th><th>Capsula</th><th>Dias inactivo</th><th>Riesgo</th></tr></thead>
-            <tbody id="all-risk-body"></tbody>
-          </table>
+          <table><thead><tr>
+            <th>Nombre</th><th>Empresa</th><th>Plan</th><th>Estado</th><th>Caps</th><th>Score</th><th>Boveda</th><th>WA</th><th>Ultima act.</th><th>Msgs</th>
+          </tr></thead><tbody id="user-table"></tbody></table>
         </div>
-        <div class="empty hidden" id="all-risk-empty">Sin usuarios en riesgo</div>
       </div>
     </div>
 
-    <!-- TAB: Engagement -->
-    <div class="tab-content" id="tab-engagement">
-      <div class="stats" id="engagement-stats"></div>
+    <!-- ═══════ CAPSULES ═══════ -->
+    <div class="page" id="p-capsules">
+      <div class="page-header"><div><div class="page-title">Capsulas</div><div class="page-sub">Analisis de las 25 capsulas del Metodo FIA</div></div></div>
+      <div class="kpi-grid" id="kpi-caps"></div>
+      <div class="panel"><div class="panel-title"><span class="icon">&#9635;</span>Heatmap de completacion</div><div class="heatmap" id="heatmap"></div><div class="legend" style="margin-top:12px"><div class="legend-item"><span class="legend-dot" style="background:var(--red)"></span>0-25%</div><div class="legend-item"><span class="legend-dot" style="background:var(--orange)"></span>26-50%</div><div class="legend-item"><span class="legend-dot" style="background:var(--yellow)"></span>51-75%</div><div class="legend-item"><span class="legend-dot" style="background:var(--green)"></span>76-100%</div></div></div>
+      <div class="grid-2">
+        <div class="panel"><div class="panel-title">Usuarios por capsula</div><div class="hbar" id="cap-users-chart"></div></div>
+        <div class="panel"><div class="panel-title">Drop-off (trabados)</div><div class="hbar" id="cap-dropoff-chart"></div></div>
+      </div>
       <div class="panel">
-        <h3>Vault — Productividad</h3>
-        <div class="stats" id="vault-stats"></div>
+        <div class="panel-title">Detalle por capsula</div>
+        <div class="table-wrap"><table><thead><tr><th>#</th><th>Titulo</th><th>Empezaron</th><th>Completaron</th><th>Trabados</th><th>% Completacion</th><th>Outputs</th></tr></thead><tbody id="cap-table"></tbody></table></div>
       </div>
     </div>
 
-    <!-- TAB: Logs -->
-    <div class="tab-content" id="tab-logs">
-      <div class="controls">
-        <input type="text" id="user-filter" placeholder="Filtrar por user_id..." />
-        <button class="btn" onclick="loadLogs()">Buscar</button>
-        <button class="btn btn-secondary" onclick="document.getElementById('user-filter').value=''; loadLogs()">Limpiar</button>
+    <!-- ═══════ SCORES ═══════ -->
+    <div class="page" id="p-scores">
+      <div class="page-header"><div><div class="page-title">Scoring</div><div class="page-sub">Analisis de diagnosticos y lead scores</div></div></div>
+      <div class="kpi-grid" id="kpi-scores"></div>
+      <div class="grid-2">
+        <div class="panel"><div class="panel-title">Score Overall — Histograma</div><div class="hbar" id="hist-overall"></div></div>
+        <div class="panel"><div class="panel-title">Fit Score — Histograma</div><div class="hbar" id="hist-fit"></div></div>
       </div>
-      <div class="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Fecha</th>
-              <th>Usuario</th>
-              <th>Journey</th>
-              <th>Mensaje</th>
-              <th>Status</th>
-              <th>Click</th>
-              <th>Respondio</th>
-              <th>Respuesta</th>
-            </tr>
-          </thead>
-          <tbody id="logs-body">
-            <tr><td colspan="8" style="text-align:center;color:#71717a">Cargando...</td></tr>
-          </tbody>
-        </table>
+      <div class="grid-2">
+        <div class="panel"><div class="panel-title">Intent Score — Histograma</div><div class="hbar" id="hist-intent"></div></div>
+        <div class="panel"><div class="panel-title">Score promedio (gauges)</div><div id="score-gauges"></div></div>
+      </div>
+      <div class="panel">
+        <div class="panel-title">Todos los scores</div>
+        <div class="table-wrap"><table><thead><tr><th>Usuario</th><th>Empresa</th><th>Fit</th><th>Intent</th><th>Overall</th><th>Estado</th></tr></thead><tbody id="score-table"></tbody></table></div>
       </div>
     </div>
-  </div>
 
-  <script>
-    const API = '';
+    <!-- ═══════ VAULT ═══════ -->
+    <div class="page" id="p-vault">
+      <div class="page-header"><div><div class="page-title">Boveda</div><div class="page-sub">Outputs generados por los usuarios</div></div></div>
+      <div class="kpi-grid" id="kpi-vault"></div>
+      <div class="grid-2">
+        <div class="panel"><div class="panel-title">Por tipo de contenido</div><div class="hbar" id="vault-type-chart"></div></div>
+        <div class="panel"><div class="panel-title">Por capsula</div><div class="hbar" id="vault-cap-chart"></div></div>
+      </div>
+    </div>
 
-    let dashData = null;
+    <!-- ═══════ ENGAGEMENT ═══════ -->
+    <div class="page" id="p-engagement">
+      <div class="page-header"><div><div class="page-title">Engagement</div><div class="page-sub">Rendimiento de las comunicaciones automatizadas</div></div></div>
+      <div class="kpi-grid" id="kpi-eng"></div>
+      <div class="panel"><div class="panel-title">Mensajes enviados (30d)</div><div class="spark" id="spark-eng"></div></div>
+      <div class="grid-2">
+        <div class="panel"><div class="panel-title">Rendimiento por journey</div><div id="journey-table-wrap"></div></div>
+        <div class="panel"><div class="panel-title">Tipos de evento (30d)</div><div class="hbar" id="event-types-chart"></div></div>
+      </div>
+    </div>
 
-    // ─── Tab switching ───
-    function switchTab(tabId) {
-      document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-      document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
-      document.querySelector('[data-tab="' + tabId + '"]').classList.add('active');
-      document.getElementById('tab-' + tabId).classList.add('active');
-      if (tabId === 'logs' && !document.getElementById('logs-body').dataset.loaded) {
-        loadLogs();
-      }
-    }
+    <!-- ═══════ LOGS ═══════ -->
+    <div class="page" id="p-logs">
+      <div class="page-header"><div><div class="page-title">Engagement Logs</div><div class="page-sub">Registro de todos los mensajes enviados</div></div></div>
+      <div class="search-bar"><input type="text" id="log-filter" placeholder="Filtrar por user_id..."><button class="btn" onclick="loadLogs()">Buscar</button><button class="btn" onclick="document.getElementById('log-filter').value='';loadLogs()">Limpiar</button></div>
+      <div class="panel"><div class="table-wrap"><table><thead><tr><th>Fecha</th><th>Usuario</th><th>Journey</th><th>Mensaje</th><th>Status</th><th>Click</th><th>Respondio</th><th>Respuesta</th></tr></thead><tbody id="log-table"></tbody></table></div></div>
+    </div>
 
-    // ─── Helpers ───
-    function escapeHtml(str) {
-      if (!str) return '';
-      return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-    }
+    <!-- ═══════ SUGGESTIONS ═══════ -->
+    <div class="page" id="p-suggestions">
+      <div class="page-header"><div><div class="page-title">Sugerencias IA</div><div class="page-sub">Acciones recomendadas basadas en los datos</div></div></div>
+      <div id="all-suggestions"></div>
+    </div>
+  </main>
+</div>
 
-    function statCard(label, value, color) {
-      return '<div class="card"><div class="card-label">' + escapeHtml(label) + '</div><div class="card-value ' + (color||'') + '">' + value + '</div></div>';
-    }
+<script>
+const API='';
+let D=null; // dashboard data
+let allUsers=[];
 
-    function riskBadge(days) {
-      if (days >= 15) return '<span class="badge badge-danger">' + days + 'd</span>';
-      if (days >= 10) return '<span class="badge badge-warning">' + days + 'd</span>';
-      return '<span class="badge badge-info">' + days + 'd</span>';
-    }
+// ─── NAV ───
+document.querySelectorAll('.nav-item').forEach(function(el){
+  el.addEventListener('click',function(){
+    document.querySelectorAll('.nav-item').forEach(function(n){n.classList.remove('active')});
+    document.querySelectorAll('.page').forEach(function(p){p.classList.remove('active')});
+    el.classList.add('active');
+    document.getElementById('p-'+el.dataset.page).classList.add('active');
+    if(el.dataset.page==='logs'&&!document.getElementById('log-table').dataset.loaded)loadLogs();
+  });
+});
 
-    // ─── Load dashboard data ───
-    async function loadDashboard() {
-      try {
-        const res = await fetch(API + '/api/dashboard');
-        dashData = await res.json();
-        renderOverview();
-        renderUsers();
-        renderCapsules();
-        renderEngagement();
-      } catch (e) {
-        console.error('Failed to load dashboard', e);
-      }
-    }
+// ─── HELPERS ───
+function esc(s){return s?String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'):''}
+function kpi(label,val,color,sub){return '<div class="kpi"><div class="kpi-label">'+esc(label)+'</div><div class="kpi-value '+(color||'')+'">'+val+'</div>'+(sub?'<div class="kpi-sub">'+esc(sub)+'</div>':'')+'</div>'}
+function statusBadge(s){var m={'activo':'b-green','inactivo':'b-yellow','inactivo_critico':'b-red','diagnosticado':'b-cyan','registrado':'b-gray','graduado':'b-purple'};return '<span class="badge '+(m[s]||'b-gray')+'">'+esc(s)+'</span>'}
+function pct(n,t){return t>0?Math.round(n/t*100):0}
+function maxOf(arr){return Math.max.apply(null,arr.concat([1]))}
 
-    // ─── Render: Overview ───
-    function renderOverview() {
-      const d = dashData;
-      document.getElementById('overview-stats').innerHTML =
-        statCard('Usuarios totales', d.users.total, 'blue') +
-        statCard('Activos esta semana', d.users.active_this_week, 'green') +
-        statCard('Inactivos', d.users.inactive, d.users.inactive > 0 ? 'yellow' : '') +
-        statCard('Con WhatsApp', d.users.with_whatsapp, 'purple') +
-        statCard('En riesgo', d.risk.total_at_risk, d.risk.total_at_risk > 0 ? 'red' : 'green') +
-        statCard('Msgs enviados (7d)', d.engagement.messages_sent_7d, 'blue');
+function sparkBars(container,data,colorFn,tipFn){
+  var mx=maxOf(data.map(function(d){return d.v}));
+  container.innerHTML=data.map(function(d,i){
+    var h=Math.max((d.v/mx)*100,2);
+    var c=colorFn?colorFn(d,i):'var(--accent)';
+    return '<div class="spark-bar" style="height:'+h+'%;background:'+c+'" data-tip="'+(tipFn?tipFn(d):d.v)+'"></div>';
+  }).join('');
+}
 
-      // Funnel
-      var funnel = document.getElementById('funnel');
-      var total = Math.max(d.funnel.not_started + d.funnel.in_progress + d.funnel.completed_all_25, 1);
-      var steps = [
-        { label: 'No empezaron', count: d.funnel.not_started, color: '#f87171' },
-        { label: 'En progreso', count: d.funnel.in_progress, color: '#60a5fa' },
-        { label: 'Completaron 25', count: d.funnel.completed_all_25, color: '#4ade80' },
-      ];
-      funnel.innerHTML = steps.map(function(s) {
-        var pct = Math.max((s.count / total) * 100, 4);
-        return '<div class="funnel-step">' +
-          '<span class="funnel-label">' + s.label + '</span>' +
-          '<div style="flex:1"><div class="funnel-bar" style="width:' + pct + '%;background:' + s.color + '">' + s.count + '</div></div>' +
-          '<span class="funnel-count">' + Math.round((s.count/total)*100) + '%</span>' +
-          '</div>';
-      }).join('');
+function hbars(container,items,color){
+  var mx=maxOf(items.map(function(i){return i.v}));
+  container.innerHTML=items.map(function(i){
+    var w=Math.max(pct(i.v,mx),3);
+    return '<div class="hbar-row"><span class="hbar-label" title="'+esc(i.l)+'">'+esc(i.l)+'</span><div class="hbar-track"><div class="hbar-fill" style="width:'+w+'%;background:'+(color||'var(--accent)')+'">'+i.v+'</div></div></div>';
+  }).join('');
+}
 
-      // Score distribution
-      var scores = d.scores;
-      var scoreDist = document.getElementById('score-dist');
-      if (scores.total_assessed === 0) {
-        scoreDist.innerHTML = '<div class="empty">Sin diagnosticos aun</div>';
-      } else {
-        var distTotal = Math.max(scores.distribution.alto + scores.distribution.medio + scores.distribution.bajo, 1);
-        scoreDist.innerHTML = '<div class="donut-container">' +
-          '<div style="flex:1">' +
-            '<div class="bar-chart">' +
-              '<div class="bar-row"><span class="bar-label">Alto (70+)</span><div class="bar-track"><div class="bar-fill" style="width:' + Math.max((scores.distribution.alto/distTotal)*100,2) + '%;background:#4ade80">' + scores.distribution.alto + '</div></div></div>' +
-              '<div class="bar-row"><span class="bar-label">Medio (40-69)</span><div class="bar-track"><div class="bar-fill" style="width:' + Math.max((scores.distribution.medio/distTotal)*100,2) + '%;background:#facc15">' + scores.distribution.medio + '</div></div></div>' +
-              '<div class="bar-row"><span class="bar-label">Bajo (&lt;40)</span><div class="bar-track"><div class="bar-fill" style="width:' + Math.max((scores.distribution.bajo/distTotal)*100,2) + '%;background:#f87171">' + scores.distribution.bajo + '</div></div></div>' +
-            '</div>' +
-          '</div>' +
-          '<div class="donut-legend">' +
-            '<div class="legend-item"><span class="legend-dot" style="background:#60a5fa"></span>Promedio overall: <strong>' + scores.averages.overall + '/100</strong></div>' +
-            '<div class="legend-item"><span class="legend-dot" style="background:#c084fc"></span>Fit promedio: <strong>' + scores.averages.fit + '</strong></div>' +
-            '<div class="legend-item"><span class="legend-dot" style="background:#4ade80"></span>Intent promedio: <strong>' + scores.averages.intent + '</strong></div>' +
-            '<div class="legend-item"><span class="legend-dot" style="background:#71717a"></span>Total diagnosticados: <strong>' + scores.total_assessed + '</strong></div>' +
-          '</div>' +
-        '</div>';
-      }
+function histogram(container,buckets,color){
+  var items=Object.entries(buckets).map(function(e){return{l:e[0],v:e[1]}});
+  hbars(container,items,color);
+}
 
-      // Activity chart
-      var activity = d.activity;
-      var actChart = document.getElementById('activity-chart');
-      var actEmpty = document.getElementById('activity-empty');
-      var types = Object.entries(activity.by_type).sort(function(a,b) { return b[1] - a[1]; });
-      if (types.length === 0) {
-        actChart.classList.add('hidden');
-        actEmpty.classList.remove('hidden');
-      } else {
-        actChart.classList.remove('hidden');
-        actEmpty.classList.add('hidden');
-        var maxEvt = types[0][1];
-        actChart.innerHTML = types.slice(0, 8).map(function(t) {
-          return '<div class="bar-row"><span class="bar-label">' + escapeHtml(t[0]) + '</span><div class="bar-track"><div class="bar-fill" style="width:' + Math.max((t[1]/maxEvt)*100,5) + '%;background:#60a5fa">' + t[1] + '</div></div></div>';
-        }).join('');
-      }
+// ─── LOAD ───
+async function loadDashboard(){
+  try{
+    var res=await fetch(API+'/api/dashboard');
+    D=await res.json();
+    allUsers=D.users||[];
+    renderAll();
+  }catch(e){console.error('Dashboard load failed',e)}
+  document.getElementById('loading').classList.add('hidden');
+}
 
-      // Risk table
-      var riskBody = document.getElementById('risk-body');
-      var riskEmpty = document.getElementById('risk-empty');
-      var stuck = d.risk.stuck_users.slice(0, 10);
-      if (stuck.length === 0) {
-        riskBody.parentElement.classList.add('hidden');
-        riskEmpty.classList.remove('hidden');
-      } else {
-        riskBody.parentElement.classList.remove('hidden');
-        riskEmpty.classList.add('hidden');
-        riskBody.innerHTML = stuck.map(function(u) {
-          return '<tr><td>' + escapeHtml(u.nombre) + '</td><td>' + escapeHtml(u.empresa) + '</td><td>Cap ' + u.capsule + '</td><td>' + riskBadge(u.daysSinceUpdate) + '</td></tr>';
-        }).join('');
-      }
-    }
+function renderAll(){
+  renderOverview();
+  renderUsers();
+  renderCapsules();
+  renderScores();
+  renderVault();
+  renderEngagement();
+  renderSuggestions();
+  document.getElementById('ts').textContent='Actualizado: '+new Date().toLocaleTimeString('es-AR');
+}
 
-    // ─── Render: Users ───
-    function renderUsers() {
-      var d = dashData;
-      document.getElementById('user-stats').innerHTML =
-        statCard('Total', d.users.total, 'blue') +
-        statCard('Con WhatsApp', d.users.with_whatsapp, 'purple') +
-        statCard('Opted-out', d.users.opted_out, d.users.opted_out > 0 ? 'red' : '') +
-        statCard('Activos (7d)', d.users.active_this_week, 'green');
+// ─── OVERVIEW ───
+function renderOverview(){
+  var k=D.kpis;
+  document.getElementById('kpi-main').innerHTML=
+    kpi('Usuarios totales',k.total_users,'blue')+
+    kpi('Activos (7d)',k.active_this_week,'green')+
+    kpi('Diagnosticados',k.diagnosed,'cyan')+
+    kpi('Graduados',k.graduated,'purple')+
+    kpi('Inactivos',k.inactive,'yellow',k.critical+' criticos')+
+    kpi('Caps promedio',k.avg_capsules_completed,'blue','/25')+
+    kpi('Outputs Boveda',k.total_vault_outputs,'purple')+
+    kpi('Eventos (30d)',k.total_events_30d,'green');
 
-      // Plan pills
-      document.getElementById('plan-pills').innerHTML = Object.entries(d.users.by_plan)
-        .sort(function(a,b) { return b[1] - a[1]; })
-        .map(function(p) { return '<span class="pill"><span class="pill-count">' + p[1] + '</span>' + escapeHtml(p[0]) + '</span>'; })
-        .join('');
+  // Funnel
+  var f=D.funnel;var t=Math.max(f.registered,1);
+  var steps=[
+    {l:'Registrados',v:f.registered,c:'var(--blue)'},
+    {l:'Diagnosticados',v:f.diagnosed,c:'var(--cyan)'},
+    {l:'Empezaron capsulas',v:f.started_capsules,c:'var(--accent)'},
+    {l:'5+ capsulas',v:f.completed_5_plus,c:'var(--purple)'},
+    {l:'10+ capsulas',v:f.completed_10_plus,c:'var(--yellow)'},
+    {l:'20+ capsulas',v:f.completed_20_plus,c:'var(--orange)'},
+    {l:'Graduados (25)',v:f.graduated,c:'var(--green)'}
+  ];
+  document.getElementById('funnel').innerHTML=steps.map(function(s){
+    var w=Math.max(pct(s.v,t),3);
+    return '<div class="funnel-step"><span class="funnel-label">'+s.l+'</span><div class="funnel-bar-wrap"><div class="funnel-bar" style="width:'+w+'%;background:'+s.c+'">'+s.v+'</div></div><span class="funnel-pct">'+pct(s.v,t)+'%</span></div>';
+  }).join('');
 
-      // Industry pills
-      document.getElementById('industry-pills').innerHTML = Object.entries(d.users.by_industry)
-        .sort(function(a,b) { return b[1] - a[1]; })
-        .map(function(p) { return '<span class="pill"><span class="pill-count">' + p[1] + '</span>' + escapeHtml(p[0]) + '</span>'; })
-        .join('');
+  // Activity spark
+  sparkBars(document.getElementById('spark-events'),
+    D.activity.daily_events.map(function(d){return{v:d.count,l:d.date}}),
+    null,function(d){return d.l+': '+d.v+' eventos'});
+  document.getElementById('spark-legend').innerHTML='<div class="legend-item"><span class="legend-dot" style="background:var(--accent)"></span>Eventos por dia</div>';
 
-      // Score bars
-      var sc = d.scores;
-      document.getElementById('score-bars').innerHTML =
-        '<div class="bar-row"><span class="bar-label">Fit Score</span><div class="bar-track"><div class="bar-fill" style="width:' + sc.averages.fit + '%;background:#c084fc">' + sc.averages.fit + '</div></div><span class="bar-value">/100</span></div>' +
-        '<div class="bar-row"><span class="bar-label">Intent Score</span><div class="bar-track"><div class="bar-fill" style="width:' + sc.averages.intent + '%;background:#4ade80">' + sc.averages.intent + '</div></div><span class="bar-value">/100</span></div>' +
-        '<div class="bar-row"><span class="bar-label">Overall</span><div class="bar-track"><div class="bar-fill" style="width:' + sc.averages.overall + '%;background:#60a5fa">' + sc.averages.overall + '</div></div><span class="bar-value">/100</span></div>';
-    }
+  // DAU spark
+  sparkBars(document.getElementById('spark-dau'),
+    D.activity.dau.map(function(d){return{v:d.users,l:d.date}}),
+    function(){return 'var(--green)'},function(d){return d.l+': '+d.v+' usuarios'});
 
-    // ─── Render: Capsules ───
-    function renderCapsules() {
-      var d = dashData;
-      document.getElementById('capsule-stats').innerHTML =
-        statCard('No empezaron', d.funnel.not_started, 'red') +
-        statCard('En progreso', d.funnel.in_progress, 'blue') +
-        statCard('Graduados', d.funnel.completed_all_25, 'green') +
-        statCard('En riesgo', d.risk.total_at_risk, d.risk.total_at_risk > 0 ? 'yellow' : 'green');
+  // Score overview
+  var sc=D.scores;
+  if(sc.total===0){document.getElementById('score-overview').innerHTML='<div style="color:var(--text3);text-align:center;padding:20px">Sin diagnosticos aun</div>';return}
+  var dist=sc.distribution;var dt=Math.max(dist.alto+dist.medio+dist.bajo,1);
+  document.getElementById('score-overview').innerHTML=
+    '<div class="hbar">'+
+    '<div class="hbar-row"><span class="hbar-label">Alto (70+)</span><div class="hbar-track"><div class="hbar-fill" style="width:'+Math.max(pct(dist.alto,dt),3)+'%;background:var(--green)">'+dist.alto+'</div></div></div>'+
+    '<div class="hbar-row"><span class="hbar-label">Medio (40-69)</span><div class="hbar-track"><div class="hbar-fill" style="width:'+Math.max(pct(dist.medio,dt),3)+'%;background:var(--yellow)">'+dist.medio+'</div></div></div>'+
+    '<div class="hbar-row"><span class="hbar-label">Bajo (&lt;40)</span><div class="hbar-track"><div class="hbar-fill" style="width:'+Math.max(pct(dist.bajo,dt),3)+'%;background:var(--red)">'+dist.bajo+'</div></div></div>'+
+    '</div>'+
+    '<div style="margin-top:12px;display:flex;gap:16px">'+
+    '<div style="font-size:12px;color:var(--text2)">Promedio Overall: <strong style="color:#fff">'+sc.averages.overall+'/100</strong></div>'+
+    '<div style="font-size:12px;color:var(--text2)">Fit: <strong style="color:#fff">'+sc.averages.fit+'</strong></div>'+
+    '<div style="font-size:12px;color:var(--text2)">Intent: <strong style="color:#fff">'+sc.averages.intent+'</strong></div>'+
+    '</div>';
 
-      // Bottleneck chart
-      var bottleneckChart = document.getElementById('bottleneck-chart');
-      var bottleneckEmpty = document.getElementById('bottleneck-empty');
-      var bn = d.capsules.bottlenecks;
-      if (bn.length === 0) {
-        bottleneckChart.classList.add('hidden');
-        bottleneckEmpty.classList.remove('hidden');
-      } else {
-        bottleneckChart.classList.remove('hidden');
-        bottleneckEmpty.classList.add('hidden');
-        var maxBn = Math.max.apply(null, bn.map(function(b) { return b.stuck_users; }));
-        bottleneckChart.innerHTML = bn.map(function(b) {
-          return '<div class="bar-row"><span class="bar-label">Capsula ' + b.capsule + '</span><div class="bar-track"><div class="bar-fill" style="width:' + Math.max((b.stuck_users/maxBn)*100,8) + '%;background:#f87171">' + b.stuck_users + ' trabados</div></div></div>';
-        }).join('');
-      }
+  // Top suggestions
+  var sug=D.suggestions||[];
+  document.getElementById('top-suggestions').innerHTML=sug.length===0?
+    '<div style="color:var(--text3);padding:12px">Sin sugerencias - todo en orden</div>':
+    sug.slice(0,3).map(renderSuggestion).join('');
+}
 
-      // All risk users
-      var allRiskBody = document.getElementById('all-risk-body');
-      var allRiskEmpty = document.getElementById('all-risk-empty');
-      var allStuck = d.risk.stuck_users;
-      if (allStuck.length === 0) {
-        allRiskBody.parentElement.classList.add('hidden');
-        allRiskEmpty.classList.remove('hidden');
-      } else {
-        allRiskBody.parentElement.classList.remove('hidden');
-        allRiskEmpty.classList.add('hidden');
-        allRiskBody.innerHTML = allStuck.map(function(u) {
-          var level = u.daysSinceUpdate >= 15 ? 'danger' : (u.daysSinceUpdate >= 10 ? 'warning' : 'info');
-          var levelText = u.daysSinceUpdate >= 15 ? 'Critico' : (u.daysSinceUpdate >= 10 ? 'Alto' : 'Medio');
-          return '<tr><td>' + escapeHtml(u.nombre) + '</td><td>' + escapeHtml(u.empresa) + '</td><td>Cap ' + u.capsule + '</td><td>' + u.daysSinceUpdate + ' dias</td><td><span class="badge badge-' + level + '">' + levelText + '</span></td></tr>';
-        }).join('');
-      }
-    }
+// ─── USERS ───
+function renderUsers(){
+  var k=D.kpis;
+  document.getElementById('kpi-users').innerHTML=
+    kpi('Total',k.total_users,'blue')+kpi('Con WhatsApp',k.with_whatsapp,'purple')+kpi('Opted-out',k.opted_out,k.opted_out>0?'red':'')+
+    kpi('Activos',k.active,'green')+kpi('Inactivos',k.inactive,'yellow')+kpi('Criticos',k.critical,'red');
 
-    // ─── Render: Engagement ───
-    function renderEngagement() {
-      var d = dashData;
-      document.getElementById('engagement-stats').innerHTML =
-        statCard('Mensajes enviados (7d)', d.engagement.messages_sent_7d, 'blue') +
-        statCard('Tasa de click', d.engagement.click_rate + '%', 'green') +
-        statCard('Tasa de respuesta', d.engagement.response_rate + '%', 'yellow') +
-        statCard('Opted-out', d.users.opted_out, d.users.opted_out > 0 ? 'red' : '');
+  // Breakdowns
+  renderPills('pills-plan',D.breakdowns.by_plan);
+  renderPills('pills-industry',D.breakdowns.by_industry);
+  renderPills('pills-rol',D.breakdowns.by_rol);
 
-      document.getElementById('vault-stats').innerHTML =
-        statCard('Outputs en Boveda', d.vault.total_outputs, 'purple') +
-        statCard('Usuarios con outputs', d.vault.users_with_outputs, 'blue') +
-        statCard('Eventos esta semana', d.activity.events_this_week, 'green');
-    }
+  // Signups spark
+  var signups=D.signups_by_week||[];
+  if(signups.length>0){
+    sparkBars(document.getElementById('spark-signups'),
+      signups.map(function(s){return{v:s.count,l:s.week}}),
+      function(){return 'var(--blue)'},function(d){return 'Semana '+d.l+': '+d.v+' registros'});
+  }
 
-    // ─── Logs tab ───
-    async function loadLogs() {
-      var userId = document.getElementById('user-filter').value.trim();
-      var params = new URLSearchParams({ limit: '50' });
-      if (userId) params.set('user_id', userId);
+  // Plan filter options
+  var planFilter=document.getElementById('user-plan-filter');
+  var plans=Object.keys(D.breakdowns.by_plan).sort();
+  planFilter.innerHTML='<option value="">Todos los planes</option>'+plans.map(function(p){return '<option value="'+esc(p)+'">'+esc(p)+'</option>'}).join('');
 
-      try {
-        var res = await fetch(API + '/api/engagement/logs?' + params);
-        var data = await res.json();
-        var tbody = document.getElementById('logs-body');
-        tbody.dataset.loaded = '1';
+  filterUsers();
+}
 
-        if (!data.logs || data.logs.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;color:#71717a">Sin registros de engagement aun</td></tr>';
-          return;
-        }
+function filterUsers(){
+  var q=(document.getElementById('user-search').value||'').toLowerCase();
+  var st=document.getElementById('user-status-filter').value;
+  var pl=document.getElementById('user-plan-filter').value;
+  var filtered=allUsers.filter(function(u){
+    if(q&&!(u.nombre||'').toLowerCase().includes(q)&&!(u.empresa||'').toLowerCase().includes(q)&&!(u.email||'').toLowerCase().includes(q))return false;
+    if(st&&u.status!==st)return false;
+    if(pl&&u.plan!==pl)return false;
+    return true;
+  });
+  var tb=document.getElementById('user-table');
+  if(filtered.length===0){tb.innerHTML='<tr><td colspan="10" style="text-align:center;color:var(--text3)">Sin resultados</td></tr>';return}
+  tb.innerHTML=filtered.slice(0,100).map(function(u){
+    return '<tr>'+
+      '<td><strong>'+esc(u.nombre)+'</strong><br><span style="font-size:10px;color:var(--text3)">'+esc(u.email)+'</span></td>'+
+      '<td>'+esc(u.empresa)+'<br><span style="font-size:10px;color:var(--text3)">'+esc(u.industria)+'</span></td>'+
+      '<td><span class="badge b-blue">'+esc(u.plan)+'</span></td>'+
+      '<td>'+statusBadge(u.status)+'</td>'+
+      '<td><strong>'+u.capsules_completed+'</strong>/25</td>'+
+      '<td>'+(u.overall_score!==null?u.overall_score+'/100':'-')+'</td>'+
+      '<td>'+u.vault_outputs+'</td>'+
+      '<td>'+(u.whatsapp==='si'?(u.wp_opted_out?'<span class="badge b-red">Opted-out</span>':'<span class="badge b-green">Si</span>'):'<span class="badge b-gray">No</span>')+'</td>'+
+      '<td>'+(u.days_since_last_event>=0?u.days_since_last_event+'d':'-')+'</td>'+
+      '<td>'+u.messages_received+(u.messages_clicked>0?' / '+u.messages_clicked+' clicks':'')+'</td>'+
+    '</tr>';
+  }).join('');
+}
 
-        tbody.innerHTML = data.logs.map(function(log) {
-          var date = new Date(log.created_at).toLocaleString('es-AR', { dateStyle: 'short', timeStyle: 'short' });
-          var msg = log.mensaje_enviado.length > 80 ? log.mensaje_enviado.slice(0, 80) + '...' : log.mensaje_enviado;
-          return '<tr>' +
-            '<td>' + date + '</td>' +
-            '<td style="font-family:monospace;font-size:11px">' + log.user_id.slice(0, 8) + '...</td>' +
-            '<td>' + log.journey_name + '</td>' +
-            '<td title="' + escapeHtml(log.mensaje_enviado) + '">' + escapeHtml(msg) + '</td>' +
-            '<td><span class="badge badge-' + log.status + '">' + log.status + '</span></td>' +
-            '<td><span class="badge badge-' + (log.clicked ? 'success' : '') + '">' + (log.clicked ? 'Si' : 'No') + '</span></td>' +
-            '<td><span class="badge badge-' + (log.responded ? 'success' : '') + '">' + (log.responded ? 'Si' : 'No') + '</span></td>' +
-            '<td>' + (log.response_text || '-') + '</td>' +
-            '</tr>';
-        }).join('');
-      } catch (e) {
-        console.error('Failed to load logs', e);
-      }
-    }
+function renderPills(id,obj){
+  var sorted=Object.entries(obj).sort(function(a,b){return b[1]-a[1]});
+  document.getElementById(id).innerHTML=sorted.map(function(e){return '<span class="pill"><b>'+e[1]+'</b>'+esc(e[0])+'</span>'}).join('');
+}
 
-    // ─── Trigger detectors ───
-    async function triggerDetectors() {
-      var token = prompt('Admin API Token:');
-      if (!token) return;
-      try {
-        var res = await fetch(API + '/api/trigger', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + token },
-          body: JSON.stringify({ detector: 'all' })
-        });
-        var data = await res.json();
-        alert(data.status === 'triggered' ? 'Detectors ejecutados' : 'Error: ' + JSON.stringify(data));
-        loadAll();
-      } catch (e) {
-        alert('Error: ' + e.message);
-      }
-    }
+// ─── CAPSULES ───
+function renderCapsules(){
+  var caps=D.capsule_analytics||[];
+  var totalStarted=caps.reduce(function(s,c){return s+c.total_started},0);
+  var totalCompleted=caps.reduce(function(s,c){return s+c.completed},0);
+  var totalDropoff=caps.reduce(function(s,c){return s+c.in_progress},0);
+  var avgRate=caps.length>0?Math.round(caps.reduce(function(s,c){return s+c.completion_rate},0)/caps.length):0;
 
-    // ─── Load all ───
-    async function loadAll() {
-      await loadDashboard();
-      document.getElementById('last-refresh').textContent = 'Actualizado: ' + new Date().toLocaleTimeString('es-AR');
-      document.getElementById('loading').classList.add('hidden');
-    }
+  document.getElementById('kpi-caps').innerHTML=
+    kpi('Total empezaron',totalStarted,'blue')+kpi('Completaron',totalCompleted,'green')+
+    kpi('Trabados',totalDropoff,'red')+kpi('% Completacion promedio',avgRate+'%',avgRate>=60?'green':(avgRate>=30?'yellow':'red'));
 
-    // Init
-    loadAll();
-    setInterval(loadAll, 120000);
-  </script>
+  // Heatmap
+  document.getElementById('heatmap').innerHTML=caps.map(function(c){
+    var r=c.completion_rate;
+    var bg=r<=25?'var(--red)':r<=50?'var(--orange)':r<=75?'var(--yellow)':'var(--green)';
+    if(c.total_started===0)bg='var(--bg4)';
+    return '<div class="heat-cell" style="background:'+bg+'" title="Cap '+c.numero+': '+esc(c.titulo)+'\\n'+c.completed+' completaron, '+c.in_progress+' trabados ('+c.completion_rate+'%)"><div class="cap-num">'+c.numero+'</div><div class="cap-sub">'+c.completion_rate+'%</div></div>';
+  }).join('');
+
+  // Users per capsule
+  hbars(document.getElementById('cap-users-chart'),
+    caps.filter(function(c){return c.total_started>0}).map(function(c){return{l:'Cap '+c.numero,v:c.total_started}}),'var(--blue)');
+
+  // Drop-off
+  var dropoffs=caps.filter(function(c){return c.in_progress>0}).sort(function(a,b){return b.in_progress-a.in_progress});
+  hbars(document.getElementById('cap-dropoff-chart'),
+    dropoffs.map(function(c){return{l:'Cap '+c.numero,v:c.in_progress}}),'var(--red)');
+
+  // Table
+  document.getElementById('cap-table').innerHTML=caps.map(function(c){
+    var rateColor=c.completion_rate>=70?'b-green':c.completion_rate>=40?'b-yellow':'b-red';
+    if(c.total_started===0)rateColor='b-gray';
+    return '<tr><td><strong>'+c.numero+'</strong></td><td>'+esc(c.titulo)+'</td><td>'+c.total_started+'</td><td>'+c.completed+'</td><td>'+c.in_progress+'</td><td><span class="badge '+rateColor+'">'+c.completion_rate+'%</span></td><td>'+c.vault_outputs+'</td></tr>';
+  }).join('');
+}
+
+// ─── SCORES ───
+function renderScores(){
+  var sc=D.scores;
+  document.getElementById('kpi-scores').innerHTML=
+    kpi('Diagnosticados',sc.total,'cyan')+kpi('Overall promedio',sc.averages.overall,'blue','/100')+
+    kpi('Fit promedio',sc.averages.fit,'purple','/100')+kpi('Intent promedio',sc.averages.intent,'green','/100')+
+    kpi('Score alto (70+)',sc.distribution.alto,'green')+kpi('Score bajo (<40)',sc.distribution.bajo,sc.distribution.bajo>0?'red':'');
+
+  histogram(document.getElementById('hist-overall'),sc.overall_histogram,'var(--blue)');
+  histogram(document.getElementById('hist-fit'),sc.fit_histogram,'var(--purple)');
+  histogram(document.getElementById('hist-intent'),sc.intent_histogram,'var(--green)');
+
+  // Gauges
+  document.getElementById('score-gauges').innerHTML=
+    '<div class="gauge-row"><span class="gauge-label">Overall</span><div class="gauge-track"><div class="gauge-fill" style="width:'+sc.averages.overall+'%;background:var(--blue)"></div></div><span class="gauge-val" style="color:var(--blue2)">'+sc.averages.overall+'</span></div>'+
+    '<div class="gauge-row"><span class="gauge-label">Fit</span><div class="gauge-track"><div class="gauge-fill" style="width:'+sc.averages.fit+'%;background:var(--purple)"></div></div><span class="gauge-val" style="color:var(--purple2)">'+sc.averages.fit+'</span></div>'+
+    '<div class="gauge-row"><span class="gauge-label">Intent</span><div class="gauge-track"><div class="gauge-fill" style="width:'+sc.averages.intent+'%;background:var(--green)"></div></div><span class="gauge-val" style="color:var(--green2)">'+sc.averages.intent+'</span></div>';
+
+  // Score table (join with user data)
+  var scoreData=(sc.all_scores||[]).map(function(s){
+    var u=allUsers.find(function(u){return u.id===s.user_id})||{};
+    return Object.assign({},s,{nombre:u.nombre||'?',empresa:u.empresa||'?',status:u.status||'?'});
+  }).sort(function(a,b){return b.overall-a.overall});
+
+  document.getElementById('score-table').innerHTML=scoreData.map(function(s){
+    var oc=s.overall>=70?'b-green':s.overall>=40?'b-yellow':'b-red';
+    return '<tr><td>'+esc(s.nombre)+'</td><td>'+esc(s.empresa)+'</td><td>'+s.fit+'</td><td>'+s.intent+'</td><td><span class="badge '+oc+'">'+s.overall+'</span></td><td>'+statusBadge(s.status)+'</td></tr>';
+  }).join('');
+}
+
+// ─── VAULT ───
+function renderVault(){
+  var v=D.vault;
+  document.getElementById('kpi-vault').innerHTML=
+    kpi('Total outputs',v.total,'purple')+kpi('Usuarios con outputs',v.users_with_outputs,'blue')+
+    kpi('Tipos distintos',Object.keys(v.by_type).length,'cyan')+
+    kpi('Capsulas con outputs',Object.keys(v.by_capsule).length,'green','/25');
+
+  var types=Object.entries(v.by_type).sort(function(a,b){return b[1]-a[1]}).map(function(e){return{l:e[0],v:e[1]}});
+  hbars(document.getElementById('vault-type-chart'),types,'var(--purple)');
+
+  var byCap=[];
+  for(var i=1;i<=25;i++){if(v.by_capsule[i])byCap.push({l:'Cap '+i,v:v.by_capsule[i]})}
+  hbars(document.getElementById('vault-cap-chart'),byCap,'var(--cyan)');
+}
+
+// ─── ENGAGEMENT ───
+function renderEngagement(){
+  var e=D.engagement;
+  document.getElementById('kpi-eng').innerHTML=
+    kpi('Mensajes enviados',e.all_time.sent,'blue','Total historico')+
+    kpi('Click rate',e.all_time.click_rate+'%','green')+
+    kpi('Response rate',e.all_time.response_rate+'%','yellow')+
+    kpi('Enviados (7d)',e.last_7d.sent,'cyan')+
+    kpi('Clicks (7d)',e.last_7d.clicked,'green')+
+    kpi('Respuestas (7d)',e.last_7d.responded,'purple');
+
+  // Daily spark
+  sparkBars(document.getElementById('spark-eng'),
+    e.daily_timeline.map(function(d){return{v:d.sent,l:d.date}}),
+    function(){return 'var(--blue)'},function(d){return d.l+': '+d.v+' msgs'});
+
+  // Journey table
+  var journeys=Object.entries(e.by_journey).sort(function(a,b){return b[1].sent-a[1].sent});
+  document.getElementById('journey-table-wrap').innerHTML='<table><thead><tr><th>Journey</th><th>Enviados</th><th>Clicks</th><th>Respuestas</th><th>CTR</th></tr></thead><tbody>'+
+    journeys.map(function(j){
+      var ctr=j[1].sent>0?Math.round(j[1].clicked/j[1].sent*1000)/10:0;
+      return '<tr><td><strong>'+esc(j[0])+'</strong></td><td>'+j[1].sent+'</td><td>'+j[1].clicked+'</td><td>'+j[1].responded+'</td><td><span class="badge '+(ctr>=20?'b-green':ctr>=5?'b-yellow':'b-red')+'">'+ctr+'%</span></td></tr>';
+    }).join('')+'</tbody></table>';
+
+  // Event types
+  var evts=Object.entries(D.activity.event_types).sort(function(a,b){return b[1]-a[1]}).map(function(e){return{l:e[0],v:e[1]}});
+  hbars(document.getElementById('event-types-chart'),evts,'var(--green)');
+}
+
+// ─── LOGS ───
+async function loadLogs(){
+  var uid=document.getElementById('log-filter').value.trim();
+  var params=new URLSearchParams({limit:'50'});
+  if(uid)params.set('user_id',uid);
+  try{
+    var res=await fetch(API+'/api/engagement/logs?'+params);
+    var data=await res.json();
+    var tb=document.getElementById('log-table');
+    tb.dataset.loaded='1';
+    if(!data.logs||data.logs.length===0){tb.innerHTML='<tr><td colspan="8" style="text-align:center;color:var(--text3)">Sin registros</td></tr>';return}
+    tb.innerHTML=data.logs.map(function(log){
+      var date=new Date(log.created_at).toLocaleString('es-AR',{dateStyle:'short',timeStyle:'short'});
+      var msg=log.mensaje_enviado.length>80?log.mensaje_enviado.slice(0,80)+'...':log.mensaje_enviado;
+      var sc=log.status==='sent'?'b-green':(log.status==='failed'?'b-red':'b-yellow');
+      return '<tr><td>'+date+'</td><td style="font-family:monospace;font-size:10px">'+log.user_id.slice(0,8)+'...</td><td>'+esc(log.journey_name)+'</td><td title="'+esc(log.mensaje_enviado)+'">'+esc(msg)+'</td><td><span class="badge '+sc+'">'+log.status+'</span></td><td>'+(log.clicked?'<span class="badge b-green">Si</span>':'<span class="badge b-gray">No</span>')+'</td><td>'+(log.responded?'<span class="badge b-green">Si</span>':'<span class="badge b-gray">No</span>')+'</td><td>'+(log.response_text||'-')+'</td></tr>';
+    }).join('');
+  }catch(e){console.error('Logs failed',e)}
+}
+
+// ─── SUGGESTIONS ───
+function renderSuggestion(s){
+  return '<div class="suggestion '+esc(s.priority)+'">'+
+    '<div class="suggestion-header"><span class="suggestion-type">'+esc(s.type)+'</span><span class="badge '+(s.priority==='alta'?'b-red':s.priority==='media'?'b-yellow':'b-blue')+'">'+esc(s.priority)+'</span></div>'+
+    '<div class="suggestion-msg">'+esc(s.message)+'</div>'+
+    (s.data?'<div class="suggestion-data">'+JSON.stringify(s.data).slice(0,300)+'</div>':'')+
+    '</div>';
+}
+function renderSuggestions(){
+  var sug=D.suggestions||[];
+  document.getElementById('all-suggestions').innerHTML=sug.length===0?
+    '<div class="panel" style="text-align:center;color:var(--text3);padding:40px">Sin sugerencias activas. Todo parece estar bien.</div>':
+    sug.map(renderSuggestion).join('');
+}
+
+// ─── RELOAD ───
+async function reload(){await loadDashboard()}
+
+// ─── INIT ───
+loadDashboard();
+setInterval(loadDashboard,120000);
+</script>
 </body>
 </html>`;
 }

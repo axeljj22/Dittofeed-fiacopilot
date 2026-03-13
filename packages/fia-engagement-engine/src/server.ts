@@ -243,7 +243,8 @@ async function handleEngagementLogs(
 }
 
 /**
- * GET /api/dashboard — Full platform overview for CEO/Coaches
+ * GET /api/dashboard — Full platform data for CEO/Coaches dashboard.
+ * Queries ALL tables, returns comprehensive analytics.
  */
 async function handleDashboard(
   _req: http.IncomingMessage,
@@ -251,177 +252,396 @@ async function handleDashboard(
 ): Promise<void> {
   try {
     const supabase = getSupabaseClient();
-    const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
-    const fiveDaysAgo = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString();
+    const now = Date.now();
+    const weekAgo = new Date(now - 7 * 24 * 60 * 60 * 1000).toISOString();
+    const monthAgo = new Date(now - 30 * 24 * 60 * 60 * 1000).toISOString();
 
-    // Parallel queries for maximum speed
+    // ─── Pull ALL data from ALL tables in parallel ───
     const [
       profilesRes,
-      profilesWithWARes,
-      optedOutRes,
+      capsulesRes,
       capsuleProgressRes,
-      eventsRecentRes,
+      eventsAllRes,
+      eventsMonthRes,
       leadScoresRes,
-      engagementSentRes,
-      engagementClickedRes,
-      engagementRespondedRes,
       vaultRes,
+      assessmentsRes,
+      engagementAllRes,
+      engagementRecentRes,
     ] = await Promise.all([
-      supabase.from("profiles").select("id, nombre, empresa, industria, plan, rol, created_at"),
-      supabase.from("profiles").select("id, nombre, empresa, whatsapp").not("whatsapp", "is", null),
-      supabase.from("profiles").select("*", { count: "exact", head: true }).eq("wp_opted_out", true),
-      supabase.from("capsule_progress").select("user_id, capsule_numero, status, updated_at"),
-      supabase.from("events").select("user_id, event_type, created_at").gte("created_at", weekAgo).order("created_at", { ascending: false }).limit(100),
-      supabase.from("lead_scores").select("user_id, fit_score, intent_score, overall_score"),
-      supabase.from("engagement_log").select("*", { count: "exact", head: true }).eq("status", "sent").gte("created_at", weekAgo),
-      supabase.from("engagement_log").select("*", { count: "exact", head: true }).eq("clicked", true).gte("created_at", weekAgo),
-      supabase.from("engagement_log").select("*", { count: "exact", head: true }).eq("responded", true).gte("created_at", weekAgo),
-      supabase.from("vault_outputs").select("user_id, capsule_numero, created_at").order("created_at", { ascending: false }).limit(200),
+      supabase.from("profiles").select("*"),
+      supabase.from("capsules").select("*").order("numero", { ascending: true }),
+      supabase.from("capsule_progress").select("*"),
+      supabase.from("events").select("*").order("created_at", { ascending: false }).limit(500),
+      supabase.from("events").select("user_id, event_type, metadata, created_at").gte("created_at", monthAgo).order("created_at", { ascending: false }),
+      supabase.from("lead_scores").select("*"),
+      supabase.from("vault_outputs").select("*").order("created_at", { ascending: false }),
+      supabase.from("assessment_submissions").select("*").order("created_at", { ascending: false }),
+      supabase.from("engagement_log").select("*").order("created_at", { ascending: false }),
+      supabase.from("engagement_log").select("*").gte("created_at", weekAgo).order("created_at", { ascending: false }),
     ]);
 
     const profiles = profilesRes.data ?? [];
-    const progress = capsuleProgressRes.data ?? [];
-    const events = eventsRecentRes.data ?? [];
-    const scores = leadScoresRes.data ?? [];
-    const vaultOutputs = vaultRes.data ?? [];
+    const capsules = capsulesRes.data ?? [];
+    const allProgress = capsuleProgressRes.data ?? [];
+    const allEvents = eventsAllRes.data ?? [];
+    const monthEvents = eventsMonthRes.data ?? [];
+    const allScores = leadScoresRes.data ?? [];
+    const allVault = vaultRes.data ?? [];
+    const allAssessments = assessmentsRes.data ?? [];
+    const allEngagement = engagementAllRes.data ?? [];
+    const recentEngagement = engagementRecentRes.data ?? [];
 
-    // ─── Users overview ───
-    const totalUsers = profiles.length;
-    const usersWithWA = (profilesWithWARes.data ?? []).length;
-    const planBreakdown: Record<string, number> = {};
-    const industryBreakdown: Record<string, number> = {};
-    for (const p of profiles) {
-      planBreakdown[p.plan || "sin_plan"] = (planBreakdown[p.plan || "sin_plan"] ?? 0) + 1;
-      industryBreakdown[p.industria || "sin_industria"] = (industryBreakdown[p.industria || "sin_industria"] ?? 0) + 1;
-    }
+    // ─── INDEX data for fast lookups ───
+    const scoresByUser = new Map<string, { fit_score: number; intent_score: number; overall_score: number }>();
+    for (const s of allScores) scoresByUser.set(s.user_id, s);
 
-    // ─── Active vs inactive users ───
-    const activeUserIds = new Set(events.map(e => e.user_id));
-    const activeUsersCount = activeUserIds.size;
-
-    // ─── Capsule progress analysis ───
-    const progressByUser = new Map<string, typeof progress>();
-    for (const p of progress) {
+    const progressByUser = new Map<string, typeof allProgress>();
+    for (const p of allProgress) {
       const arr = progressByUser.get(p.user_id) ?? [];
       arr.push(p);
       progressByUser.set(p.user_id, arr);
     }
 
-    let usersNotStarted = 0;
-    let usersInProgress = 0;
-    let usersCompleted = 0;
-    const capsuleBottlenecks: Record<number, number> = {};
-    const stuckUsers: Array<{ userId: string; nombre: string; empresa: string; capsule: number; daysSinceUpdate: number }> = [];
-
-    for (const profile of profiles) {
-      const userProgress = progressByUser.get(profile.id);
-      if (!userProgress || userProgress.length === 0) {
-        usersNotStarted++;
-        continue;
-      }
-
-      const completed = userProgress.filter(p => p.status === "completed").length;
-      if (completed >= 25) {
-        usersCompleted++;
-        continue;
-      }
-      usersInProgress++;
-
-      // Find stuck capsules
-      const pending = userProgress.filter(p => p.status === "started" || p.status === "in_progress");
-      for (const p of pending) {
-        capsuleBottlenecks[p.capsule_numero] = (capsuleBottlenecks[p.capsule_numero] ?? 0) + 1;
-        const daysSince = Math.floor((Date.now() - new Date(p.updated_at).getTime()) / (1000 * 60 * 60 * 24));
-        if (daysSince >= 5) {
-          stuckUsers.push({
-            userId: profile.id,
-            nombre: profile.nombre,
-            empresa: profile.empresa,
-            capsule: p.capsule_numero,
-            daysSinceUpdate: daysSince,
-          });
-        }
-      }
+    const vaultByUser = new Map<string, typeof allVault>();
+    for (const v of allVault) {
+      const arr = vaultByUser.get(v.user_id) ?? [];
+      arr.push(v);
+      vaultByUser.set(v.user_id, arr);
     }
 
-    // Sort stuck users by days (worst first)
-    stuckUsers.sort((a, b) => b.daysSinceUpdate - a.daysSinceUpdate);
-
-    // ─── Scores distribution ───
-    const scoreRanges = { alto: 0, medio: 0, bajo: 0 };
-    const avgScores = { fit: 0, intent: 0, overall: 0 };
-    if (scores.length > 0) {
-      for (const s of scores) {
-        avgScores.fit += s.fit_score;
-        avgScores.intent += s.intent_score;
-        avgScores.overall += s.overall_score;
-        if (s.overall_score >= 70) scoreRanges.alto++;
-        else if (s.overall_score >= 40) scoreRanges.medio++;
-        else scoreRanges.bajo++;
-      }
-      avgScores.fit = Math.round(avgScores.fit / scores.length);
-      avgScores.intent = Math.round(avgScores.intent / scores.length);
-      avgScores.overall = Math.round(avgScores.overall / scores.length);
+    const eventsByUser = new Map<string, typeof allEvents>();
+    for (const e of allEvents) {
+      const arr = eventsByUser.get(e.user_id) ?? [];
+      arr.push(e);
+      eventsByUser.set(e.user_id, arr);
     }
 
-    // ─── Recent events timeline ───
-    const eventsByType: Record<string, number> = {};
-    for (const e of events) {
-      eventsByType[e.event_type] = (eventsByType[e.event_type] ?? 0) + 1;
+    const assessmentByUser = new Map<string, typeof allAssessments[0]>();
+    for (const a of allAssessments) {
+      if (!assessmentByUser.has(a.user_id)) assessmentByUser.set(a.user_id, a);
     }
 
-    // ─── Vault productivity ───
-    const usersWithOutputs = new Set(vaultOutputs.map(v => v.user_id)).size;
+    // ─── 1. PER-USER DETAIL TABLE ───
+    const userDetails = profiles.map((p) => {
+      const userProg = progressByUser.get(p.id) ?? [];
+      const completedCaps = userProg.filter((c) => c.status === "completed").length;
+      const inProgressCaps = userProg.filter((c) => c.status === "started" || c.status === "in_progress");
+      const userEvents = eventsByUser.get(p.id) ?? [];
+      const lastEvent = userEvents[0];
+      const daysSinceLastEvent = lastEvent
+        ? Math.floor((now - new Date(lastEvent.created_at).getTime()) / (1000 * 60 * 60 * 24))
+        : -1;
+      const score = scoresByUser.get(p.id);
+      const vaultCount = (vaultByUser.get(p.id) ?? []).length;
+      const hasAssessment = assessmentByUser.has(p.id);
+      const userEngagement = allEngagement.filter((e) => e.user_id === p.id);
 
-    // ─── Engagement stats ───
-    const msgSent = engagementSentRes.count ?? 0;
-    const msgClicked = engagementClickedRes.count ?? 0;
-    const msgResponded = engagementRespondedRes.count ?? 0;
+      let status = "registrado";
+      if (completedCaps >= 25) status = "graduado";
+      else if (completedCaps > 0 || inProgressCaps.length > 0) status = "activo";
+      else if (hasAssessment) status = "diagnosticado";
 
+      if (status === "activo" && daysSinceLastEvent > 15) status = "inactivo_critico";
+      else if (status === "activo" && daysSinceLastEvent > 5) status = "inactivo";
+
+      return {
+        id: p.id,
+        nombre: p.nombre || "Sin nombre",
+        email: p.email || "",
+        empresa: p.empresa || "Sin empresa",
+        industria: p.industria || "Sin industria",
+        plan: p.plan || "sin_plan",
+        rol: p.rol || "user",
+        whatsapp: p.whatsapp ? "si" : "no",
+        wp_opted_out: p.wp_opted_out || false,
+        created_at: p.created_at,
+        status,
+        capsules_completed: completedCaps,
+        capsules_in_progress: inProgressCaps.length,
+        current_capsule: inProgressCaps[0]?.capsule_numero ?? (completedCaps + 1),
+        days_since_last_event: daysSinceLastEvent,
+        last_event_type: lastEvent?.event_type ?? null,
+        overall_score: score?.overall_score ?? null,
+        fit_score: score?.fit_score ?? null,
+        intent_score: score?.intent_score ?? null,
+        vault_outputs: vaultCount,
+        has_assessment: hasAssessment,
+        messages_received: userEngagement.length,
+        messages_clicked: userEngagement.filter((e) => e.clicked).length,
+        messages_responded: userEngagement.filter((e) => e.responded).length,
+        objetivo: p.objetivo || "",
+      };
+    });
+
+    // ─── 2. KPI SUMMARY ───
+    const totalUsers = profiles.length;
+    const usersWithWA = profiles.filter((p) => p.whatsapp).length;
+    const optedOut = profiles.filter((p) => p.wp_opted_out).length;
+    const weekActiveIds = new Set(monthEvents.filter((e) => e.created_at >= weekAgo).map((e) => e.user_id));
+    const diagnosed = userDetails.filter((u) => u.has_assessment).length;
+    const graduated = userDetails.filter((u) => u.status === "graduado").length;
+    const activeUsers = userDetails.filter((u) => u.status === "activo").length;
+    const inactiveUsers = userDetails.filter((u) => u.status === "inactivo" || u.status === "inactivo_critico").length;
+    const criticalUsers = userDetails.filter((u) => u.status === "inactivo_critico").length;
+    const avgCompletion = totalUsers > 0
+      ? Math.round(userDetails.reduce((sum, u) => sum + u.capsules_completed, 0) / totalUsers * 10) / 10
+      : 0;
+
+    // ─── 3. FUNNEL (step-by-step conversion) ───
+    const funnel = {
+      registered: totalUsers,
+      diagnosed,
+      started_capsules: userDetails.filter((u) => u.capsules_completed > 0 || u.capsules_in_progress > 0).length,
+      completed_5_plus: userDetails.filter((u) => u.capsules_completed >= 5).length,
+      completed_10_plus: userDetails.filter((u) => u.capsules_completed >= 10).length,
+      completed_20_plus: userDetails.filter((u) => u.capsules_completed >= 20).length,
+      graduated,
+    };
+
+    // ─── 4. PER-CAPSULE ANALYTICS (all 25) ───
+    const capsuleAnalytics = [];
+    for (let num = 1; num <= 25; num++) {
+      const capsuleInfo = capsules.find((c) => c.numero === num);
+      const progressForCap = allProgress.filter((p) => p.capsule_numero === num);
+      const completedCount = progressForCap.filter((p) => p.status === "completed").length;
+      const startedCount = progressForCap.filter((p) => p.status === "started" || p.status === "in_progress").length;
+      const vaultForCap = allVault.filter((v) => v.capsule_numero === num);
+      const completionRate = (completedCount + startedCount) > 0
+        ? Math.round((completedCount / (completedCount + startedCount)) * 100)
+        : 0;
+
+      capsuleAnalytics.push({
+        numero: num,
+        titulo: capsuleInfo?.titulo ?? `Capsula ${num}`,
+        total_started: completedCount + startedCount,
+        completed: completedCount,
+        in_progress: startedCount,
+        completion_rate: completionRate,
+        vault_outputs: vaultForCap.length,
+        drop_off: startedCount, // users stuck here
+      });
+    }
+
+    // ─── 5. SCORES ANALYTICS ───
+    const scoreDistribution = { alto: 0, medio: 0, bajo: 0 };
+    const fitBuckets: Record<string, number> = { "0-20": 0, "21-40": 0, "41-60": 0, "61-80": 0, "81-100": 0 };
+    const intentBuckets: Record<string, number> = { "0-20": 0, "21-40": 0, "41-60": 0, "61-80": 0, "81-100": 0 };
+    const overallBuckets: Record<string, number> = { "0-20": 0, "21-40": 0, "41-60": 0, "61-80": 0, "81-100": 0 };
+    let fitSum = 0, intentSum = 0, overallSum = 0;
+
+    function toBucket(val: number): string {
+      if (val <= 20) return "0-20";
+      if (val <= 40) return "21-40";
+      if (val <= 60) return "41-60";
+      if (val <= 80) return "61-80";
+      return "81-100";
+    }
+
+    for (const s of allScores) {
+      fitSum += s.fit_score;
+      intentSum += s.intent_score;
+      overallSum += s.overall_score;
+      if (s.overall_score >= 70) scoreDistribution.alto++;
+      else if (s.overall_score >= 40) scoreDistribution.medio++;
+      else scoreDistribution.bajo++;
+      fitBuckets[toBucket(s.fit_score)]++;
+      intentBuckets[toBucket(s.intent_score)]++;
+      overallBuckets[toBucket(s.overall_score)]++;
+    }
+
+    const scoreCount = allScores.length || 1;
+
+    // ─── 6. EVENTS TIMELINE (daily counts, last 30 days) ───
+    const dailyEvents: Record<string, number> = {};
+    const eventTypes: Record<string, number> = {};
+    for (const e of monthEvents) {
+      const day = e.created_at.slice(0, 10);
+      dailyEvents[day] = (dailyEvents[day] ?? 0) + 1;
+      eventTypes[e.event_type] = (eventTypes[e.event_type] ?? 0) + 1;
+    }
+
+    // Fill missing days
+    const dailyTimeline: Array<{ date: string; count: number }> = [];
+    for (let i = 29; i >= 0; i--) {
+      const d = new Date(now - i * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      dailyTimeline.push({ date: d, count: dailyEvents[d] ?? 0 });
+    }
+
+    // DAU (daily active users last 7 days)
+    const dauTimeline: Array<{ date: string; users: number }> = [];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(now - i * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      const dayUsers = new Set(monthEvents.filter((e) => e.created_at.slice(0, 10) === d).map((e) => e.user_id));
+      dauTimeline.push({ date: d, users: dayUsers.size });
+    }
+
+    // ─── 7. VAULT ANALYTICS ───
+    const vaultByType: Record<string, number> = {};
+    const vaultByCapsule: Record<number, number> = {};
+    for (const v of allVault) {
+      vaultByType[v.content_type || "unknown"] = (vaultByType[v.content_type || "unknown"] ?? 0) + 1;
+      vaultByCapsule[v.capsule_numero] = (vaultByCapsule[v.capsule_numero] ?? 0) + 1;
+    }
+
+    // ─── 8. ENGAGEMENT ANALYTICS ───
+    const engByJourney: Record<string, { sent: number; clicked: number; responded: number }> = {};
+    for (const e of allEngagement) {
+      const j = e.journey_name;
+      if (!engByJourney[j]) engByJourney[j] = { sent: 0, clicked: 0, responded: 0 };
+      if (e.status === "sent") engByJourney[j].sent++;
+      if (e.clicked) engByJourney[j].clicked++;
+      if (e.responded) engByJourney[j].responded++;
+    }
+
+    const engDailyTimeline: Array<{ date: string; sent: number }> = [];
+    const engDailyMap: Record<string, number> = {};
+    for (const e of allEngagement) {
+      const day = e.created_at.slice(0, 10);
+      engDailyMap[day] = (engDailyMap[day] ?? 0) + 1;
+    }
+    for (let i = 29; i >= 0; i--) {
+      const d = new Date(now - i * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+      engDailyTimeline.push({ date: d, sent: engDailyMap[d] ?? 0 });
+    }
+
+    const totalSent = allEngagement.filter((e) => e.status === "sent").length;
+    const totalClicked = allEngagement.filter((e) => e.clicked).length;
+    const totalResponded = allEngagement.filter((e) => e.responded).length;
+    const recentSent = recentEngagement.filter((e) => e.status === "sent").length;
+    const recentClicked = recentEngagement.filter((e) => e.clicked).length;
+    const recentResponded = recentEngagement.filter((e) => e.responded).length;
+
+    // ─── 9. USER SIGNUPS OVER TIME ───
+    const signupsByWeek: Record<string, number> = {};
+    for (const p of profiles) {
+      if (!p.created_at) continue;
+      const d = new Date(p.created_at);
+      const weekStart = new Date(d.getFullYear(), d.getMonth(), d.getDate() - d.getDay());
+      const key = weekStart.toISOString().slice(0, 10);
+      signupsByWeek[key] = (signupsByWeek[key] ?? 0) + 1;
+    }
+
+    // ─── 10. AI SUGGESTIONS ───
+    const suggestions: Array<{ type: string; priority: string; message: string; data?: unknown }> = [];
+
+    // Users about to churn
+    const aboutToChurn = userDetails
+      .filter((u) => u.status === "inactivo" && u.days_since_last_event >= 5 && u.days_since_last_event < 15 && u.capsules_completed > 0)
+      .sort((a, b) => b.days_since_last_event - a.days_since_last_event);
+    if (aboutToChurn.length > 0) {
+      suggestions.push({
+        type: "churn_risk",
+        priority: "alta",
+        message: `${aboutToChurn.length} usuarios activos estan perdiendo impulso (5-15 dias sin actividad). Contactarlos ahora puede prevenir el abandono.`,
+        data: aboutToChurn.slice(0, 5).map((u) => ({ nombre: u.nombre, empresa: u.empresa, dias: u.days_since_last_event, capsulas: u.capsules_completed })),
+      });
+    }
+
+    // Diagnosed but not started
+    const diagnosedNotStarted = userDetails.filter((u) => u.has_assessment && u.capsules_completed === 0 && u.capsules_in_progress === 0);
+    if (diagnosedNotStarted.length > 0) {
+      suggestions.push({
+        type: "conversion",
+        priority: "alta",
+        message: `${diagnosedNotStarted.length} usuarios completaron el diagnostico pero no empezaron ninguna capsula. Enviar bienvenida personalizada.`,
+      });
+    }
+
+    // Capsule bottleneck
+    const worstCapsule = capsuleAnalytics
+      .filter((c) => c.in_progress > 0)
+      .sort((a, b) => a.completion_rate - b.completion_rate)[0];
+    if (worstCapsule && worstCapsule.completion_rate < 50) {
+      suggestions.push({
+        type: "content",
+        priority: "media",
+        message: `Capsula ${worstCapsule.numero} ("${worstCapsule.titulo}") tiene solo ${worstCapsule.completion_rate}% de completacion. Revisar contenido o dificultad.`,
+      });
+    }
+
+    // Low vault output
+    const usersLowVault = userDetails.filter((u) => u.capsules_completed >= 5 && u.vault_outputs < 2);
+    if (usersLowVault.length > 0) {
+      suggestions.push({
+        type: "engagement",
+        priority: "media",
+        message: `${usersLowVault.length} usuarios avanzaron 5+ capsulas pero tienen pocos outputs en la Boveda. Motivar a usar los deliverables.`,
+      });
+    }
+
+    // WhatsApp coverage
+    const noWA = totalUsers - usersWithWA;
+    if (noWA > 0 && totalUsers > 0) {
+      suggestions.push({
+        type: "reach",
+        priority: noWA > totalUsers * 0.3 ? "alta" : "baja",
+        message: `${noWA} usuarios (${Math.round((noWA / totalUsers) * 100)}%) no tienen WhatsApp registrado. No se les puede enviar mensajes.`,
+      });
+    }
+
+    // ─── 11. BREAKDOWNS ───
+    const planBreakdown: Record<string, number> = {};
+    const industryBreakdown: Record<string, number> = {};
+    const rolBreakdown: Record<string, number> = {};
+    for (const p of profiles) {
+      planBreakdown[p.plan || "sin_plan"] = (planBreakdown[p.plan || "sin_plan"] ?? 0) + 1;
+      industryBreakdown[p.industria || "sin_industria"] = (industryBreakdown[p.industria || "sin_industria"] ?? 0) + 1;
+      rolBreakdown[p.rol || "user"] = (rolBreakdown[p.rol || "user"] ?? 0) + 1;
+    }
+
+    // ─── RESPONSE ───
     jsonResponse(res, 200, {
       timestamp: new Date().toISOString(),
-      users: {
-        total: totalUsers,
+      kpis: {
+        total_users: totalUsers,
         with_whatsapp: usersWithWA,
-        opted_out: optedOutRes.count ?? 0,
-        active_this_week: activeUsersCount,
-        inactive: totalUsers - activeUsersCount,
-        by_plan: planBreakdown,
-        by_industry: industryBreakdown,
+        opted_out: optedOut,
+        active_this_week: weekActiveIds.size,
+        diagnosed,
+        active: activeUsers,
+        inactive: inactiveUsers,
+        critical: criticalUsers,
+        graduated,
+        avg_capsules_completed: avgCompletion,
+        total_vault_outputs: allVault.length,
+        total_assessments: allAssessments.length,
+        total_events_30d: monthEvents.length,
       },
-      funnel: {
-        not_started: usersNotStarted,
-        in_progress: usersInProgress,
-        completed_all_25: usersCompleted,
-      },
-      capsules: {
-        bottlenecks: Object.entries(capsuleBottlenecks)
-          .sort(([, a], [, b]) => b - a)
-          .slice(0, 10)
-          .map(([num, count]) => ({ capsule: parseInt(num), stuck_users: count })),
-      },
-      risk: {
-        stuck_users: stuckUsers.slice(0, 20),
-        total_at_risk: stuckUsers.length,
-      },
+      funnel,
+      users: userDetails.sort((a, b) => b.capsules_completed - a.capsules_completed),
+      capsule_analytics: capsuleAnalytics,
+      capsule_catalog: capsules.map((c) => ({ numero: c.numero, titulo: c.titulo })),
       scores: {
-        total_assessed: scores.length,
-        averages: avgScores,
-        distribution: scoreRanges,
+        total: allScores.length,
+        averages: { fit: Math.round(fitSum / scoreCount), intent: Math.round(intentSum / scoreCount), overall: Math.round(overallSum / scoreCount) },
+        distribution: scoreDistribution,
+        fit_histogram: fitBuckets,
+        intent_histogram: intentBuckets,
+        overall_histogram: overallBuckets,
+        all_scores: allScores.map((s) => ({ user_id: s.user_id, fit: s.fit_score, intent: s.intent_score, overall: s.overall_score })),
       },
       activity: {
-        events_this_week: events.length,
-        by_type: eventsByType,
+        daily_events: dailyTimeline,
+        dau: dauTimeline,
+        event_types: eventTypes,
       },
       vault: {
-        total_outputs: vaultOutputs.length,
-        users_with_outputs: usersWithOutputs,
+        total: allVault.length,
+        users_with_outputs: vaultByUser.size,
+        by_type: vaultByType,
+        by_capsule: vaultByCapsule,
       },
       engagement: {
-        messages_sent_7d: msgSent,
-        click_rate: msgSent > 0 ? Math.round((msgClicked / msgSent) * 1000) / 10 : 0,
-        response_rate: msgSent > 0 ? Math.round((msgResponded / msgSent) * 1000) / 10 : 0,
+        all_time: { sent: totalSent, clicked: totalClicked, responded: totalResponded, click_rate: totalSent > 0 ? Math.round((totalClicked / totalSent) * 1000) / 10 : 0, response_rate: totalSent > 0 ? Math.round((totalResponded / totalSent) * 1000) / 10 : 0 },
+        last_7d: { sent: recentSent, clicked: recentClicked, responded: recentResponded },
+        by_journey: engByJourney,
+        daily_timeline: engDailyTimeline,
+        recent_logs: recentEngagement.slice(0, 30),
       },
+      breakdowns: { by_plan: planBreakdown, by_industry: industryBreakdown, by_rol: rolBreakdown },
+      signups_by_week: Object.entries(signupsByWeek).sort(([a], [b]) => a.localeCompare(b)).map(([week, count]) => ({ week, count })),
+      suggestions,
     });
   } catch (error) {
     logger.error({ error }, "Failed to build dashboard");
