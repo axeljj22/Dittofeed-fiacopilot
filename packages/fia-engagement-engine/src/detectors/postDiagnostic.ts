@@ -10,6 +10,7 @@ import {
   getRecentEventsByType,
   getProfileWithWhatsapp,
   getLeadScoreForUser,
+  getAssessmentForUser,
   hasBeenContactedForJourney,
 } from "../db/supabase";
 import type { EngagementOpportunity } from "../db/types";
@@ -34,12 +35,12 @@ export async function detectPostDiagnostic(): Promise<
   const opportunities: EngagementOpportunity[] = [];
 
   const recentDiagnostics = await getRecentEventsByType(
-    "diagnostico_completed",
+    "assessment_submitted",
     config.engine.postDiagnosticDelayMinutes,
   );
 
   for (const event of recentDiagnostics) {
-    const userId = event.user_id;
+    const userId = event.lead_id;
 
     // Don't send twice
     const alreadySent = await hasBeenContactedForJourney(
@@ -49,12 +50,16 @@ export async function detectPostDiagnostic(): Promise<
     if (alreadySent) continue;
 
     const profile = await getProfileWithWhatsapp(userId);
-    if (!profile?.whatsapp || profile.wp_opted_out) continue;
+    if (!profile?.phone || !profile.whatsapp_opt_in) continue;
 
-    const scores = await getLeadScoreForUser(userId);
+    const [scores, assessment] = await Promise.all([
+      getLeadScoreForUser(userId),
+      getAssessmentForUser(userId),
+    ]);
     const fitScore = scores?.fit_score ?? 0;
     const intentScore = scores?.intent_score ?? 0;
-    const overallScore = scores?.overall_score ?? 0;
+    const overallScore = scores?.overall_score ?? assessment?.score ?? 0;
+    const painAreas = assessment?.pain_areas ?? [];
 
     const recommendedCapsule = recommendStartingCapsule(fitScore, intentScore);
     const deepLink = `${config.engine.appBaseUrl}/capsulas/${recommendedCapsule}`;
@@ -69,6 +74,7 @@ export async function detectPostDiagnostic(): Promise<
         intentScore,
         overallScore,
         recommendedCapsule,
+        painAreas,
       },
     });
   }

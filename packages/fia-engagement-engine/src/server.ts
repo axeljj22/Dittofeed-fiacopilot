@@ -11,9 +11,12 @@ import { config } from "./config";
 import { logger } from "./logger";
 import { processIncomingResponse } from "./senders/responses";
 import { sendWhatsAppMessage } from "./senders/whatsapp";
+import { baileysManager } from "./senders/whatsappBaileys";
 import { getSupabaseClient } from "./db/supabase";
 import { runAllDetectors, runSponsorReports } from "./orchestrator";
 import { getAdminPanelHtml } from "./admin/panel";
+import { isCodexAvailable } from "./generators/codexGenerator";
+import fs from "fs";
 
 function parseBody(req: http.IncomingMessage): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -186,7 +189,7 @@ async function handleEngagementStats(
         supabase
           .from("profiles")
           .select("*", { count: "exact", head: true })
-          .eq("wp_opted_out", true),
+          .eq("whatsapp_opt_in", false),
       ]);
 
     const totalSent = sentThisWeek.count ?? 0;
@@ -247,9 +250,15 @@ async function handleEngagementLogs(
  * Queries ALL tables, returns comprehensive analytics.
  */
 async function handleDashboard(
-  _req: http.IncomingMessage,
+  req: http.IncomingMessage,
   res: http.ServerResponse,
 ): Promise<void> {
+  const authHeader = req.headers["authorization"];
+  const expectedToken = process.env["ADMIN_API_TOKEN"] ?? "admin-secret";
+  if (authHeader !== `Bearer ${expectedToken}`) {
+    jsonResponse(res, 401, { error: "Unauthorized" });
+    return;
+  }
   try {
     const supabase = getSupabaseClient();
     const now = Date.now();
@@ -270,10 +279,10 @@ async function handleDashboard(
       engagementRecentRes,
     ] = await Promise.all([
       supabase.from("profiles").select("*"),
-      supabase.from("capsules").select("*").order("numero", { ascending: true }),
+      supabase.from("capsules").select("*").order("number", { ascending: true }),
       supabase.from("capsule_progress").select("*"),
       supabase.from("events").select("*").order("created_at", { ascending: false }).limit(500),
-      supabase.from("events").select("user_id, event_type, metadata, created_at").gte("created_at", monthAgo).order("created_at", { ascending: false }),
+      supabase.from("events").select("lead_id, event_type, metadata, created_at").gte("created_at", monthAgo).order("created_at", { ascending: false }),
       supabase.from("lead_scores").select("*"),
       supabase.from("vault_outputs").select("*").order("created_at", { ascending: false }),
       supabase.from("assessment_submissions").select("*").order("created_at", { ascending: false }),
@@ -284,6 +293,10 @@ async function handleDashboard(
     const profiles = profilesRes.data ?? [];
     const capsules = capsulesRes.data ?? [];
     const allProgress = capsuleProgressRes.data ?? [];
+
+    // Map capsule UUID → capsule number for client-side joins
+    const capsuleNumberById = new Map<string, number>();
+    for (const c of capsules) capsuleNumberById.set(c.id, c.number);
     const allEvents = eventsAllRes.data ?? [];
     const monthEvents = eventsMonthRes.data ?? [];
     const allScores = leadScoresRes.data ?? [];
@@ -293,40 +306,49 @@ async function handleDashboard(
     const recentEngagement = engagementRecentRes.data ?? [];
 
     // ─── INDEX data for fast lookups ───
+    // Note: events/progress/scores/vault use lead_id (= profiles.id)
     const scoresByUser = new Map<string, { fit_score: number; intent_score: number; overall_score: number }>();
-    for (const s of allScores) scoresByUser.set(s.user_id, s);
+    for (const s of allScores) scoresByUser.set(s.lead_id, s);
 
     const progressByUser = new Map<string, typeof allProgress>();
     for (const p of allProgress) {
-      const arr = progressByUser.get(p.user_id) ?? [];
+      const arr = progressByUser.get(p.lead_id) ?? [];
       arr.push(p);
-      progressByUser.set(p.user_id, arr);
+      progressByUser.set(p.lead_id, arr);
     }
 
     const vaultByUser = new Map<string, typeof allVault>();
     for (const v of allVault) {
-      const arr = vaultByUser.get(v.user_id) ?? [];
+      const arr = vaultByUser.get(v.lead_id) ?? [];
       arr.push(v);
-      vaultByUser.set(v.user_id, arr);
+      vaultByUser.set(v.lead_id, arr);
     }
 
     const eventsByUser = new Map<string, typeof allEvents>();
     for (const e of allEvents) {
-      const arr = eventsByUser.get(e.user_id) ?? [];
+      const arr = eventsByUser.get(e.lead_id) ?? [];
       arr.push(e);
-      eventsByUser.set(e.user_id, arr);
+      eventsByUser.set(e.lead_id, arr);
     }
 
     const assessmentByUser = new Map<string, typeof allAssessments[0]>();
     for (const a of allAssessments) {
-      if (!assessmentByUser.has(a.user_id)) assessmentByUser.set(a.user_id, a);
+      if (!assessmentByUser.has(a.lead_id)) assessmentByUser.set(a.lead_id, a);
+    }
+
+    // Pre-index engagement by user_id (engagement_log uses user_id = profiles.id)
+    const engagementByUser = new Map<string, typeof allEngagement>();
+    for (const e of allEngagement) {
+      const arr = engagementByUser.get(e.user_id) ?? [];
+      arr.push(e);
+      engagementByUser.set(e.user_id, arr);
     }
 
     // ─── 1. PER-USER DETAIL TABLE ───
     const userDetails = profiles.map((p) => {
       const userProg = progressByUser.get(p.id) ?? [];
       const completedCaps = userProg.filter((c) => c.status === "completed").length;
-      const inProgressCaps = userProg.filter((c) => c.status === "started" || c.status === "in_progress");
+      const inProgressCaps = userProg.filter((c) => c.status === "viewed" || c.status === "in_progress");
       const userEvents = eventsByUser.get(p.id) ?? [];
       const lastEvent = userEvents[0];
       const daysSinceLastEvent = lastEvent
@@ -335,10 +357,10 @@ async function handleDashboard(
       const score = scoresByUser.get(p.id);
       const vaultCount = (vaultByUser.get(p.id) ?? []).length;
       const hasAssessment = assessmentByUser.has(p.id);
-      const userEngagement = allEngagement.filter((e) => e.user_id === p.id);
+      const userEngagement = engagementByUser.get(p.id) ?? [];
 
       let status = "registrado";
-      if (completedCaps >= 25) status = "graduado";
+      if (completedCaps >= config.engine.totalCapsules) status = "graduado";
       else if (completedCaps > 0 || inProgressCaps.length > 0) status = "activo";
       else if (hasAssessment) status = "diagnosticado";
 
@@ -347,19 +369,19 @@ async function handleDashboard(
 
       return {
         id: p.id,
-        nombre: p.nombre || "Sin nombre",
+        nombre: p.name || "Sin nombre",
         email: p.email || "",
-        empresa: p.empresa || "Sin empresa",
-        industria: p.industria || "Sin industria",
-        plan: p.plan || "sin_plan",
-        rol: p.rol || "user",
-        whatsapp: p.whatsapp ? "si" : "no",
-        wp_opted_out: p.wp_opted_out || false,
+        empresa: p.company_name || "Sin empresa",
+        industria: p.industry || "Sin industria",
+        plan: p.temperature || "sin_plan",
+        rol: p.org_role || p.role || "user",
+        whatsapp: p.phone ? "si" : "no",
+        whatsapp_opt_in: p.whatsapp_opt_in,
         created_at: p.created_at,
         status,
         capsules_completed: completedCaps,
         capsules_in_progress: inProgressCaps.length,
-        current_capsule: inProgressCaps[0]?.capsule_numero ?? (completedCaps + 1),
+        current_capsule: capsuleNumberById.get((inProgressCaps[0] as { capsule_id?: string } | undefined)?.capsule_id ?? "") ?? (completedCaps + 1),
         days_since_last_event: daysSinceLastEvent,
         last_event_type: lastEvent?.event_type ?? null,
         overall_score: score?.overall_score ?? null,
@@ -370,15 +392,15 @@ async function handleDashboard(
         messages_received: userEngagement.length,
         messages_clicked: userEngagement.filter((e) => e.clicked).length,
         messages_responded: userEngagement.filter((e) => e.responded).length,
-        objetivo: p.objetivo || "",
+        objetivo: p.objective || "",
       };
     });
 
     // ─── 2. KPI SUMMARY ───
     const totalUsers = profiles.length;
-    const usersWithWA = profiles.filter((p) => p.whatsapp).length;
-    const optedOut = profiles.filter((p) => p.wp_opted_out).length;
-    const weekActiveIds = new Set(monthEvents.filter((e) => e.created_at >= weekAgo).map((e) => e.user_id));
+    const usersWithWA = profiles.filter((p) => p.phone).length;
+    const optedOut = profiles.filter((p) => !p.whatsapp_opt_in).length;
+    const weekActiveIds = new Set(monthEvents.filter((e) => e.created_at >= weekAgo).map((e) => e.lead_id));
     const diagnosed = userDetails.filter((u) => u.has_assessment).length;
     const graduated = userDetails.filter((u) => u.status === "graduado").length;
     const activeUsers = userDetails.filter((u) => u.status === "activo").length;
@@ -401,19 +423,19 @@ async function handleDashboard(
 
     // ─── 4. PER-CAPSULE ANALYTICS (all 25) ───
     const capsuleAnalytics = [];
-    for (let num = 1; num <= 25; num++) {
-      const capsuleInfo = capsules.find((c) => c.numero === num);
-      const progressForCap = allProgress.filter((p) => p.capsule_numero === num);
+    for (let num = 1; num <= config.engine.totalCapsules; num++) {
+      const capsuleInfo = capsules.find((c) => c.number === num);
+      const progressForCap = allProgress.filter((p) => capsuleNumberById.get(p.capsule_id) === num);
       const completedCount = progressForCap.filter((p) => p.status === "completed").length;
-      const startedCount = progressForCap.filter((p) => p.status === "started" || p.status === "in_progress").length;
-      const vaultForCap = allVault.filter((v) => v.capsule_numero === num);
+      const startedCount = progressForCap.filter((p) => p.status === "viewed" || p.status === "in_progress").length;
+      const vaultForCap = allVault.filter((v) => capsuleNumberById.get(v.capsule_id) === num);
       const completionRate = (completedCount + startedCount) > 0
         ? Math.round((completedCount / (completedCount + startedCount)) * 100)
         : 0;
 
       capsuleAnalytics.push({
         numero: num,
-        titulo: capsuleInfo?.titulo ?? `Capsula ${num}`,
+        titulo: capsuleInfo?.title ?? `Capsula ${num}`,
         total_started: completedCount + startedCount,
         completed: completedCount,
         in_progress: startedCount,
@@ -472,7 +494,7 @@ async function handleDashboard(
     const dauTimeline: Array<{ date: string; users: number }> = [];
     for (let i = 6; i >= 0; i--) {
       const d = new Date(now - i * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
-      const dayUsers = new Set(monthEvents.filter((e) => e.created_at.slice(0, 10) === d).map((e) => e.user_id));
+      const dayUsers = new Set(monthEvents.filter((e) => e.created_at.slice(0, 10) === d).map((e) => e.lead_id));
       dauTimeline.push({ date: d, users: dayUsers.size });
     }
 
@@ -481,7 +503,8 @@ async function handleDashboard(
     const vaultByCapsule: Record<number, number> = {};
     for (const v of allVault) {
       vaultByType[v.content_type || "unknown"] = (vaultByType[v.content_type || "unknown"] ?? 0) + 1;
-      vaultByCapsule[v.capsule_numero] = (vaultByCapsule[v.capsule_numero] ?? 0) + 1;
+      const vCapsuleNum = capsuleNumberById.get(v.capsule_id) ?? 0;
+      vaultByCapsule[vCapsuleNum] = (vaultByCapsule[vCapsuleNum] ?? 0) + 1;
     }
 
     // ─── 8. ENGAGEMENT ANALYTICS ───
@@ -585,9 +608,9 @@ async function handleDashboard(
     const industryBreakdown: Record<string, number> = {};
     const rolBreakdown: Record<string, number> = {};
     for (const p of profiles) {
-      planBreakdown[p.plan || "sin_plan"] = (planBreakdown[p.plan || "sin_plan"] ?? 0) + 1;
-      industryBreakdown[p.industria || "sin_industria"] = (industryBreakdown[p.industria || "sin_industria"] ?? 0) + 1;
-      rolBreakdown[p.rol || "user"] = (rolBreakdown[p.rol || "user"] ?? 0) + 1;
+      planBreakdown[p.temperature || "sin_plan"] = (planBreakdown[p.temperature || "sin_plan"] ?? 0) + 1;
+      industryBreakdown[p.industry || "sin_industria"] = (industryBreakdown[p.industry || "sin_industria"] ?? 0) + 1;
+      rolBreakdown[p.org_role || p.role || "user"] = (rolBreakdown[p.org_role || p.role || "user"] ?? 0) + 1;
     }
 
     // ─── RESPONSE ───
@@ -611,7 +634,7 @@ async function handleDashboard(
       funnel,
       users: userDetails.sort((a, b) => b.capsules_completed - a.capsules_completed),
       capsule_analytics: capsuleAnalytics,
-      capsule_catalog: capsules.map((c) => ({ numero: c.numero, titulo: c.titulo })),
+      capsule_catalog: capsules.map((c) => ({ numero: c.number, titulo: c.title })),
       scores: {
         total: allScores.length,
         averages: { fit: Math.round(fitSum / scoreCount), intent: Math.round(intentSum / scoreCount), overall: Math.round(overallSum / scoreCount) },
@@ -619,7 +642,7 @@ async function handleDashboard(
         fit_histogram: fitBuckets,
         intent_histogram: intentBuckets,
         overall_histogram: overallBuckets,
-        all_scores: allScores.map((s) => ({ user_id: s.user_id, fit: s.fit_score, intent: s.intent_score, overall: s.overall_score })),
+        all_scores: allScores.map((s) => ({ user_id: s.lead_id, fit: s.fit_score, intent: s.intent_score, overall: s.overall_score })),
       },
       activity: {
         daily_events: dailyTimeline,
@@ -680,17 +703,23 @@ async function handleClickRedirect(
       return;
     }
 
-    // Mark as clicked (fire-and-forget)
-    supabase
+    // Mark as clicked (fire-and-forget — redirect is not blocked by this)
+    void supabase
       .from("engagement_log")
       .update({ clicked: true })
       .eq("id", logId)
-      .then(() => {
-        logger.info({ logId }, "Click tracked");
-      });
+      .then(
+        () => logger.info({ logId }, "Click tracked"),
+        (err: unknown) => logger.error({ error: err, logId }, "Click tracking update failed"),
+      );
 
-    // Redirect to actual destination
-    res.writeHead(302, { Location: logEntry.deep_link });
+    // Validate deep_link domain to prevent open redirect
+    const allowedBase = config.engine.appBaseUrl;
+    const destination = logEntry.deep_link?.startsWith(allowedBase)
+      ? logEntry.deep_link
+      : allowedBase;
+
+    res.writeHead(302, { Location: destination });
     res.end();
   } catch (error) {
     logger.error({ error, logId }, "Click redirect failed");
@@ -708,8 +737,12 @@ async function router(
   const url = req.url?.split("?")[0] ?? "/";
   const method = req.method ?? "GET";
 
-  // CORS
-  res.setHeader("Access-Control-Allow-Origin", "*");
+  // CORS — restrict to known origins
+  const origin = req.headers["origin"];
+  const allowedOrigins = [config.engine.appBaseUrl, config.engine.engineBaseUrl];
+  if (origin && allowedOrigins.includes(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+  }
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
@@ -755,6 +788,262 @@ async function router(
     return;
   }
 
+  // WhatsApp status API
+  if (url === "/api/whatsapp/status" && method === "GET") {
+    const codexReady = await isCodexAvailable();
+    jsonResponse(res, 200, {
+      provider: config.whatsapp.provider,
+      status: baileysManager.status,
+      phone: baileysManager.connectedPhone,
+      qr_ready: baileysManager.qrDataUrl !== null,
+      codex_available: codexReady,
+    });
+    return;
+  }
+
+  // WhatsApp reset session (admin only)
+  if (url === "/api/whatsapp/reset" && method === "POST") {
+    const authHeader = req.headers["authorization"];
+    if (authHeader !== `Bearer ${process.env["ADMIN_API_TOKEN"] ?? "admin-secret"}`) {
+      jsonResponse(res, 401, { error: "Unauthorized" });
+      return;
+    }
+    baileysManager.resetSession();
+    setTimeout(() => void baileysManager.connect(), 1000);
+    jsonResponse(res, 200, { status: "session_reset" });
+    return;
+  }
+
+  // WhatsApp admin page — QR + status
+  if (url === "/admin/whatsapp" && method === "GET") {
+    const status = baileysManager.status;
+    const qr = baileysManager.qrDataUrl;
+    const phone = baileysManager.connectedPhone;
+    const codexReady = await isCodexAvailable();
+
+    const html = `<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>WhatsApp — FIA Engine</title>
+<style>
+body{font-family:system-ui,sans-serif;background:#0a0b10;color:#e4e4ef;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;margin:0;gap:24px}
+.card{background:#12131a;border:1px solid #2a2b3d;border-radius:12px;padding:32px;text-align:center;max-width:420px;width:90%}
+h1{font-size:20px;margin-bottom:4px}
+.sub{font-size:13px;color:#9394a5;margin-bottom:24px}
+.badge{display:inline-block;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:600}
+.badge-connected{background:#166534;color:#4ade80}
+.badge-qr{background:#854d0e;color:#facc15}
+.badge-connecting{background:#1d4ed8;color:#93c5fd}
+.badge-disconnected{background:#991b1b;color:#fca5a5}
+.qr-img{width:256px;height:256px;border-radius:8px;margin:20px auto;display:block}
+.info{font-size:13px;color:#9394a5;margin-top:12px}
+.btn{background:#6366f1;color:#fff;border:none;border-radius:8px;padding:10px 20px;font-size:13px;font-weight:600;cursor:pointer;margin-top:16px;text-decoration:none;display:inline-block}
+.codex{margin-top:16px;padding:12px;background:#1a1b25;border-radius:8px;font-size:12px}
+.codex-ok{color:#4ade80}
+.codex-no{color:#fca5a5}
+a{color:#818cf8}
+</style>
+${status !== "connected" ? '<meta http-equiv="refresh" content="15">' : ""}
+</head>
+<body>
+<div class="card">
+  <h1>📱 WhatsApp</h1>
+  <p class="sub">FIA Engagement Engine</p>
+  <span class="badge badge-${status}">${status === "connected" ? "✓ Conectado" : status === "qr_ready" ? "⏳ Escanear QR" : status === "connecting" ? "⟳ Conectando..." : "✗ Desconectado"}</span>
+  ${status === "connected" ? `<p class="info" style="margin-top:16px">📞 ${phone ?? "número conectado"}</p>` : ""}
+  ${qr ? `<img class="qr-img" src="${qr}" alt="WhatsApp QR Code"><p class="info">Abrí WhatsApp → ⋮ → Dispositivos vinculados → Vincular dispositivo</p>` : ""}
+  ${status === "disconnected" ? `<p class="info" style="margin-top:16px">El engine se reconecta automáticamente. Si persiste, usá el botón de reset.</p>` : ""}
+  <div class="codex">
+    <b>Codex OAuth:</b> <span class="${codexReady ? "codex-ok" : "codex-no"}">${codexReady ? "✓ Disponible (ChatGPT Plus)" : "✗ No configurado — corrá npx @openai/codex login en el VPS"}</span>
+  </div>
+  <p style="margin-top:16px;font-size:11px;color:#5d5e72">Se recarga automáticamente cada 15s · <a href="/admin/engagement">← Dashboard</a></p>
+</div>
+</body>
+</html>`;
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(html);
+    return;
+  }
+
+  // ─── Codex OAuth management ───
+
+  // GET /admin/codex — web UI to manage Codex auth
+  if (url === "/admin/codex" && method === "GET") {
+    const available = await isCodexAvailable();
+    let authInfo: { accountId?: string; expiresMs?: number } = {};
+    try {
+      const raw = fs.readFileSync(config.codex.authFilePath, "utf8");
+      const parsed = JSON.parse(raw) as { tokens?: { access_token?: string; account_id?: string } };
+      const token = parsed.tokens?.access_token ?? "";
+      let exp: number | null = null;
+      try {
+        const payload = token.split(".")[1];
+        const decoded = JSON.parse(Buffer.from(payload, "base64url").toString()) as { exp?: number };
+        exp = decoded.exp ? decoded.exp * 1000 : null;
+      } catch { /* bad token */ }
+      authInfo = { accountId: parsed.tokens?.account_id, expiresMs: exp ?? undefined };
+    } catch { /* not configured yet */ }
+
+    const expiresDate = authInfo.expiresMs ? new Date(authInfo.expiresMs).toLocaleString("es-AR") : null;
+    const isExpired = authInfo.expiresMs ? Date.now() > authInfo.expiresMs : false;
+
+    const html = `<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Codex OAuth — FIA Engine</title>
+<style>
+body{font-family:system-ui,sans-serif;background:#0a0b10;color:#e4e4ef;display:flex;flex-direction:column;align-items:center;padding:40px 16px;margin:0;gap:20px}
+.card{background:#12131a;border:1px solid #2a2b3d;border-radius:12px;padding:28px 32px;max-width:520px;width:100%}
+h1{font-size:20px;margin:0 0 4px}
+.sub{font-size:13px;color:#9394a5;margin:0 0 24px}
+.badge{display:inline-block;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:600;margin-bottom:16px}
+.ok{background:#166534;color:#4ade80}.warn{background:#854d0e;color:#facc15}.no{background:#991b1b;color:#fca5a5}
+.info-row{display:flex;justify-content:space-between;font-size:13px;padding:8px 0;border-bottom:1px solid #2a2b3d}
+.info-row:last-child{border:none}
+.label{color:#9394a5}
+.section{margin-top:24px}
+.section-title{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:#5d5e72;margin-bottom:12px;font-weight:700}
+pre{background:#0a0b10;border:1px solid #2a2b3d;border-radius:8px;padding:14px;font-size:12px;overflow-x:auto;color:#a5b4fc;margin:12px 0;white-space:pre-wrap}
+textarea{width:100%;background:#0a0b10;border:1px solid #2a2b3d;border-radius:8px;padding:12px;font-size:12px;color:#e4e4ef;font-family:monospace;min-height:140px;resize:vertical;box-sizing:border-box}
+.btn{background:#6366f1;color:#fff;border:none;border-radius:8px;padding:10px 20px;font-size:13px;font-weight:600;cursor:pointer;margin-top:12px;width:100%}
+.btn:hover{background:#4f46e5}
+.btn-danger{background:#7f1d1d;margin-top:8px}
+.btn-danger:hover{background:#991b1b}
+.msg{padding:10px 14px;border-radius:8px;font-size:13px;margin-top:12px;display:none}
+.msg.ok{background:#14532d;color:#4ade80;display:block}.msg.err{background:#7f1d1d;color:#fca5a5;display:block}
+a{color:#818cf8}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>🤖 Codex OAuth</h1>
+  <p class="sub">ChatGPT Plus como generador de mensajes (sin costo por token)</p>
+
+  <span class="badge ${available && !isExpired ? "ok" : isExpired ? "warn" : "no"}">
+    ${available && !isExpired ? "✓ Conectado" : isExpired ? "⚠ Token vencido" : "✗ No configurado"}
+  </span>
+
+  ${available ? `
+  <div>
+    <div class="info-row"><span class="label">Cuenta</span><span>${authInfo.accountId ?? "—"}</span></div>
+    <div class="info-row"><span class="label">Expira</span><span style="color:${isExpired ? "#fca5a5" : "#4ade80"}">${expiresDate ?? "—"}</span></div>
+    <div class="info-row"><span class="label">Modelo</span><span>${config.codex.model}</span></div>
+  </div>` : ""}
+
+  <div class="section">
+    <div class="section-title">Paso 1 — Obtené el auth.json en tu máquina local</div>
+    <pre>npx @openai/codex login</pre>
+    <p style="font-size:12px;color:#9394a5">Esto abre el navegador, inicia sesión con tu cuenta ChatGPT Plus, y guarda el token en <code style="color:#a5b4fc">~/.codex/auth.json</code></p>
+  </div>
+
+  <div class="section">
+    <div class="section-title">Paso 2 — Pegá el contenido del auth.json acá</div>
+    <textarea id="authJson" placeholder='{"type":"oauth","access":"...","refresh":"...","expires":...,"accountId":"..."}'></textarea>
+    <button class="btn" onclick="uploadAuth()">Guardar y conectar</button>
+    <div id="msg" class="msg"></div>
+  </div>
+
+  ${available ? `
+  <div class="section">
+    <button class="btn btn-danger" onclick="deleteAuth()">Desconectar Codex</button>
+  </div>` : ""}
+
+  <p style="margin-top:20px;font-size:11px;color:#5d5e72"><a href="/admin/whatsapp">📱 WhatsApp</a> · <a href="/admin/engagement">← Dashboard</a></p>
+</div>
+
+<script>
+const TOKEN = prompt('Admin token:') || '';
+
+async function uploadAuth() {
+  const raw = document.getElementById('authJson').value.trim();
+  const msg = document.getElementById('msg');
+  if (!raw) { showMsg('Pegá el contenido del auth.json', false); return; }
+  try {
+    JSON.parse(raw); // validate JSON
+  } catch {
+    showMsg('JSON inválido — revisá el contenido', false);
+    return;
+  }
+  const resp = await fetch('/api/codex/auth', {
+    method: 'POST',
+    headers: { 'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ auth: raw }),
+  });
+  const data = await resp.json();
+  if (resp.ok) {
+    showMsg('✓ Conectado correctamente. Recargando...', true);
+    setTimeout(() => location.reload(), 1500);
+  } else {
+    showMsg('Error: ' + (data.error || resp.status), false);
+  }
+}
+
+async function deleteAuth() {
+  if (!confirm('¿Desconectar Codex?')) return;
+  const resp = await fetch('/api/codex/auth', {
+    method: 'DELETE',
+    headers: { 'Authorization': 'Bearer ' + TOKEN },
+  });
+  if (resp.ok) location.reload();
+}
+
+function showMsg(text, ok) {
+  const el = document.getElementById('msg');
+  el.textContent = text;
+  el.className = 'msg ' + (ok ? 'ok' : 'err');
+}
+</script>
+</body>
+</html>`;
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(html);
+    return;
+  }
+
+  // POST /api/codex/auth — save auth.json content (admin only)
+  if (url === "/api/codex/auth" && method === "POST") {
+    const authHeader = req.headers["authorization"];
+    if (authHeader !== `Bearer ${process.env["ADMIN_API_TOKEN"] ?? "admin-secret"}`) {
+      jsonResponse(res, 401, { error: "Unauthorized" });
+      return;
+    }
+    try {
+      const body = JSON.parse(await parseBody(req)) as { auth?: string };
+      if (!body.auth) { jsonResponse(res, 400, { error: "Missing auth field" }); return; }
+      const parsed = JSON.parse(body.auth) as { tokens?: { access_token?: string; refresh_token?: string } };
+      if (!parsed.tokens?.access_token || !parsed.tokens?.refresh_token) {
+        jsonResponse(res, 400, { error: "Invalid auth.json — missing tokens.access_token or tokens.refresh_token" });
+        return;
+      }
+      fs.mkdirSync(require("path").dirname(config.codex.authFilePath), { recursive: true });
+      fs.writeFileSync(config.codex.authFilePath, body.auth);
+      logger.info("Codex auth.json saved via admin UI");
+      jsonResponse(res, 200, { status: "ok" });
+    } catch (error) {
+      jsonResponse(res, 400, { error: "Invalid JSON" });
+    }
+    return;
+  }
+
+  // DELETE /api/codex/auth — remove auth.json (admin only)
+  if (url === "/api/codex/auth" && method === "DELETE") {
+    const authHeader = req.headers["authorization"];
+    if (authHeader !== `Bearer ${process.env["ADMIN_API_TOKEN"] ?? "admin-secret"}`) {
+      jsonResponse(res, 401, { error: "Unauthorized" });
+      return;
+    }
+    try {
+      fs.unlinkSync(config.codex.authFilePath);
+      logger.info("Codex auth.json deleted via admin UI");
+    } catch { /* already gone */ }
+    jsonResponse(res, 200, { status: "deleted" });
+    return;
+  }
+
   // Click tracking: /r/:logId
   const clickMatch = url.match(/^\/r\/([a-f0-9-]+)$/);
   if (clickMatch && method === "GET") {
@@ -777,6 +1066,11 @@ export function startServer(port: number = 3001): http.Server {
   server.listen(port, "0.0.0.0", () => {
     logger.info({ port }, "FIA Engagement Engine HTTP server started");
   });
+
+  // Auto-start Baileys if provider is configured
+  if (config.whatsapp.provider === "baileys") {
+    void baileysManager.connect();
+  }
 
   return server;
 }

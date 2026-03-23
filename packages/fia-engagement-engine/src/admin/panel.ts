@@ -161,6 +161,9 @@ tr:hover td{background:var(--bg3)}
     <div class="nav-item" data-page="logs"><span class="nav-icon">&#9776;</span><span>Logs</span></div>
     <div class="nav-section">Inteligencia</div>
     <div class="nav-item" data-page="suggestions"><span class="nav-icon">&#9889;</span><span>Sugerencias IA</span></div>
+    <div class="nav-section">Conexiones</div>
+    <div class="nav-item" onclick="window.open('/admin/whatsapp','_blank')"><span class="nav-icon">📱</span><span>WhatsApp QR</span></div>
+    <div class="nav-item" onclick="window.open('/admin/codex','_blank')"><span class="nav-icon">🤖</span><span>Codex OAuth</span></div>
   </nav>
 
   <!-- Main -->

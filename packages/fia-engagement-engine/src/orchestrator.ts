@@ -14,6 +14,46 @@
 import { config } from "./config";
 import { logger } from "./logger";
 import { getRecentEngagementForUser } from "./db/supabase";
+
+/**
+ * Returns true if the current time is within business hours in the given timezone.
+ * Business hours: Mon–Fri 9:00–18:00.
+ */
+function isBusinessHours(timezone: string): boolean {
+  const now = new Date();
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: timezone,
+    weekday: "short",
+    hour: "numeric",
+    hour12: false,
+  }).formatToParts(now);
+
+  const weekday = parts.find((p) => p.type === "weekday")?.value ?? "";
+  const hour = parseInt(parts.find((p) => p.type === "hour")?.value ?? "0", 10);
+
+  const isWeekday = !["Sat", "Sun"].includes(weekday);
+  const isDaytime = hour >= 9 && hour < 18;
+
+  return isWeekday && isDaytime;
+}
+
+/** Timezone per country code — defaults to Argentina if unknown */
+const COUNTRY_TIMEZONES: Record<string, string> = {
+  AR: "America/Buenos_Aires",
+  CL: "America/Santiago",
+  CO: "America/Bogota",
+  MX: "America/Mexico_City",
+  PE: "America/Lima",
+  UY: "America/Montevideo",
+  VE: "America/Caracas",
+  EC: "America/Guayaquil",
+  BO: "America/La_Paz",
+  PY: "America/Asuncion",
+};
+
+function getTimezoneForUser(countryCode?: string | null): string {
+  return COUNTRY_TIMEZONES[countryCode?.toUpperCase() ?? ""] ?? config.engine.defaultTimezone;
+}
 import {
   detectInactiveUsers,
   detectCompletedCapsules,
@@ -41,6 +81,30 @@ async function processOpportunity(
   opportunity: EngagementOpportunity,
 ): Promise<void> {
   const { userId, journeyName } = opportunity;
+
+  // Pilot mode — only send to the configured pilot email
+  if (config.engine.pilotEmail) {
+    const userEmail = (opportunity.profile as { email?: string }).email ?? "";
+    if (userEmail !== config.engine.pilotEmail) {
+      logger.debug(
+        { userId, journeyName, userEmail },
+        "Pilot mode active — skipping non-pilot user",
+      );
+      return;
+    }
+  }
+
+  // Business hours check — only send Mon–Fri 9:00–18:00 in user's timezone
+  const timezone = getTimezoneForUser(
+    (opportunity.profile as { country?: string | null }).country,
+  );
+  if (!isBusinessHours(timezone)) {
+    logger.info(
+      { userId, journeyName, timezone },
+      "Outside business hours — skipping until next window",
+    );
+    return;
+  }
 
   // Rate limit check
   if (await isRateLimited(userId)) {

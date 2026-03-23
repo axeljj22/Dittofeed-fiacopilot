@@ -10,6 +10,7 @@ import { logger } from "../logger";
 import { insertEngagementLog } from "../db/supabase";
 import type { EngagementOpportunity } from "../db/types";
 import type { GeneratedMessage } from "../generators/messageGenerator";
+import { baileysManager } from "./whatsappBaileys";
 
 interface SendResult {
   success: boolean;
@@ -96,7 +97,7 @@ export async function sendWhatsAppMessage(
   opportunity: EngagementOpportunity,
   message: GeneratedMessage,
 ): Promise<boolean> {
-  const whatsappNumber = opportunity.profile.whatsapp;
+  const whatsappNumber = opportunity.profile.phone;
 
   if (!whatsappNumber) {
     logger.warn(
@@ -107,7 +108,7 @@ export async function sendWhatsAppMessage(
   }
 
   // Check opt-out
-  if (opportunity.profile.wp_opted_out) {
+  if (!opportunity.profile.whatsapp_opt_in) {
     await insertEngagementLog({
       user_id: opportunity.userId,
       journey_name: message.journeyName,
@@ -123,18 +124,19 @@ export async function sendWhatsAppMessage(
     return false;
   }
 
-  // First, insert the engagement_log to get the ID for click tracking
+  // Insert as "pending" first to get the ID for click tracking.
+  // Updated to "sent" or "failed" after the actual send attempt.
   const logEntry = await insertEngagementLog({
     user_id: opportunity.userId,
     journey_name: message.journeyName,
     mensaje_enviado: message.text,
     whatsapp_number: whatsappNumber,
     deep_link: message.deepLink,
-    status: "sent", // optimistic — updated to "failed" if send fails
+    status: "pending",
   });
 
   // Replace direct deep link with tracked redirect URL
-  const engineBaseUrl = process.env["ENGINE_BASE_URL"] ?? "https://engine.axeljutoran.com";
+  const engineBaseUrl = config.engine.engineBaseUrl;
   let finalMessage = message.text;
   if (logEntry?.id) {
     const trackedLink = `${engineBaseUrl}/r/${logEntry.id}`;
@@ -142,17 +144,21 @@ export async function sendWhatsAppMessage(
   }
 
   // Send based on configured provider
-  const result =
-    config.whatsapp.provider === "twilio"
-      ? await sendViaTwilio(whatsappNumber, finalMessage)
-      : await sendViaCloudApi(whatsappNumber, finalMessage);
+  let result: SendResult;
+  if (config.whatsapp.provider === "baileys") {
+    result = await baileysManager.sendMessage(whatsappNumber, finalMessage);
+  } else if (config.whatsapp.provider === "twilio") {
+    result = await sendViaTwilio(whatsappNumber, finalMessage);
+  } else {
+    result = await sendViaCloudApi(whatsappNumber, finalMessage);
+  }
 
-  // Update status to "failed" if send failed
-  if (!result.success && logEntry?.id) {
+  // Update status to "sent" or "failed" based on actual result
+  if (logEntry?.id) {
     const { getSupabaseClient } = await import("../db/supabase");
     await getSupabaseClient()
       .from("engagement_log")
-      .update({ status: "failed" })
+      .update({ status: result.success ? "sent" : "failed" })
       .eq("id", logEntry.id);
   }
 

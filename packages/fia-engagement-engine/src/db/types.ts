@@ -1,75 +1,103 @@
 /**
- * Types matching FIA Copilot's Supabase schema.
+ * Types matching FIA Copilot's real Supabase schema.
  * Read-only — the engine never modifies these tables (except engagement_log).
  */
 
 export interface Profile {
   id: string;
-  nombre: string;
-  empresa: string;
-  industria: string;
-  objetivo: string;
-  whatsapp: string | null;
-  wp_opted_out: boolean;
-  plan: string;
-  rol: string;
+  name: string | null;
   email: string;
+  company_name: string | null;
+  industry: string | null;
+  objective: string | null;
+  role: string | null;          // laboral role (e.g. "Director Comercial")
+  org_role: string | null;      // program role: 'sponsor' | 'implementador' | 'referente'
+  phone: string | null;         // used as WhatsApp number
+  whatsapp_opt_in: boolean;     // true = user accepts WA messages
+  temperature: string | null;   // CRM label: 'frio' | 'tibio' | 'caliente'
+  is_admin: boolean;
+  is_coach: boolean;
+  onboarding_completed: boolean;
+  content_unlocked: boolean;
   created_at: string;
   updated_at: string;
 }
 
 export interface Capsule {
   id: string;
-  numero: number;
-  titulo: string;
-  contenido: string;
-  mini_accion: string;
-  deliverable: string;
-  worker_slug: string;
+  number: number;
+  title: string;
+  content_md: string | null;
+  mini_action: string | null;
+  deliverable: string | null;
+  slug: string;
+  path_id: string | null;
+  week: number | null;
 }
 
 export interface CapsuleProgress {
   id: string;
-  user_id: string;
+  lead_id: string;
   capsule_id: string;
-  capsule_numero: number;
-  status: "not_started" | "started" | "in_progress" | "completed";
-  updated_at: string;
+  capsule_number: number;       // joined from capsules.number
+  status: "not_started" | "viewed" | "in_progress" | "completed";
+  started_at: string | null;
+  completed_at: string | null;
+  video_watched: boolean;
+  path_id: string | null;
 }
 
 export interface VaultOutput {
   id: string;
-  user_id: string;
-  content_type: string;
-  capsule_numero: number;
-  context_business: string | null;
-  context_personal: string | null;
-  context_ai_memory: string | null;
+  lead_id: string;
+  capsule_id: string | null;
+  content_type: string;         // 'context_business' | 'context_personal' | 'context_ai_memory' | 'text' | 'ai_response' | etc.
   content: string;
+  title: string | null;
   created_at: string;
 }
 
 export interface AssessmentSubmission {
   id: string;
-  user_id: string;
-  responses: Record<string, unknown>;
+  lead_id: string;
+  assessment_id: string;
+  answers: Record<string, unknown>;
+  score: number;
+  max_score: number;
+  pain_areas: string[];
+  recommended_capsules: number[] | null;
   created_at: string;
 }
 
 export interface LeadScore {
   id: string;
-  user_id: string;
+  lead_id: string;
   fit_score: number;
   intent_score: number;
   overall_score: number;
-  updated_at: string;
+  last_calculated_at: string;
 }
 
 export interface UserEvent {
   id: string;
-  user_id: string;
+  lead_id: string;
   event_type: string;
-  metadata: Record<string, unknown>;
+  metadata: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export interface Subscription {
+  id: string;
+  user_id: string;
+  status: string;               // 'active' | 'trialing' | 'canceled' | etc.
+  plan_id: string | null;
+  created_at: string;
+}
+
+export interface UserProgramAccess {
+  id: string;
+  user_id: string;
+  status: string;               // 'active' | 'expired' | etc.
   created_at: string;
 }
 
@@ -81,7 +109,7 @@ export interface EngagementLogInsert {
   mensaje_enviado: string;
   whatsapp_number: string;
   deep_link: string;
-  status: "sent" | "failed" | "opted_out";
+  status: "pending" | "sent" | "failed" | "opted_out";
   responded?: boolean;
   response_text?: string;
   clicked?: boolean;

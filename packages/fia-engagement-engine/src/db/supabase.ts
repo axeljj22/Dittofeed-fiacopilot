@@ -47,8 +47,8 @@ export async function getActiveUsersWithWhatsapp(): Promise<Profile[]> {
   const { data, error } = await getSupabaseClient()
     .from("profiles")
     .select("*")
-    .not("whatsapp", "is", null)
-    .eq("wp_opted_out", false);
+    .not("phone", "is", null)
+    .eq("whatsapp_opt_in", true);
 
   if (error) {
     logger.error({ error }, "Failed to fetch active users with whatsapp");
@@ -61,7 +61,9 @@ export async function getSponsors(): Promise<Profile[]> {
   const { data, error } = await getSupabaseClient()
     .from("profiles")
     .select("*")
-    .eq("rol", "sponsor");
+    .eq("org_role", "sponsor")
+    .not("phone", "is", null)
+    .eq("whatsapp_opt_in", true);
 
   if (error) {
     logger.error({ error }, "Failed to fetch sponsors");
@@ -70,13 +72,34 @@ export async function getSponsors(): Promise<Profile[]> {
   return (data ?? []) as Profile[];
 }
 
+/**
+ * Returns true if the user has an active subscription or active program access.
+ * Used to skip paid users from "cold lead" journey.
+ */
+export async function isUserPaid(userId: string): Promise<boolean> {
+  const [subRes, accessRes] = await Promise.all([
+    getSupabaseClient()
+      .from("subscriptions")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", userId)
+      .eq("status", "active"),
+    getSupabaseClient()
+      .from("user_program_access")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", userId)
+      .eq("status", "active"),
+  ]);
+
+  return (subRes.count ?? 0) > 0 || (accessRes.count ?? 0) > 0;
+}
+
 // ─── READ: Capsules ───
 
 export async function getCapsules(): Promise<Capsule[]> {
   const { data, error } = await getSupabaseClient()
     .from("capsules")
     .select("*")
-    .order("numero", { ascending: true });
+    .order("number", { ascending: true });
 
   if (error) {
     logger.error({ error }, "Failed to fetch capsules");
@@ -87,38 +110,73 @@ export async function getCapsules(): Promise<Capsule[]> {
 
 // ─── READ: Capsule Progress ───
 
+/**
+ * Returns progress for a user with capsule number resolved via JOIN.
+ */
 export async function getCapsuleProgressForUser(
   userId: string,
 ): Promise<CapsuleProgress[]> {
   const { data, error } = await getSupabaseClient()
     .from("capsule_progress")
-    .select("*")
-    .eq("user_id", userId)
-    .order("capsule_numero", { ascending: true });
+    .select("*, capsules(number, path_id)")
+    .eq("lead_id", userId)
+    .order("created_at", { ascending: true });
 
   if (error) {
     logger.error({ error, userId }, "Failed to fetch capsule progress");
     return [];
   }
-  return (data ?? []) as CapsuleProgress[];
+
+  return ((data ?? []) as unknown[]).map((row: unknown) => {
+    const r = row as Record<string, unknown>;
+    const capsule = r["capsules"] as { number: number; path_id: string | null } | null;
+    return {
+      id: r["id"] as string,
+      lead_id: r["lead_id"] as string,
+      capsule_id: r["capsule_id"] as string,
+      capsule_number: capsule?.number ?? 0,
+      status: r["status"] as CapsuleProgress["status"],
+      started_at: r["started_at"] as string | null,
+      completed_at: r["completed_at"] as string | null,
+      video_watched: r["video_watched"] as boolean,
+      path_id: capsule?.path_id ?? null,
+    };
+  });
 }
 
-export async function getUsersWithPendingCapsules(): Promise<
-  CapsuleProgress[]
-> {
+/**
+ * Returns all capsule_progress rows with status 'viewed' or 'in_progress'
+ * (i.e. started but not completed), with capsule number resolved.
+ */
+export async function getUsersWithPendingCapsules(): Promise<CapsuleProgress[]> {
   const { data, error } = await getSupabaseClient()
     .from("capsule_progress")
-    .select("*")
-    .in("status", ["started", "in_progress"]);
+    .select("*, capsules(number, path_id)")
+    .in("status", ["viewed", "in_progress"]);
 
   if (error) {
     logger.error({ error }, "Failed to fetch pending capsule progress");
     return [];
   }
-  return (data ?? []) as CapsuleProgress[];
+
+  return ((data ?? []) as unknown[]).map((row: unknown) => {
+    const r = row as Record<string, unknown>;
+    const capsule = r["capsules"] as { number: number; path_id: string | null } | null;
+    return {
+      id: r["id"] as string,
+      lead_id: r["lead_id"] as string,
+      capsule_id: r["capsule_id"] as string,
+      capsule_number: capsule?.number ?? 0,
+      status: r["status"] as CapsuleProgress["status"],
+      started_at: r["started_at"] as string | null,
+      completed_at: r["completed_at"] as string | null,
+      video_watched: r["video_watched"] as boolean,
+      path_id: capsule?.path_id ?? null,
+    };
+  });
 }
 
-// ─── READ: Vault (Bóveda) ───
+// ─── READ: Vault (Bóveda / Memoria) ───
 
 export async function getVaultOutputsForUser(
   userId: string,
@@ -126,7 +184,7 @@ export async function getVaultOutputsForUser(
   const { data, error } = await getSupabaseClient()
     .from("vault_outputs")
     .select("*")
-    .eq("user_id", userId)
+    .eq("lead_id", userId)
     .order("created_at", { ascending: false });
 
   if (error) {
@@ -144,10 +202,13 @@ export async function getLeadScoreForUser(
   const { data, error } = await getSupabaseClient()
     .from("lead_scores")
     .select("*")
-    .eq("user_id", userId)
+    .eq("lead_id", userId)
+    .order("last_calculated_at", { ascending: false })
+    .limit(1)
     .single();
 
   if (error) {
+    if (error.code === "PGRST116") return null; // no rows
     logger.error({ error, userId }, "Failed to fetch lead score");
     return null;
   }
@@ -162,7 +223,7 @@ export async function getLastEventForUser(
   const { data, error } = await getSupabaseClient()
     .from("events")
     .select("*")
-    .eq("user_id", userId)
+    .eq("lead_id", userId)
     .order("created_at", { ascending: false })
     .limit(1)
     .single();
@@ -182,7 +243,7 @@ export async function getEventsForUserSince(
   const { data, error } = await getSupabaseClient()
     .from("events")
     .select("*")
-    .eq("user_id", userId)
+    .eq("lead_id", userId)
     .gte("created_at", since)
     .order("created_at", { ascending: false });
 
@@ -224,7 +285,7 @@ export async function getAssessmentForUser(
   const { data, error } = await getSupabaseClient()
     .from("assessment_submissions")
     .select("*")
-    .eq("user_id", userId)
+    .eq("lead_id", userId)
     .order("created_at", { ascending: false })
     .limit(1)
     .single();
@@ -284,13 +345,21 @@ export async function getRecentEngagementForUser(
 export async function hasBeenContactedForJourney(
   userId: string,
   journeyName: string,
+  withinHours?: number,
 ): Promise<boolean> {
-  const { count, error } = await getSupabaseClient()
+  let query = getSupabaseClient()
     .from("engagement_log")
     .select("*", { count: "exact", head: true })
     .eq("user_id", userId)
     .eq("journey_name", journeyName)
     .eq("status", "sent");
+
+  if (withinHours !== undefined) {
+    const since = new Date(Date.now() - withinHours * 60 * 60 * 1000).toISOString();
+    query = query.gte("created_at", since);
+  }
+
+  const { count, error } = await query;
 
   if (error) {
     logger.error({ error, userId, journeyName }, "Failed to check journey contact");

@@ -32,7 +32,7 @@ export function classifyResponse(body: string): ResponseAction {
       type: "opt_out",
       replyText:
         "Listo, no recibirás más mensajes de seguimiento. Si cambias de opinión, puedes reactivarlo desde tu perfil.",
-      updateProfile: { wp_opted_out: true },
+      updateProfile: { whatsapp_opt_in: false },
     };
   }
 
@@ -70,7 +70,7 @@ export async function processIncomingResponse(
   const { data: profile } = await getSupabaseClient()
     .from("profiles")
     .select("id")
-    .eq("whatsapp", message.from)
+    .eq("phone", message.from)
     .single();
 
   if (!profile) {
@@ -93,23 +93,32 @@ export async function processIncomingResponse(
     logger.info({ userId, action: action.type }, "Profile updated from response");
   }
 
-  // Log response in engagement_log
-  await getSupabaseClient()
+  // Log response in the most recent engagement_log entry for this user
+  const { data: latestLog } = await getSupabaseClient()
     .from("engagement_log")
-    .update({
-      responded: true,
-      response_text: message.body,
-    })
-    .eq("whatsapp_number", message.from)
+    .select("id")
+    .eq("user_id", userId)
+    .eq("status", "sent")
     .order("created_at", { ascending: false })
-    .limit(1);
+    .limit(1)
+    .single();
+
+  if (latestLog?.id) {
+    await getSupabaseClient()
+      .from("engagement_log")
+      .update({
+        responded: true,
+        response_text: message.body.slice(0, 1000),
+      })
+      .eq("id", latestLog.id);
+  }
 
   // Log event if needed
   if (action.logEvent) {
     await getSupabaseClient().from("events").insert({
       user_id: userId,
       event_type: action.logEvent,
-      metadata: { source: "whatsapp_response", message: message.body },
+      metadata: { source: "whatsapp_response", message: message.body.slice(0, 500) },
     });
   }
 

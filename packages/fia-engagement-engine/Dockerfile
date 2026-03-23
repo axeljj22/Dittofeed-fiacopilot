@@ -2,8 +2,13 @@ FROM node:22-alpine AS builder
 
 WORKDIR /app
 
-COPY package.json yarn.lock ./
-RUN yarn install --frozen-lockfile 2>/dev/null || yarn install
+# Build tools needed for native modules (baileys/libsignal)
+RUN apk add --no-cache python3 make g++ git
+
+COPY package.json ./
+RUN yarn install
+# Install baileys separately — native module, requires Linux to compile
+RUN yarn add @whiskeysockets/baileys
 
 COPY tsconfig.json tsconfig.build.json ./
 COPY src/ src/

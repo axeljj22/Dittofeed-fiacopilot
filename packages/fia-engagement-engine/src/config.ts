@@ -28,11 +28,21 @@ export const config = {
     maxTokens: parseInt(optionalEnv("ANTHROPIC_MAX_TOKENS", "1024"), 10),
   },
 
+  // Codex OAuth — message generation via ChatGPT Plus (replaces Anthropic)
+  codex: {
+    // Path to ~/.codex/auth.json created by `npx @openai/codex login`
+    authFilePath: optionalEnv("CODEX_AUTH_FILE", "/root/.codex/auth.json"),
+    model: optionalEnv("CODEX_MODEL", "gpt-5.3-codex"),
+  },
+
   // WhatsApp — message delivery
   whatsapp: {
-    provider: optionalEnv("WHATSAPP_PROVIDER", "cloud_api") as
+    provider: optionalEnv("WHATSAPP_PROVIDER", "baileys") as
+      | "baileys"
       | "cloud_api"
       | "twilio",
+    // Baileys session persistence directory
+    sessionDir: optionalEnv("WA_SESSION_DIR", "/app/sessions/baileys"),
     // Meta Cloud API
     cloudApi: {
       token: process.env["WHATSAPP_CLOUD_API_TOKEN"] ?? "",
@@ -60,18 +70,26 @@ export const config = {
       optionalEnv("CELEBRATION_DELAY_MINUTES", "30"),
       10,
     ),
-    // Post-diagnostic delay in minutes
+    // Post-diagnostic delay in minutes — must be > cron interval (15 min) to avoid gaps
     postDiagnosticDelayMinutes: parseInt(
-      optionalEnv("POST_DIAGNOSTIC_DELAY_MINUTES", "10"),
+      optionalEnv("POST_DIAGNOSTIC_DELAY_MINUTES", "20"),
       10,
     ),
     // Base URL for deep links
     appBaseUrl: optionalEnv("FIA_APP_BASE_URL", "https://fiacopilot.com"),
+    // Engine's own base URL (for click tracking redirect links)
+    engineBaseUrl: requireEnv("ENGINE_BASE_URL"),
     // Max messages per user per day
     maxMessagesPerUserPerDay: parseInt(
       optionalEnv("MAX_MESSAGES_PER_USER_PER_DAY", "2"),
       10,
     ),
+    // Pilot mode — if set, only send messages to this email address
+    pilotEmail: optionalEnv("PILOT_EMAIL", ""),
+    // Total capsules in the Método FIA (update if the method scales)
+    totalCapsules: parseInt(optionalEnv("TOTAL_CAPSULES", "25"), 10),
+    // Default timezone for business hours check (IANA format)
+    defaultTimezone: optionalEnv("DEFAULT_TIMEZONE", "America/Buenos_Aires"),
   },
 
   // Scheduler cron expressions

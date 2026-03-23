@@ -27,7 +27,7 @@ function findPendingCapsule(
   progress: CapsuleProgress[],
 ): CapsuleProgress | undefined {
   return progress.find(
-    (p) => p.status === "started" || p.status === "in_progress",
+    (p) => p.status === "viewed" || p.status === "in_progress",
   );
 }
 
@@ -40,9 +40,9 @@ export async function detectInactiveUsers(): Promise<EngagementOpportunity[]> {
   // Group pending capsules by user
   const pendingByUser = new Map<string, CapsuleProgress[]>();
   for (const p of pendingProgress) {
-    const existing = pendingByUser.get(p.user_id) ?? [];
+    const existing = pendingByUser.get(p.lead_id) ?? [];
     existing.push(p);
-    pendingByUser.set(p.user_id, existing);
+    pendingByUser.set(p.lead_id, existing);
   }
 
   for (const user of users) {
@@ -74,7 +74,7 @@ export async function detectInactiveUsers(): Promise<EngagementOpportunity[]> {
     const pending = findPendingCapsule(userPending);
     if (!pending) continue;
 
-    const deepLink = `${config.engine.appBaseUrl}/capsulas/${pending.capsule_numero}`;
+    const deepLink = `${config.engine.appBaseUrl}/capsulas/${pending.capsule_number}`;
 
     opportunities.push({
       userId: user.id,
@@ -84,7 +84,7 @@ export async function detectInactiveUsers(): Promise<EngagementOpportunity[]> {
       deepLink,
       context: {
         daysSinceLastEvent: daysSince,
-        pendingCapsuleNumero: pending.capsule_numero,
+        pendingCapsuleNumero: pending.capsule_number,
         pendingCapsuleStatus: pending.status,
       },
     });

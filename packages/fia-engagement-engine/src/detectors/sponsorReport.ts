@@ -8,15 +8,15 @@ import { subDays } from "date-fns";
 import { config } from "../config";
 import { logger } from "../logger";
 import {
+  getSupabaseClient,
   getSponsors,
   getActiveUsersWithWhatsapp,
-  getCapsuleProgressForUser,
-  getEventsForUserSince,
+  hasBeenContactedForJourney,
 } from "../db/supabase";
 import type { EngagementOpportunity, Profile } from "../db/types";
 
 interface TeamMemberProgress {
-  nombre: string;
+  name: string | null;
   capsulesCompleted: number;
   capsulesInProgress: number;
   lastActivity: string | null;
@@ -27,30 +27,53 @@ async function getTeamProgress(
   teamMembers: Profile[],
 ): Promise<TeamMemberProgress[]> {
   const weekAgo = subDays(new Date(), 7).toISOString();
-  const progress: TeamMemberProgress[] = [];
+  const memberIds = teamMembers.map((m) => m.id);
 
-  for (const member of teamMembers) {
-    const capsuleProgress = await getCapsuleProgressForUser(member.id);
-    const recentEvents = await getEventsForUserSince(member.id, weekAgo);
+  // Batch queries — fetch all data in 2 calls instead of 2*N
+  const [allProgressRes, allEventsRes] = await Promise.all([
+    getSupabaseClient()
+      .from("capsule_progress")
+      .select("*")
+      .in("lead_id", memberIds),
+    getSupabaseClient()
+      .from("events")
+      .select("lead_id, created_at")
+      .in("lead_id", memberIds)
+      .gte("created_at", weekAgo)
+      .order("created_at", { ascending: false }),
+  ]);
 
-    const completed = capsuleProgress.filter(
-      (p) => p.status === "completed",
-    ).length;
-    const inProgress = capsuleProgress.filter(
-      (p) => p.status === "started" || p.status === "in_progress",
-    ).length;
-
-    progress.push({
-      nombre: member.nombre,
-      capsulesCompleted: completed,
-      capsulesInProgress: inProgress,
-      lastActivity:
-        recentEvents.length > 0 ? recentEvents[0].created_at : null,
-      isBlocked: inProgress > 0 && recentEvents.length === 0,
-    });
+  const progressByMember = new Map<string, typeof allProgressRes.data>();
+  for (const p of allProgressRes.data ?? []) {
+    const arr = progressByMember.get(p.lead_id) ?? [];
+    arr.push(p);
+    progressByMember.set(p.lead_id, arr);
   }
 
-  return progress;
+  const eventsByMember = new Map<string, string>(); // userId → latest created_at
+  for (const e of allEventsRes.data ?? []) {
+    if (!eventsByMember.has(e.lead_id)) {
+      eventsByMember.set(e.lead_id, e.created_at);
+    }
+  }
+  const memberIdsWithEvents = new Set(eventsByMember.keys());
+
+  return teamMembers.map((member) => {
+    const memberProgress = progressByMember.get(member.id) ?? [];
+    const completed = memberProgress.filter((p) => p.status === "completed").length;
+    const inProgress = memberProgress.filter(
+      (p) => p.status === "viewed" || p.status === "in_progress",
+    ).length;
+    const hasRecentActivity = memberIdsWithEvents.has(member.id);
+
+    return {
+      name: member.name,
+      capsulesCompleted: completed,
+      capsulesInProgress: inProgress,
+      lastActivity: eventsByMember.get(member.id) ?? null,
+      isBlocked: inProgress > 0 && !hasRecentActivity,
+    };
+  });
 }
 
 export async function detectSponsorReports(): Promise<
@@ -58,15 +81,25 @@ export async function detectSponsorReports(): Promise<
 > {
   const opportunities: EngagementOpportunity[] = [];
 
-  const sponsors = await getSponsors();
+  const [sponsors, allUsers] = await Promise.all([
+    getSponsors(),
+    getActiveUsersWithWhatsapp(),
+  ]);
 
   for (const sponsor of sponsors) {
-    if (!sponsor.whatsapp || sponsor.wp_opted_out) continue;
+    if (!sponsor.phone || !sponsor.whatsapp_opt_in) continue;
 
-    // Get team members (same empresa, not the sponsor)
-    const allUsers = await getActiveUsersWithWhatsapp();
+    // Rate limiting — only send once per week
+    const alreadySentThisWeek = await hasBeenContactedForJourney(
+      sponsor.id,
+      "resumen_semanal_sponsor",
+      168, // 7 days in hours
+    );
+    if (alreadySentThisWeek) continue;
+
+    // Get team members (same empresa, not the sponsor) — reuse pre-fetched list
     const teamMembers = allUsers.filter(
-      (u) => u.empresa === sponsor.empresa && u.id !== sponsor.id,
+      (u) => u.company_name === sponsor.company_name && u.id !== sponsor.id,
     );
 
     if (teamMembers.length === 0) continue;
@@ -88,7 +121,7 @@ export async function detectSponsorReports(): Promise<
         ),
         blockedMembers: teamProgress
           .filter((m) => m.isBlocked)
-          .map((m) => m.nombre),
+          .map((m) => m.name),
       },
     });
   }

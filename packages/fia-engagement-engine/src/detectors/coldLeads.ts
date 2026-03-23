@@ -5,7 +5,7 @@
  * pero no se suscribieron (plan = 'lead').
  * Un solo intento — si no convierte, no se vuelve a contactar.
  */
-import { subDays } from "date-fns";
+import { subDays, differenceInDays } from "date-fns";
 import { config } from "../config";
 import { logger } from "../logger";
 import {
@@ -13,6 +13,7 @@ import {
   getLeadScoreForUser,
   getEventsForUserSince,
   hasBeenContactedForJourney,
+  isUserPaid,
 } from "../db/supabase";
 import type { EngagementOpportunity } from "../db/types";
 
@@ -23,8 +24,9 @@ export async function detectColdLeads(): Promise<EngagementOpportunity[]> {
   const threshold = subDays(new Date(), config.engine.coldLeadDays);
 
   for (const user of users) {
-    // Only leads (not subscribed)
-    if (user.plan !== "lead") continue;
+    // Only non-paid users
+    const paid = await isUserPaid(user.id);
+    if (paid) continue;
 
     // Already contacted for this journey — one shot only
     const alreadySent = await hasBeenContactedForJourney(
@@ -45,6 +47,11 @@ export async function detectColdLeads(): Promise<EngagementOpportunity[]> {
     const scores = await getLeadScoreForUser(user.id);
     if (!scores) continue; // No diagnostic completed
 
+    const daysSinceDiagnostic = differenceInDays(
+      new Date(),
+      new Date(scores.last_calculated_at),
+    );
+
     const deepLink = `${config.engine.appBaseUrl}/upgrade?ref=reactivacion_lead`;
 
     opportunities.push({
@@ -56,7 +63,7 @@ export async function detectColdLeads(): Promise<EngagementOpportunity[]> {
         fitScore: scores.fit_score,
         intentScore: scores.intent_score,
         overallScore: scores.overall_score,
-        daysSinceDiagnostic: config.engine.coldLeadDays,
+        daysSinceDiagnostic,
       },
     });
   }
