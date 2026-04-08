@@ -8,9 +8,9 @@ import { config } from "../config";
 import { logger } from "../logger";
 import {
   getRecentEventsByType,
-  getProfileWithWhatsapp,
-  getCapsuleProgressForUser,
-  hasBeenContactedForJourney,
+  getProfilesForUsers,
+  getCapsuleProgressForUsers,
+  getContactedUserIdsForJourney,
 } from "../db/supabase";
 import type { EngagementOpportunity } from "../db/types";
 
@@ -34,35 +34,43 @@ export async function detectCompletedCapsules(): Promise<
     }
   }
 
-  for (const [userId, event] of latestByUser) {
-    // Don't send twice for this capsule (48h window — each capsule is completed once)
-    const alreadySent = await hasBeenContactedForJourney(
-      userId,
-      "celebracion_capsula",
-      48,
-    );
-    if (alreadySent) continue;
+  if (latestByUser.size === 0) {
+    logger.info({ count: 0 }, "Celebration detector completed");
+    return opportunities;
+  }
 
-    const profile = await getProfileWithWhatsapp(userId);
+  const userIds = [...latestByUser.keys()];
+
+  // Batch: contacted check, profiles, and capsule progress
+  const [contactedIds, profilesMap, progressMap] = await Promise.all([
+    getContactedUserIdsForJourney(userIds, "celebracion_capsula", 48),
+    getProfilesForUsers(userIds),
+    getCapsuleProgressForUsers(userIds),
+  ]);
+
+  for (const [userId, event] of latestByUser) {
+    if (contactedIds.has(userId)) continue;
+
+    const profile = profilesMap.get(userId);
     if (!profile?.phone || !profile.whatsapp_opt_in) continue;
 
     const meta = event.metadata as { capsule_number?: number; capsule_numero?: number } | null;
     const capsuleNumero = meta?.capsule_number ?? meta?.capsule_numero ?? 0;
 
-    // Skip if capsule number is invalid
     if (capsuleNumero < 1) {
       logger.warn({ userId, capsuleNumero }, "Invalid capsule_number in celebration event — skipping");
       continue;
     }
 
     const nextCapsule = capsuleNumero + 1;
-
-    // Don't celebrate the last capsule with "next capsule" — it's the end
     const isLastCapsule = capsuleNumero >= config.engine.totalCapsules;
 
     const deepLink = isLastCapsule
       ? `${config.engine.appBaseUrl}/boveda`
       : `${config.engine.appBaseUrl}/capsulas/${nextCapsule}`;
+
+    const userProgress = progressMap.get(userId) ?? [];
+    const totalCompleted = userProgress.filter((p) => p.status === "completed").length;
 
     opportunities.push({
       userId,
@@ -70,12 +78,10 @@ export async function detectCompletedCapsules(): Promise<
       profile,
       deepLink,
       context: {
-        completedCapsuleNumero: capsuleNumero,
-        nextCapsuleNumero: isLastCapsule ? null : nextCapsule,
+        completedCapsuleNumber: capsuleNumero,
+        nextCapsuleNumber: isLastCapsule ? null : nextCapsule,
         isLastCapsule,
-        totalCompleted: (await getCapsuleProgressForUser(userId)).filter(
-          (p) => p.status === "completed",
-        ).length,
+        totalCompleted,
       },
     });
   }

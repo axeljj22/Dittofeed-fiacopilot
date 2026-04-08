@@ -10,10 +10,10 @@ import { config } from "../config";
 import { logger } from "../logger";
 import {
   getActiveUsersWithWhatsapp,
-  getLeadScoreForUser,
-  getEventsForUserSince,
-  hasBeenContactedForJourney,
-  isUserPaid,
+  getPaidUserIds,
+  getContactedUserIdsForJourney,
+  getUserIdsWithEventsSince,
+  getLeadScoresForUsers,
 } from "../db/supabase";
 import type { EngagementOpportunity } from "../db/types";
 
@@ -21,31 +21,26 @@ export async function detectColdLeads(): Promise<EngagementOpportunity[]> {
   const opportunities: EngagementOpportunity[] = [];
 
   const users = await getActiveUsersWithWhatsapp();
+  if (users.length === 0) return opportunities;
+
   const threshold = subDays(new Date(), config.engine.coldLeadDays);
+  const userIds = users.map((u) => u.id);
+
+  // Batch all per-user lookups in parallel
+  const [paidIds, contactedIds, activeIds, scoresMap] = await Promise.all([
+    getPaidUserIds(userIds),
+    getContactedUserIdsForJourney(userIds, "recuperacion_lead_frio"),
+    getUserIdsWithEventsSince(userIds, threshold.toISOString()),
+    getLeadScoresForUsers(userIds),
+  ]);
 
   for (const user of users) {
-    // Only non-paid users
-    const paid = await isUserPaid(user.id);
-    if (paid) continue;
+    if (paidIds.has(user.id)) continue;
+    if (contactedIds.has(user.id)) continue;
+    if (activeIds.has(user.id)) continue; // recent activity → not cold
 
-    // Already contacted for this journey — one shot only
-    const alreadySent = await hasBeenContactedForJourney(
-      user.id,
-      "recuperacion_lead_frio",
-    );
-    if (alreadySent) continue;
-
-    // Check if diagnostic was completed before threshold
-    const recentEvents = await getEventsForUserSince(
-      user.id,
-      threshold.toISOString(),
-    );
-
-    // If they have recent activity, they're not cold
-    if (recentEvents.length > 0) continue;
-
-    const scores = await getLeadScoreForUser(user.id);
-    if (!scores) continue; // No diagnostic completed
+    const scores = scoresMap.get(user.id);
+    if (!scores) continue; // no diagnostic completed
 
     const daysSinceDiagnostic = differenceInDays(
       new Date(),

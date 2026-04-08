@@ -10,12 +10,12 @@ import http from "http";
 import { config } from "./config";
 import { logger } from "./logger";
 import { processIncomingResponse } from "./senders/responses";
-import { sendWhatsAppMessage } from "./senders/whatsapp";
+import { sendWhatsAppMessage, sendCampaignMessage } from "./senders/whatsapp";
 import { baileysManager } from "./senders/whatsappBaileys";
-import { getSupabaseClient } from "./db/supabase";
+import { getSupabaseClient, upsertCampaignLead } from "./db/supabase";
 import { runAllDetectors, runSponsorReports } from "./orchestrator";
 import { getAdminPanelHtml } from "./admin/panel";
-import { isCodexAvailable } from "./generators/codexGenerator";
+import { isCodexAvailable, invalidateCodexAuthCache } from "./generators/codexGenerator";
 import fs from "fs";
 
 function parseBody(req: http.IncomingMessage): Promise<string> {
@@ -124,6 +124,78 @@ async function handleWebhookIncoming(
 }
 
 /**
+ * POST /api/campaign/send — send a pre-written message to a specific phone number.
+ * Used for manual outreach campaigns. Logs to engagement_log.
+ * Body: { phone: string, message: string, journeyName?: string }
+ */
+async function handleCampaignSend(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<void> {
+  const authHeader = req.headers["authorization"];
+  const expectedToken = process.env["ADMIN_API_TOKEN"] ?? "admin-secret";
+
+  if (authHeader !== `Bearer ${expectedToken}`) {
+    jsonResponse(res, 401, { error: "Unauthorized" });
+    return;
+  }
+
+  let body: { phone?: string; message?: string; journeyName?: string; name?: string };
+  try {
+    body = JSON.parse(await parseBody(req));
+  } catch {
+    jsonResponse(res, 400, { error: "Invalid JSON" });
+    return;
+  }
+
+  if (!body.phone || !body.message) {
+    jsonResponse(res, 400, { error: "phone and message are required" });
+    return;
+  }
+
+  const journeyName = body.journeyName ?? "waitlist_outreach";
+  const normalizedPhone = body.phone.replace(/\D/g, "");
+
+  // Defensive rate limit: max 4 campaign sends per hour
+  const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  const { count: recentCount } = await getSupabaseClient()
+    .from("engagement_log")
+    .select("id", { count: "exact", head: true })
+    .contains("metadata", { journey_name: journeyName })
+    .gte("created_at", oneHourAgo);
+
+  if ((recentCount ?? 0) >= 4) {
+    jsonResponse(res, 429, { error: "Rate limit: max 4 campaign sends per hour" });
+    return;
+  }
+
+  // Look up userId by phone — auto-create profile if not found
+  const { data: profileRow } = await getSupabaseClient()
+    .from("profiles")
+    .select("id")
+    .eq("phone", normalizedPhone)
+    .single();
+
+  let userId = (profileRow as { id: string } | null)?.id ?? null;
+  if (!userId) {
+    userId = await upsertCampaignLead(normalizedPhone, body.name ?? "");
+  }
+
+  try {
+    const success = await sendCampaignMessage(body.phone, userId, body.message, journeyName);
+    jsonResponse(res, success ? 200 : 500, {
+      success,
+      phone: normalizedPhone,
+      userId,
+      sentAt: new Date().toISOString(),
+    });
+  } catch (error) {
+    logger.error({ error, phone: normalizedPhone }, "Campaign send failed");
+    jsonResponse(res, 500, { error: "Send failed" });
+  }
+}
+
+/**
  * POST /api/trigger — manually run detectors (admin only)
  */
 async function handleManualTrigger(
@@ -156,6 +228,77 @@ async function handleManualTrigger(
 }
 
 /**
+ * POST /api/test/message — send a test message through the full Sofía pipeline (admin only)
+ * Body: { userId: "uuid", journey?: "bienvenida_diagnostico" | "reactivacion_inactividad" | ... }
+ * Or:   { phone: "5491125120212", text: "hardcoded text" }  (raw send, no AI)
+ */
+async function handleTestMessage(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<void> {
+  const authHeader = req.headers["authorization"];
+  const expectedToken = process.env["ADMIN_API_TOKEN"] ?? "admin-secret";
+
+  if (authHeader !== `Bearer ${expectedToken}`) {
+    jsonResponse(res, 401, { error: "Unauthorized" });
+    return;
+  }
+
+  try {
+    const body = JSON.parse(await parseBody(req)) as {
+      userId?: string;
+      journey?: string;
+      phone?: string;
+      text?: string;
+    };
+
+    // Raw send (no AI generation)
+    if (body.phone && body.text) {
+      const result = await baileysManager.sendMessage(body.phone, body.text);
+      jsonResponse(res, result.success ? 200 : 500, result);
+      return;
+    }
+
+    // Full pipeline: fetch profile → generate with Sofía → send
+    if (!body.userId) {
+      jsonResponse(res, 400, { error: "userId or phone+text required" });
+      return;
+    }
+
+    const { getProfileWithWhatsapp } = await import("./db/supabase");
+    const { generateMessage } = await import("./generators/messageGenerator");
+    const { sendWhatsAppMessage } = await import("./senders/whatsapp");
+
+    const profile = await getProfileWithWhatsapp(body.userId);
+    if (!profile) {
+      jsonResponse(res, 404, { error: "Profile not found" });
+      return;
+    }
+
+    const journeyName = (body.journey ?? "bienvenida_diagnostico") as import("./db/types").JourneyName;
+    const opportunity: import("./db/types").EngagementOpportunity = {
+      userId: body.userId,
+      journeyName,
+      profile,
+      context: {},
+      deepLink: `${config.engine.appBaseUrl}/capsulas/1`,
+    };
+
+    const message = await generateMessage(opportunity);
+    if (!message) {
+      jsonResponse(res, 500, { error: "Message generation failed" });
+      return;
+    }
+
+    await sendWhatsAppMessage(opportunity, message);
+    jsonResponse(res, 200, { success: true, text: message.text, journey: journeyName });
+  } catch (error) {
+    logger.error({ error }, "Test message failed");
+    jsonResponse(res, 500, { error: "Failed to send test message" });
+  }
+}
+
+/**
  * GET /api/engagement/stats — global engagement stats
  */
 async function handleEngagementStats(
@@ -179,12 +322,12 @@ async function handleEngagementStats(
         supabase
           .from("engagement_log")
           .select("*", { count: "exact", head: true })
-          .eq("clicked", true)
+          .contains("metadata", { clicked: true })
           .gte("created_at", weekAgo),
         supabase
           .from("engagement_log")
           .select("*", { count: "exact", head: true })
-          .eq("responded", true)
+          .contains("metadata", { responded: true })
           .gte("created_at", weekAgo),
         supabase
           .from("profiles")
@@ -228,7 +371,7 @@ async function handleEngagementLogs(
       .limit(limit);
 
     if (userId) {
-      query = query.eq("user_id", userId);
+      query = query.eq("lead_id", userId);
     }
 
     const { data, error } = await query;
@@ -336,12 +479,12 @@ async function handleDashboard(
       if (!assessmentByUser.has(a.lead_id)) assessmentByUser.set(a.lead_id, a);
     }
 
-    // Pre-index engagement by user_id (engagement_log uses user_id = profiles.id)
+    // Pre-index engagement by lead_id (engagement_log uses lead_id = profiles.id)
     const engagementByUser = new Map<string, typeof allEngagement>();
     for (const e of allEngagement) {
-      const arr = engagementByUser.get(e.user_id) ?? [];
+      const arr = engagementByUser.get(e.lead_id) ?? [];
       arr.push(e);
-      engagementByUser.set(e.user_id, arr);
+      engagementByUser.set(e.lead_id, arr);
     }
 
     // ─── 1. PER-USER DETAIL TABLE ───
@@ -390,8 +533,8 @@ async function handleDashboard(
         vault_outputs: vaultCount,
         has_assessment: hasAssessment,
         messages_received: userEngagement.length,
-        messages_clicked: userEngagement.filter((e) => e.clicked).length,
-        messages_responded: userEngagement.filter((e) => e.responded).length,
+        messages_clicked: userEngagement.filter((e) => (e.metadata as { clicked?: boolean } | null)?.clicked === true).length,
+        messages_responded: userEngagement.filter((e) => (e.metadata as { responded?: boolean } | null)?.responded === true).length,
         objetivo: p.objective || "",
       };
     });
@@ -510,11 +653,12 @@ async function handleDashboard(
     // ─── 8. ENGAGEMENT ANALYTICS ───
     const engByJourney: Record<string, { sent: number; clicked: number; responded: number }> = {};
     for (const e of allEngagement) {
-      const j = e.journey_name;
+      const meta = e.metadata as { journey_name?: string; clicked?: boolean; responded?: boolean } | null;
+      const j = meta?.journey_name ?? "unknown";
       if (!engByJourney[j]) engByJourney[j] = { sent: 0, clicked: 0, responded: 0 };
       if (e.status === "sent") engByJourney[j].sent++;
-      if (e.clicked) engByJourney[j].clicked++;
-      if (e.responded) engByJourney[j].responded++;
+      if (meta?.clicked) engByJourney[j].clicked++;
+      if (meta?.responded) engByJourney[j].responded++;
     }
 
     const engDailyTimeline: Array<{ date: string; sent: number }> = [];
@@ -529,11 +673,11 @@ async function handleDashboard(
     }
 
     const totalSent = allEngagement.filter((e) => e.status === "sent").length;
-    const totalClicked = allEngagement.filter((e) => e.clicked).length;
-    const totalResponded = allEngagement.filter((e) => e.responded).length;
+    const totalClicked = allEngagement.filter((e) => (e.metadata as { clicked?: boolean } | null)?.clicked === true).length;
+    const totalResponded = allEngagement.filter((e) => (e.metadata as { responded?: boolean } | null)?.responded === true).length;
     const recentSent = recentEngagement.filter((e) => e.status === "sent").length;
-    const recentClicked = recentEngagement.filter((e) => e.clicked).length;
-    const recentResponded = recentEngagement.filter((e) => e.responded).length;
+    const recentClicked = recentEngagement.filter((e) => (e.metadata as { clicked?: boolean } | null)?.clicked === true).length;
+    const recentResponded = recentEngagement.filter((e) => (e.metadata as { responded?: boolean } | null)?.responded === true).length;
 
     // ─── 9. USER SIGNUPS OVER TIME ───
     const signupsByWeek: Record<string, number> = {};
@@ -692,7 +836,7 @@ async function handleClickRedirect(
     // Fetch the engagement log entry
     const { data: logEntry, error } = await supabase
       .from("engagement_log")
-      .select("deep_link")
+      .select("metadata")
       .eq("id", logId)
       .single();
 
@@ -703,10 +847,12 @@ async function handleClickRedirect(
       return;
     }
 
+    const logMeta = (logEntry.metadata as { deep_link?: string; clicked?: boolean } | null) ?? {};
+
     // Mark as clicked (fire-and-forget — redirect is not blocked by this)
     void supabase
       .from("engagement_log")
-      .update({ clicked: true })
+      .update({ metadata: { ...logMeta, clicked: true } })
       .eq("id", logId)
       .then(
         () => logger.info({ logId }, "Click tracked"),
@@ -715,8 +861,8 @@ async function handleClickRedirect(
 
     // Validate deep_link domain to prevent open redirect
     const allowedBase = config.engine.appBaseUrl;
-    const destination = logEntry.deep_link?.startsWith(allowedBase)
-      ? logEntry.deep_link
+    const destination = logMeta.deep_link?.startsWith(allowedBase)
+      ? logMeta.deep_link
       : allowedBase;
 
     res.writeHead(302, { Location: destination });
@@ -764,8 +910,16 @@ async function router(
     return handleWebhookIncoming(req, res);
   }
 
+  if (url === "/api/campaign/send" && method === "POST") {
+    return handleCampaignSend(req, res);
+  }
+
   if (url === "/api/trigger" && method === "POST") {
     return handleManualTrigger(req, res);
+  }
+
+  if (url === "/api/test/message" && method === "POST") {
+    return handleTestMessage(req, res);
   }
 
   if (url === "/api/engagement/stats" && method === "GET") {
@@ -1021,6 +1175,7 @@ function showMsg(text, ok) {
       }
       fs.mkdirSync(require("path").dirname(config.codex.authFilePath), { recursive: true });
       fs.writeFileSync(config.codex.authFilePath, body.auth);
+      invalidateCodexAuthCache();
       logger.info("Codex auth.json saved via admin UI");
       jsonResponse(res, 200, { status: "ok" });
     } catch (error) {
@@ -1038,6 +1193,7 @@ function showMsg(text, ok) {
     }
     try {
       fs.unlinkSync(config.codex.authFilePath);
+      invalidateCodexAuthCache();
       logger.info("Codex auth.json deleted via admin UI");
     } catch { /* already gone */ }
     jsonResponse(res, 200, { status: "deleted" });

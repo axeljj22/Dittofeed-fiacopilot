@@ -15,6 +15,7 @@ export interface Profile {
   phone: string | null;         // used as WhatsApp number
   whatsapp_opt_in: boolean;     // true = user accepts WA messages
   temperature: string | null;   // CRM label: 'frio' | 'tibio' | 'caliente'
+  country: string | null;
   is_admin: boolean;
   is_coach: boolean;
   onboarding_completed: boolean;
@@ -40,6 +41,7 @@ export interface CapsuleProgress {
   lead_id: string;
   capsule_id: string;
   capsule_number: number;       // joined from capsules.number
+  capsule_title: string | null; // joined from capsules.title
   status: "not_started" | "viewed" | "in_progress" | "completed";
   started_at: string | null;
   completed_at: string | null;
@@ -104,15 +106,17 @@ export interface UserProgramAccess {
 // ─── Write-only table ───
 
 export interface EngagementLogInsert {
-  user_id: string;
-  journey_name: string;
-  mensaje_enviado: string;
-  whatsapp_number: string;
-  deep_link: string;
-  status: "pending" | "sent" | "failed" | "opted_out";
-  responded?: boolean;
-  response_text?: string;
-  clicked?: boolean;
+  lead_id: string;
+  status: "sent" | "failed" | "opted_out";
+  message: string;
+  channel: string; // 'whatsapp'
+  trigger_type: string; // 'campaign' | 'scheduled' | 'manual'
+  metadata: {
+    journey_name: string;
+    whatsapp_number: string;
+    deep_link: string;
+    level?: number; // journey level for multi-step journeys (e.g. inactivity 1/2/3)
+  };
 }
 
 export interface EngagementLog extends EngagementLogInsert {
@@ -127,7 +131,8 @@ export type JourneyName =
   | "celebracion_capsula"
   | "bienvenida_diagnostico"
   | "recuperacion_lead_frio"
-  | "resumen_semanal_sponsor";
+  | "resumen_semanal_sponsor"
+  | "campana_activa";
 
 export interface EngagementOpportunity {
   userId: string;

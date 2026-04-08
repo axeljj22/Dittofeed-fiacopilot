@@ -110,12 +110,16 @@ export async function sendWhatsAppMessage(
   // Check opt-out
   if (!opportunity.profile.whatsapp_opt_in) {
     await insertEngagementLog({
-      user_id: opportunity.userId,
-      journey_name: message.journeyName,
-      mensaje_enviado: message.text,
-      whatsapp_number: whatsappNumber,
-      deep_link: message.deepLink,
+      lead_id: opportunity.userId,
       status: "opted_out",
+      message: message.text,
+      channel: "whatsapp",
+      trigger_type: "scheduled",
+      metadata: {
+        journey_name: message.journeyName,
+        whatsapp_number: whatsappNumber,
+        deep_link: message.deepLink,
+      },
     });
     logger.info(
       { userId: opportunity.userId },
@@ -124,15 +128,19 @@ export async function sendWhatsAppMessage(
     return false;
   }
 
-  // Insert as "pending" first to get the ID for click tracking.
-  // Updated to "sent" or "failed" after the actual send attempt.
+  // Insert log entry first to get the ID for click tracking.
   const logEntry = await insertEngagementLog({
-    user_id: opportunity.userId,
-    journey_name: message.journeyName,
-    mensaje_enviado: message.text,
-    whatsapp_number: whatsappNumber,
-    deep_link: message.deepLink,
-    status: "pending",
+    lead_id: opportunity.userId,
+    status: "sent",
+    message: message.text,
+    channel: "whatsapp",
+    trigger_type: "scheduled",
+    metadata: {
+      journey_name: message.journeyName,
+      whatsapp_number: whatsappNumber,
+      deep_link: message.deepLink,
+      ...(opportunity.level !== undefined ? { level: opportunity.level } : {}),
+    },
   });
 
   // Replace direct deep link with tracked redirect URL
@@ -153,13 +161,16 @@ export async function sendWhatsAppMessage(
     result = await sendViaCloudApi(whatsappNumber, finalMessage);
   }
 
-  // Update status to "sent" or "failed" based on actual result
-  if (logEntry?.id) {
+  // Update to "failed" if send didn't succeed
+  if (!result.success && logEntry?.id) {
     const { getSupabaseClient } = await import("../db/supabase");
-    await getSupabaseClient()
+    const { error: updateError } = await getSupabaseClient()
       .from("engagement_log")
-      .update({ status: result.success ? "sent" : "failed" })
+      .update({ status: "failed" })
       .eq("id", logEntry.id);
+    if (updateError) {
+      logger.error({ updateError, logId: logEntry.id }, "Failed to mark log entry as failed");
+    }
   }
 
   if (result.success) {
@@ -180,6 +191,64 @@ export async function sendWhatsAppMessage(
       },
       "WhatsApp message failed",
     );
+  }
+
+  return result.success;
+}
+
+/**
+ * Send a raw campaign message to a specific phone number.
+ * Used for manual outreach campaigns where the message is pre-written.
+ * Does not require an EngagementOpportunity — phone and text are provided directly.
+ */
+export async function sendCampaignMessage(
+  phone: string,
+  userId: string,
+  messageText: string,
+  journeyName: string,
+): Promise<boolean> {
+  const normalizedPhone = phone.replace(/\D/g, "");
+
+  if (!normalizedPhone) {
+    logger.warn({ phone }, "Campaign send skipped — empty phone after normalization");
+    return false;
+  }
+
+  // Log before sending so we have a record even if delivery fails
+  const logEntry = await insertEngagementLog({
+    lead_id: userId,
+    status: "sent",
+    message: messageText,
+    channel: "whatsapp",
+    trigger_type: "campaign",
+    metadata: {
+      journey_name: journeyName,
+      whatsapp_number: normalizedPhone,
+      deep_link: "",
+    },
+  });
+
+  let result: SendResult;
+  if (config.whatsapp.provider === "baileys") {
+    result = await baileysManager.sendMessage(normalizedPhone, messageText);
+  } else if (config.whatsapp.provider === "twilio") {
+    result = await sendViaTwilio(normalizedPhone, messageText);
+  } else {
+    result = await sendViaCloudApi(normalizedPhone, messageText);
+  }
+
+  if (!result.success && logEntry?.id) {
+    const { getSupabaseClient } = await import("../db/supabase");
+    await getSupabaseClient()
+      .from("engagement_log")
+      .update({ status: "failed" })
+      .eq("id", logEntry.id);
+  }
+
+  if (result.success) {
+    logger.info({ phone: normalizedPhone, journey: journeyName }, "Campaign message sent");
+  } else {
+    logger.error({ phone: normalizedPhone, journey: journeyName, error: result.error }, "Campaign message failed");
   }
 
   return result.success;

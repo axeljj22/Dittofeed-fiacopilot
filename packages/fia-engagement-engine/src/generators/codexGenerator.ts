@@ -25,16 +25,21 @@ const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const TOKEN_ENDPOINT = "https://auth.openai.com/oauth/token";
 const CODEX_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses";
 
+let _cachedAuth: CodexAuth | null = null;
+
 function loadAuth(): CodexAuth | null {
+  if (_cachedAuth) return _cachedAuth;
   try {
     const raw = fs.readFileSync(config.codex.authFilePath, "utf8");
-    return JSON.parse(raw) as CodexAuth;
+    _cachedAuth = JSON.parse(raw) as CodexAuth;
+    return _cachedAuth;
   } catch {
     return null;
   }
 }
 
 function saveAuth(auth: CodexAuth): void {
+  _cachedAuth = auth; // update in-memory cache immediately
   try {
     fs.writeFileSync(config.codex.authFilePath, JSON.stringify(auth, null, 2));
   } catch (error) {
@@ -113,6 +118,11 @@ async function getValidAuth(): Promise<CodexAuth | null> {
   }
 
   return auth;
+}
+
+/** Call after writing or deleting auth.json so the next request re-reads from disk. */
+export function invalidateCodexAuthCache(): void {
+  _cachedAuth = null;
 }
 
 export async function isCodexAvailable(): Promise<boolean> {

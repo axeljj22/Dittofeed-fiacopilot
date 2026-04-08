@@ -11,7 +11,7 @@ import {
   getSupabaseClient,
   getSponsors,
   getActiveUsersWithWhatsapp,
-  hasBeenContactedForJourney,
+  getContactedUserIdsForJourney,
 } from "../db/supabase";
 import type { EngagementOpportunity, Profile } from "../db/types";
 
@@ -86,16 +86,19 @@ export async function detectSponsorReports(): Promise<
     getActiveUsersWithWhatsapp(),
   ]);
 
+  if (sponsors.length === 0) return opportunities;
+
+  // Batch: check which sponsors were already contacted this week
+  const sponsorIds = sponsors.map((s) => s.id);
+  const contactedIds = await getContactedUserIdsForJourney(
+    sponsorIds,
+    "resumen_semanal_sponsor",
+    168, // 7 days in hours
+  );
+
   for (const sponsor of sponsors) {
     if (!sponsor.phone || !sponsor.whatsapp_opt_in) continue;
-
-    // Rate limiting — only send once per week
-    const alreadySentThisWeek = await hasBeenContactedForJourney(
-      sponsor.id,
-      "resumen_semanal_sponsor",
-      168, // 7 days in hours
-    );
-    if (alreadySentThisWeek) continue;
+    if (contactedIds.has(sponsor.id)) continue;
 
     // Get team members (same empresa, not the sponsor) — reuse pre-fetched list
     const teamMembers = allUsers.filter(

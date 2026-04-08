@@ -4,17 +4,16 @@
  * Detecta usuarios sin actividad en X días con cápsulas pendientes.
  * Tres niveles: día 5 (suave), día 10 (con contexto Bóveda), día 20 (última llamada).
  */
-import { subDays, differenceInDays } from "date-fns";
+import { differenceInDays } from "date-fns";
 import { config } from "../config";
 import { logger } from "../logger";
 import {
   getActiveUsersWithWhatsapp,
-  getLastEventForUser,
   getUsersWithPendingCapsules,
-  getRecentEngagementForUser,
-  getCapsuleProgressForUser,
+  getLastEventsForUsers,
+  getRecentEngagementForUsers,
 } from "../db/supabase";
-import type { EngagementOpportunity, CapsuleProgress } from "../db/types";
+import type { EngagementOpportunity, CapsuleProgress, EngagementLog } from "../db/types";
 
 function getInactivityLevel(daysSinceLastEvent: number): number | null {
   if (daysSinceLastEvent >= 20) return 3;
@@ -26,16 +25,36 @@ function getInactivityLevel(daysSinceLastEvent: number): number | null {
 function findPendingCapsule(
   progress: CapsuleProgress[],
 ): CapsuleProgress | undefined {
-  return progress.find(
-    (p) => p.status === "viewed" || p.status === "in_progress",
+  // Return the most recently started pending capsule (lowest number = earliest)
+  return [...progress]
+    .filter((p) => p.status === "viewed" || p.status === "in_progress")
+    .sort((a, b) => (a.capsule_number ?? 0) - (b.capsule_number ?? 0))[0];
+}
+
+function alreadySentThisLevel(
+  logs: EngagementLog[],
+  level: number,
+  hoursWindow: number,
+): boolean {
+  const since = new Date(Date.now() - hoursWindow * 60 * 60 * 1000).toISOString();
+  return logs.some(
+    (e) =>
+      e.created_at >= since &&
+      (e.metadata as { journey_name?: string; level?: number })?.journey_name === "reactivacion_inactividad" &&
+      (e.metadata as { level?: number })?.level === level &&
+      e.status === "sent",
   );
 }
 
 export async function detectInactiveUsers(): Promise<EngagementOpportunity[]> {
   const opportunities: EngagementOpportunity[] = [];
 
-  const users = await getActiveUsersWithWhatsapp();
-  const pendingProgress = await getUsersWithPendingCapsules();
+  const [users, pendingProgress] = await Promise.all([
+    getActiveUsersWithWhatsapp(),
+    getUsersWithPendingCapsules(),
+  ]);
+
+  if (users.length === 0) return opportunities;
 
   // Group pending capsules by user
   const pendingByUser = new Map<string, CapsuleProgress[]>();
@@ -45,11 +64,20 @@ export async function detectInactiveUsers(): Promise<EngagementOpportunity[]> {
     pendingByUser.set(p.lead_id, existing);
   }
 
-  for (const user of users) {
-    const userPending = pendingByUser.get(user.id);
-    if (!userPending || userPending.length === 0) continue;
+  // Only process users that actually have pending capsules
+  const candidateUsers = users.filter((u) => (pendingByUser.get(u.id)?.length ?? 0) > 0);
+  if (candidateUsers.length === 0) return opportunities;
 
-    const lastEvent = await getLastEventForUser(user.id);
+  const candidateIds = candidateUsers.map((u) => u.id);
+
+  // Batch: last event per user + recent engagement (max window = 480h)
+  const [lastEventsMap, engagementMap] = await Promise.all([
+    getLastEventsForUsers(candidateIds),
+    getRecentEngagementForUsers(candidateIds, 480),
+  ]);
+
+  for (const user of candidateUsers) {
+    const lastEvent = lastEventsMap.get(user.id);
     if (!lastEvent) continue;
 
     const daysSince = differenceInDays(
@@ -60,17 +88,11 @@ export async function detectInactiveUsers(): Promise<EngagementOpportunity[]> {
     if (level === null) continue;
 
     // Check rate limiting — don't re-send same level
-    const recentEngagement = await getRecentEngagementForUser(
-      user.id,
-      level === 1 ? 120 : level === 2 ? 240 : 480, // hours between levels
-    );
-    const alreadySentThisLevel = recentEngagement.some(
-      (e) =>
-        e.journey_name === "reactivacion_inactividad" &&
-        e.status === "sent",
-    );
-    if (alreadySentThisLevel) continue;
+    const hoursWindow = level === 1 ? 120 : level === 2 ? 240 : 480;
+    const userLogs = engagementMap.get(user.id) ?? [];
+    if (alreadySentThisLevel(userLogs, level, hoursWindow)) continue;
 
+    const userPending = pendingByUser.get(user.id)!;
     const pending = findPendingCapsule(userPending);
     if (!pending) continue;
 
@@ -84,7 +106,7 @@ export async function detectInactiveUsers(): Promise<EngagementOpportunity[]> {
       deepLink,
       context: {
         daysSinceLastEvent: daysSince,
-        pendingCapsuleNumero: pending.capsule_number,
+        pendingCapsuleNumber: pending.capsule_number,
         pendingCapsuleStatus: pending.status,
       },
     });

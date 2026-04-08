@@ -84,8 +84,10 @@ export const config = {
       optionalEnv("MAX_MESSAGES_PER_USER_PER_DAY", "2"),
       10,
     ),
-    // Pilot mode — if set, only send messages to this email address
-    pilotEmail: optionalEnv("PILOT_EMAIL", ""),
+    // Pilot mode — if set, only send messages to this phone number
+    pilotPhone: optionalEnv("PILOT_PHONE", ""),
+    // Bypass business hours check (for testing only)
+    bypassBusinessHours: optionalEnv("BYPASS_BUSINESS_HOURS", "") === "true",
     // Total capsules in the Método FIA (update if the method scales)
     totalCapsules: parseInt(optionalEnv("TOTAL_CAPSULES", "25"), 10),
     // Default timezone for business hours check (IANA format)

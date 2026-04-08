@@ -12,6 +12,34 @@ import fs from "fs";
 import { config } from "../config";
 import { logger } from "../logger";
 import { processIncomingResponse } from "./responses";
+// Minimal local types — avoids importing Baileys types that vary by version
+interface WASocketLike {
+  ev: {
+    on(event: string, handler: (...args: never[]) => void): void;
+  };
+  sendMessage(jid: string, content: { text: string }): Promise<unknown>;
+  user?: { id: string | null };
+}
+
+interface WAMessageKey {
+  fromMe?: boolean | null;
+  remoteJid?: string | null;
+  id?: string | null;
+}
+
+interface WAIncomingMessage {
+  key: WAMessageKey;
+  message?: {
+    conversation?: string;
+    extendedTextMessage?: { text?: string };
+  } | null;
+}
+
+interface WAConnectionState {
+  connection?: "close" | "connecting" | "open";
+  lastDisconnect?: { error?: Error & { output?: { statusCode?: number } } };
+  qr?: string;
+}
 
 export type WAStatus = "disconnected" | "connecting" | "qr_ready" | "connected";
 
@@ -21,11 +49,12 @@ interface SendResult {
 }
 
 class BaileysManager {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private sock: any = null;
+  private sock: WASocketLike | null = null;
   private _status: WAStatus = "disconnected";
   private _qrDataUrl: string | null = null;
   private _connectedPhone: string | null = null;
+  /** Maps LID JIDs (e.g. "12345@lid") → phone digits (e.g. "5491125120212") */
+  private lidToPhone = new Map<string, string>();
 
   get status(): WAStatus {
     return this._status;
@@ -60,41 +89,81 @@ class BaileysManager {
       const { version } = await fetchLatestBaileysVersion();
       logger.info({ version }, "Using WhatsApp Web version");
 
-      this.sock = makeWASocket({
+      const sock = makeWASocket({
         version,
         auth: state,
         browser: ["FIA Copilot", "Chrome", "1.0.0"],
       });
+      this.sock = sock;
 
-      this.sock.ev.on("creds.update", saveCreds);
+      sock.ev.on("creds.update", saveCreds);
+
+      // Capture LID ↔ phone mappings from Baileys contact events
+      sock.ev.on("contacts.upsert", (contacts: Array<{ id: string; lid?: string; name?: string }>) => {
+        for (const c of contacts) {
+          if (c.lid && c.id?.endsWith("@s.whatsapp.net")) {
+            const phone = c.id.replace("@s.whatsapp.net", "");
+            this.lidToPhone.set(c.lid, phone);
+            logger.debug({ lid: c.lid, phone }, "LID mapping captured from contacts.upsert");
+          }
+          // Also map the other direction: if id is a LID and we have a phone somewhere
+          if (c.id?.endsWith("@lid")) {
+            // Check if there's a matching phone JID in our existing map
+            const existingPhone = this.lidToPhone.get(c.id);
+            if (!existingPhone) {
+              logger.debug({ lid: c.id, name: c.name }, "LID contact without phone mapping");
+            }
+          }
+        }
+        logger.info({ mapSize: this.lidToPhone.size }, "LID→phone map updated");
+      });
 
       // Handle incoming messages — route to response processor
-      this.sock.ev.on("messages.upsert", ({ messages, type }: { messages: any[]; type: string }) => {
+      sock.ev.on("messages.upsert", ({ messages, type }: { messages: WAIncomingMessage[]; type: string }) => {
         if (type !== "notify") return;
         for (const msg of messages) {
           if (msg.key.fromMe) continue; // ignore our own messages
-          const from: string = msg.key.remoteJid?.replace("@s.whatsapp.net", "") ?? "";
+          const remoteJid = msg.key.remoteJid;
+          if (!remoteJid) continue;
+
+          // Resolve JID to phone: direct phone JID or LID lookup
+          let from: string;
+          if (remoteJid.endsWith("@s.whatsapp.net")) {
+            from = remoteJid.replace("@s.whatsapp.net", "");
+          } else if (remoteJid.endsWith("@lid")) {
+            const resolved = this.lidToPhone.get(remoteJid);
+            if (resolved) {
+              from = resolved;
+              logger.info({ lid: remoteJid, phone: from }, "LID resolved to phone");
+            } else {
+              // Pass the raw LID digits — processIncomingResponse will handle unknown
+              from = remoteJid.replace("@lid", "");
+              logger.warn({ lid: remoteJid }, "Unresolved LID — passing raw to response handler");
+            }
+          } else {
+            from = remoteJid;
+          }
+
           const body: string = msg.message?.conversation ?? msg.message?.extendedTextMessage?.text ?? "";
           if (!from || !body) continue;
-          logger.info({ from, body: body.slice(0, 50) }, "Incoming WhatsApp message");
-          void processIncomingResponse({ from, body, messageId: msg.key.id }).then((action) => {
-            if (action.replyText && this.sock) {
-              void this.sock.sendMessage(msg.key.remoteJid, { text: action.replyText });
-            }
-          });
+          logger.info({ from, body: body.slice(0, 50), jid: remoteJid }, "Incoming WhatsApp message");
+          void processIncomingResponse({ from, body, messageId: msg.key.id ?? undefined })
+            .then((action) => {
+              if (action.replyText) {
+                void sock.sendMessage(remoteJid, { text: action.replyText });
+              }
+            })
+            .catch((err: unknown) => {
+              logger.error({ err, from }, "Error processing incoming WhatsApp response");
+            });
         }
       });
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      this.sock.ev.on("connection.update", (update: any) => {
-        const { connection, lastDisconnect, qr } = update as {
-          connection?: string;
-          lastDisconnect?: { error?: unknown };
-          qr?: string;
-        };
+      sock.ev.on("connection.update", (update: WAConnectionState) => {
+        const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
-          void QRCode.toDataURL(qr).then((dataUrl) => {
+          void QRCode.toDataURL(qr).then((dataUrl: string) => {
             this._qrDataUrl = dataUrl;
             this._status = "qr_ready";
             logger.info("WhatsApp QR ready — scan at /admin/whatsapp");
@@ -102,8 +171,8 @@ class BaileysManager {
         }
 
         if (connection === "close") {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const statusCode = (lastDisconnect?.error as any)?.output?.statusCode;
+          const err = lastDisconnect?.error as (Error & { output?: { statusCode?: number } }) | undefined;
+          const statusCode = err?.output?.statusCode;
           const loggedOut = statusCode === DisconnectReason.loggedOut;
 
           logger.warn({ statusCode, loggedOut }, "WhatsApp connection closed");
@@ -133,6 +202,13 @@ class BaileysManager {
     }
   }
 
+  /** Resolve a LID to a phone number (if mapping exists) */
+  resolvePhone(jid: string): string | null {
+    if (jid.endsWith("@s.whatsapp.net")) return jid.replace("@s.whatsapp.net", "");
+    if (jid.endsWith("@lid")) return this.lidToPhone.get(jid) ?? null;
+    return null;
+  }
+
   async sendMessage(phone: string, text: string): Promise<SendResult> {
     if (this._status !== "connected" || !this.sock) {
       return { success: false, error: `WhatsApp not connected (status: ${this._status})` };
@@ -141,7 +217,13 @@ class BaileysManager {
     try {
       const normalized = phone.replace(/[^0-9]/g, "");
       const jid = `${normalized}@s.whatsapp.net`;
-      await this.sock.sendMessage(jid, { text });
+      const result = await this.sock.sendMessage(jid, { text }) as { key?: WAMessageKey } | undefined;
+      // Capture LID mapping if the response contains a LID JID
+      const responseJid = result?.key?.remoteJid;
+      if (responseJid?.endsWith("@lid")) {
+        this.lidToPhone.set(responseJid, normalized);
+        logger.info({ lid: responseJid, phone: normalized }, "LID mapping captured from send");
+      }
       return { success: true };
     } catch (error) {
       const message = error instanceof Error ? error.message : "Unknown error";

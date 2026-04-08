@@ -4,12 +4,16 @@
  * Processes incoming WhatsApp replies and takes action:
  * - STOP / PARAR → opt out
  * - SI / RETOMAR → log reactivation
- * - AYUDA → reply with help link
+ * - AYUDA / HELP → reply with help link
+ * - VENTAS → link to upgrade/FIA Ventas page
+ * - DIAGNOSTICO → link to diagnostic results
+ * - PERFIL → link to user profile
+ * - PUNTOS → fetch and reply with current lead score
  * - Anything else → reply with dashboard link
  */
 import { config } from "../config";
 import { logger } from "../logger";
-import { getSupabaseClient } from "../db/supabase";
+import { getSupabaseClient, getLeadScoreForUser, insertIncomingMessage } from "../db/supabase";
 
 export interface IncomingMessage {
   from: string; // WhatsApp number
@@ -18,7 +22,7 @@ export interface IncomingMessage {
 }
 
 export interface ResponseAction {
-  type: "opt_out" | "reactivation" | "help" | "default";
+  type: "opt_out" | "reactivation" | "help" | "ventas" | "diagnostico" | "perfil" | "puntos" | "default";
   replyText: string;
   updateProfile?: Record<string, unknown>;
   logEvent?: string;
@@ -27,15 +31,17 @@ export interface ResponseAction {
 export function classifyResponse(body: string): ResponseAction {
   const normalized = body.trim().toUpperCase();
 
+  // Opt-out: STOP / PARAR
   if (normalized === "STOP" || normalized === "PARAR") {
     return {
       type: "opt_out",
       replyText:
-        "Listo, no recibirás más mensajes de seguimiento. Si cambias de opinión, puedes reactivarlo desde tu perfil.",
+        "Listo, no recibirás más mensajes de seguimiento. Si en algún momento querés retomar, respondé SI.",
       updateProfile: { whatsapp_opt_in: false },
     };
   }
 
+  // Reactivation: SI / SÍ / RETOMAR
   if (normalized === "SI" || normalized === "SÍ" || normalized === "RETOMAR") {
     return {
       type: "reactivation",
@@ -44,16 +50,56 @@ export function classifyResponse(body: string): ResponseAction {
     };
   }
 
+  // Help: AYUDA / HELP
   if (normalized === "AYUDA" || normalized === "HELP") {
     return {
       type: "help",
-      replyText: `Aquí tienes ayuda: ${config.engine.appBaseUrl}/ayuda`,
+      replyText: `Agendá una llamada con el equipo acá: ${config.engine.appBaseUrl}/agendar`,
+    };
+  }
+
+  // FIA Ventas / upgrade
+  if (normalized === "VENTAS") {
+    return {
+      type: "ventas",
+      replyText: `Mirá todo lo que incluye FIA Ventas acá: ${config.engine.appBaseUrl}/upgrade?ref=wa_ventas`,
+    };
+  }
+
+  // Diagnostic results
+  if (normalized === "DIAGNOSTICO") {
+    return {
+      type: "diagnostico",
+      replyText: `Tus resultados del diagnóstico están acá: ${config.engine.appBaseUrl}/diagnostico`,
+    };
+  }
+
+  // User profile
+  if (normalized === "PERFIL") {
+    return {
+      type: "perfil",
+      replyText: `Editá tu perfil desde acá: ${config.engine.appBaseUrl}/perfil`,
+    };
+  }
+
+  // Lead score — reply text is enriched in processIncomingResponse once we have the userId
+  if (normalized === "PUNTOS") {
+    return {
+      type: "puntos",
+      replyText: `Tu score de FIA está disponible en tu dashboard: ${config.engine.appBaseUrl}/dashboard`,
     };
   }
 
   return {
     type: "default",
-    replyText: `Accede a tu dashboard aquí: ${config.engine.appBaseUrl}/dashboard`,
+    replyText:
+      `Hola! Soy el recordatorio automático de FIA Copilot — no tengo IA para responder mensajes libres.\n\n` +
+      `Podés escribirme estas palabras:\n` +
+      `• SI → retomar el programa\n` +
+      `• STOP → dejar de recibir mensajes\n` +
+      `• PUNTOS → ver tu score\n` +
+      `• AYUDA → contactar soporte\n\n` +
+      `Tu dashboard: ${config.engine.appBaseUrl}/dashboard`,
   };
 }
 
@@ -64,13 +110,14 @@ export function classifyResponse(body: string): ResponseAction {
 export async function processIncomingResponse(
   message: IncomingMessage,
 ): Promise<ResponseAction> {
-  const action = classifyResponse(message.body);
+  let action = classifyResponse(message.body);
 
-  // Find user by WhatsApp number
+  // Find user by WhatsApp number — normalize to digits only before comparing
+  const normalizedFrom = message.from.replace(/\D/g, "");
   const { data: profile } = await getSupabaseClient()
     .from("profiles")
     .select("id")
-    .eq("phone", message.from)
+    .eq("phone", normalizedFrom)
     .single();
 
   if (!profile) {
@@ -78,10 +125,29 @@ export async function processIncomingResponse(
       { from: message.from },
       "Incoming message from unknown number",
     );
+    // Save to DB even if we can't identify the user
+    await insertIncomingMessage(message.from, message.body, null, message.messageId ?? null);
     return action;
   }
 
   const userId = profile.id;
+
+  // Save incoming message to DB (identified user)
+  await insertIncomingMessage(message.from, message.body, userId, message.messageId ?? null);
+
+  // Enrich PUNTOS reply with actual score from DB
+  if (action.type === "puntos") {
+    const scores = await getLeadScoreForUser(userId);
+    if (scores) {
+      action = {
+        ...action,
+        replyText:
+          `Tu score FIA: ${scores.overall_score}/100 ` +
+          `(Fit: ${scores.fit_score}, Intent: ${scores.intent_score}). ` +
+          `Ver detalle: ${config.engine.appBaseUrl}/diagnostico`,
+      };
+    }
+  }
 
   // Update profile if needed (opt-out)
   if (action.updateProfile) {
@@ -96,8 +162,8 @@ export async function processIncomingResponse(
   // Log response in the most recent engagement_log entry for this user
   const { data: latestLog } = await getSupabaseClient()
     .from("engagement_log")
-    .select("id")
-    .eq("user_id", userId)
+    .select("id, message, metadata")
+    .eq("lead_id", userId)
     .eq("status", "sent")
     .order("created_at", { ascending: false })
     .limit(1)
@@ -107,16 +173,35 @@ export async function processIncomingResponse(
     await getSupabaseClient()
       .from("engagement_log")
       .update({
-        responded: true,
-        response_text: message.body.slice(0, 1000),
+        metadata: {
+          ...(latestLog.metadata as Record<string, unknown>),
+          responded: true,
+          response_text: message.body.slice(0, 1000),
+        },
       })
       .eq("id", latestLog.id);
+
+    // Enrich reactivation/default reply with the deep link from the last message
+    const lastMeta = latestLog.metadata as { deep_link?: string; journey_name?: string } | null;
+    const deepLink = lastMeta?.deep_link;
+
+    if (deepLink && action.type === "reactivation") {
+      action = {
+        ...action,
+        replyText: `¡Genial! Retomá desde donde lo dejaste: ${deepLink}`,
+      };
+    } else if (deepLink && action.type === "default") {
+      action = {
+        ...action,
+        replyText: `Acá tenés el acceso directo: ${deepLink}`,
+      };
+    }
   }
 
   // Log event if needed
   if (action.logEvent) {
     await getSupabaseClient().from("events").insert({
-      user_id: userId,
+      lead_id: userId,
       event_type: action.logEvent,
       metadata: { source: "whatsapp_response", message: message.body.slice(0, 500) },
     });

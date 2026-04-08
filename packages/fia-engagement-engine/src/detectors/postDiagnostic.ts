@@ -8,10 +8,10 @@ import { config } from "../config";
 import { logger } from "../logger";
 import {
   getRecentEventsByType,
-  getProfileWithWhatsapp,
-  getLeadScoreForUser,
-  getAssessmentForUser,
-  hasBeenContactedForJourney,
+  getProfilesForUsers,
+  getLeadScoresForUsers,
+  getAssessmentsForUsers,
+  getContactedUserIdsForJourney,
 } from "../db/supabase";
 import type { EngagementOpportunity } from "../db/types";
 
@@ -39,23 +39,39 @@ export async function detectPostDiagnostic(): Promise<
     config.engine.postDiagnosticDelayMinutes,
   );
 
+  if (recentDiagnostics.length === 0) {
+    logger.info({ count: 0 }, "Post-diagnostic detector completed");
+    return opportunities;
+  }
+
+  // Deduplicate — only latest event per user matters
+  const latestByUser = new Map<string, (typeof recentDiagnostics)[0]>();
   for (const event of recentDiagnostics) {
-    const userId = event.lead_id;
+    const existing = latestByUser.get(event.lead_id);
+    if (!existing || event.created_at > existing.created_at) {
+      latestByUser.set(event.lead_id, event);
+    }
+  }
 
-    // Don't send twice
-    const alreadySent = await hasBeenContactedForJourney(
-      userId,
-      "bienvenida_diagnostico",
-    );
-    if (alreadySent) continue;
+  const userIds = [...latestByUser.keys()];
 
-    const profile = await getProfileWithWhatsapp(userId);
+  // Batch all per-user lookups in parallel
+  const [contactedIds, profilesMap, scoresMap, assessmentsMap] = await Promise.all([
+    getContactedUserIdsForJourney(userIds, "bienvenida_diagnostico"),
+    getProfilesForUsers(userIds),
+    getLeadScoresForUsers(userIds),
+    getAssessmentsForUsers(userIds),
+  ]);
+
+  for (const userId of userIds) {
+    if (contactedIds.has(userId)) continue;
+
+    const profile = profilesMap.get(userId);
     if (!profile?.phone || !profile.whatsapp_opt_in) continue;
 
-    const [scores, assessment] = await Promise.all([
-      getLeadScoreForUser(userId),
-      getAssessmentForUser(userId),
-    ]);
+    const scores = scoresMap.get(userId);
+    const assessment = assessmentsMap.get(userId);
+
     const fitScore = scores?.fit_score ?? 0;
     const intentScore = scores?.intent_score ?? 0;
     const overallScore = scores?.overall_score ?? assessment?.score ?? 0;

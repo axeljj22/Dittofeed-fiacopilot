@@ -60,6 +60,7 @@ import {
   detectPostDiagnostic,
   detectColdLeads,
   detectSponsorReports,
+  detectContentUnlocked,
 } from "./detectors";
 import { generateMessage } from "./generators/messageGenerator";
 import { sendWhatsAppMessage } from "./senders/whatsapp";
@@ -82,12 +83,13 @@ async function processOpportunity(
 ): Promise<void> {
   const { userId, journeyName } = opportunity;
 
-  // Pilot mode — only send to the configured pilot email
-  if (config.engine.pilotEmail) {
-    const userEmail = (opportunity.profile as { email?: string }).email ?? "";
-    if (userEmail !== config.engine.pilotEmail) {
+  // Pilot mode — only send to the configured pilot phone
+  if (config.engine.pilotPhone) {
+    const userPhone = (opportunity.profile.phone ?? "").replace(/\D/g, "");
+    const pilotPhone = config.engine.pilotPhone.replace(/\D/g, "");
+    if (userPhone !== pilotPhone) {
       logger.debug(
-        { userId, journeyName, userEmail },
+        { userId, journeyName, userPhone },
         "Pilot mode active — skipping non-pilot user",
       );
       return;
@@ -95,15 +97,15 @@ async function processOpportunity(
   }
 
   // Business hours check — only send Mon–Fri 9:00–18:00 in user's timezone
-  const timezone = getTimezoneForUser(
-    (opportunity.profile as { country?: string | null }).country,
-  );
-  if (!isBusinessHours(timezone)) {
-    logger.info(
-      { userId, journeyName, timezone },
-      "Outside business hours — skipping until next window",
-    );
-    return;
+  if (!config.engine.bypassBusinessHours) {
+    const timezone = getTimezoneForUser(opportunity.profile.country);
+    if (!isBusinessHours(timezone)) {
+      logger.info(
+        { userId, journeyName, timezone },
+        "Outside business hours — skipping until next window",
+      );
+      return;
+    }
   }
 
   // Rate limit check
@@ -130,6 +132,29 @@ async function processOpportunity(
 }
 
 /**
+ * Process a batch of opportunities in parallel.
+ * Uses allSettled so one failure doesn't block the rest.
+ */
+async function processAll(opportunities: EngagementOpportunity[]): Promise<void> {
+  if (opportunities.length === 0) return;
+
+  const results = await Promise.allSettled(
+    opportunities.map((op) => processOpportunity(op)),
+  );
+
+  const failed = results.filter((r) => r.status === "rejected");
+  if (failed.length > 0) {
+    logger.error(
+      { failed: failed.length, total: opportunities.length },
+      "Some opportunities failed during processing",
+    );
+    for (const f of failed) {
+      logger.error({ reason: (f as PromiseRejectedResult).reason }, "Opportunity error");
+    }
+  }
+}
+
+/**
  * Run all event-based detectors (completion, post-diagnostic).
  * These check for recent events and should run frequently.
  */
@@ -152,9 +177,7 @@ export async function runEventDetectors(): Promise<void> {
     "Event detectors found opportunities",
   );
 
-  for (const opportunity of allOpportunities) {
-    await processOpportunity(opportunity);
-  }
+  await processAll(allOpportunities);
 }
 
 /**
@@ -164,25 +187,25 @@ export async function runEventDetectors(): Promise<void> {
 export async function runSegmentDetectors(): Promise<void> {
   logger.info("Running segment-based detectors");
 
-  const [inactive, coldLeads] = await Promise.all([
+  const [inactive, coldLeads, contentUnlocked] = await Promise.all([
     detectInactiveUsers(),
     detectColdLeads(),
+    detectContentUnlocked(),
   ]);
 
-  const allOpportunities = [...inactive, ...coldLeads];
+  const allOpportunities = [...inactive, ...coldLeads, ...contentUnlocked];
 
   logger.info(
     {
       inactive: inactive.length,
       coldLeads: coldLeads.length,
+      contentUnlocked: contentUnlocked.length,
       total: allOpportunities.length,
     },
     "Segment detectors found opportunities",
   );
 
-  for (const opportunity of allOpportunities) {
-    await processOpportunity(opportunity);
-  }
+  await processAll(allOpportunities);
 }
 
 /**
@@ -193,14 +216,9 @@ export async function runSponsorReports(): Promise<void> {
 
   const reports = await detectSponsorReports();
 
-  logger.info(
-    { count: reports.length },
-    "Sponsor reports to send",
-  );
+  logger.info({ count: reports.length }, "Sponsor reports to send");
 
-  for (const opportunity of reports) {
-    await processOpportunity(opportunity);
-  }
+  await processAll(reports);
 }
 
 /**
