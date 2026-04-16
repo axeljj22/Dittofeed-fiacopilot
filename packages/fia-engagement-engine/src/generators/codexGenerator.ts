@@ -130,6 +130,23 @@ export async function isCodexAvailable(): Promise<boolean> {
   return auth !== null && Boolean(auth.tokens?.access_token);
 }
 
+/** Parse SSE response body and accumulate output_text deltas */
+function parseSSEText(sseBody: string): string | null {
+  let result = "";
+  for (const line of sseBody.split("\n")) {
+    if (!line.startsWith("data: ")) continue;
+    const raw = line.slice(6).trim();
+    if (raw === "[DONE]") break;
+    try {
+      const event = JSON.parse(raw) as { type?: string; delta?: string; text?: string };
+      if (event.type === "response.output_text.delta" && event.delta) {
+        result += event.delta;
+      }
+    } catch { /* skip non-JSON lines */ }
+  }
+  return result.trim() || null;
+}
+
 export async function generateWithCodexConversation(
   systemPrompt: string,
   history: Array<{ role: "user" | "assistant"; content: string }>,
@@ -151,6 +168,7 @@ export async function generateWithCodexConversation(
 
   const body = {
     model: config.codex.model,
+    stream: true,
     store: false,
     instructions: systemPrompt,
     input: [
@@ -172,25 +190,13 @@ export async function generateWithCodexConversation(
       return null;
     }
 
-    const data = (await resp.json()) as {
-      output?: Array<{
-        type: string;
-        content?: Array<{ type: string; text: string }>;
-      }>;
-    };
-
-    for (const item of data.output ?? []) {
-      if (item.type === "message" && item.content) {
-        for (const block of item.content) {
-          if (block.type === "output_text" && block.text) {
-            return block.text.trim();
-          }
-        }
-      }
+    const sseText = await resp.text();
+    const text = parseSSEText(sseText);
+    if (!text) {
+      logger.error({ preview: sseText.slice(0, 200) }, "No text in Codex conversation SSE response");
+      return null;
     }
-
-    logger.error({ data: JSON.stringify(data).slice(0, 300) }, "No text in Codex conversation response");
-    return null;
+    return text;
   } catch (error) {
     logger.error({ error }, "Codex conversation API call failed");
     return null;
@@ -215,6 +221,7 @@ export async function generateWithCodex(
 
   const body = {
     model: config.codex.model,
+    stream: true,
     store: false,
     instructions: systemPrompt,
     input: [
@@ -238,25 +245,13 @@ export async function generateWithCodex(
       return null;
     }
 
-    const data = (await resp.json()) as {
-      output?: Array<{
-        type: string;
-        content?: Array<{ type: string; text: string }>;
-      }>;
-    };
-
-    for (const item of data.output ?? []) {
-      if (item.type === "message" && item.content) {
-        for (const block of item.content) {
-          if (block.type === "output_text" && block.text) {
-            return block.text.trim();
-          }
-        }
-      }
+    const sseText = await resp.text();
+    const text = parseSSEText(sseText);
+    if (!text) {
+      logger.error({ preview: sseText.slice(0, 200) }, "No text in Codex SSE response");
+      return null;
     }
-
-    logger.error({ data: JSON.stringify(data).slice(0, 300) }, "No text in Codex response");
-    return null;
+    return text;
   } catch (error) {
     logger.error({ error }, "Codex API call failed");
     return null;
