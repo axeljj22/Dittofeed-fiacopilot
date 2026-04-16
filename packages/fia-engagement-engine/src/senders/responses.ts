@@ -252,16 +252,6 @@ export async function processIncomingResponse(
   // Good engagement → reset counter
   await upsertConversationState(userId, { consecutiveLowEngagement: 0 });
 
-  // 24h rate limit: max 1 AI reply per day if not engaging
-  if (state?.lastAiReplyAt) {
-    const lastReply = new Date(state.lastAiReplyAt).getTime();
-    const hoursSince = (Date.now() - lastReply) / (1000 * 60 * 60);
-    if (hoursSince < 24) {
-      logger.info({ userId, hoursSince: hoursSince.toFixed(1) }, "AI inbound rate limit — 24h window");
-      return { type: "default", replyText: "" };
-    }
-  }
-
   // ── 9. Determine user segment ────────────────────────────────────────────
   const segment = await getUserSegment(userId);
 
@@ -270,9 +260,6 @@ export async function processIncomingResponse(
 
   if (aiReply) {
     action = { ...action, replyText: aiReply };
-
-    // ── 11. Update lastAiReplyAt ─────────────────────────────────────────
-    await upsertConversationState(userId, { lastAiReplyAt: new Date().toISOString() });
   } else {
     logger.warn({ userId }, "AI inbound reply returned null — no reply sent");
   }
