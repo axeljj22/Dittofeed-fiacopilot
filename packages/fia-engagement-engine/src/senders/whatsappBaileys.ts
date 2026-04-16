@@ -99,20 +99,14 @@ class BaileysManager {
       sock.ev.on("creds.update", saveCreds);
 
       // Capture LID ↔ phone mappings from Baileys contact events
+      // Key is always bare LID digits (no @lid suffix) for consistent lookup
       sock.ev.on("contacts.upsert", (contacts: Array<{ id: string; lid?: string; name?: string }>) => {
         for (const c of contacts) {
           if (c.lid && c.id?.endsWith("@s.whatsapp.net")) {
             const phone = c.id.replace("@s.whatsapp.net", "");
-            this.lidToPhone.set(c.lid, phone);
-            logger.debug({ lid: c.lid, phone }, "LID mapping captured from contacts.upsert");
-          }
-          // Also map the other direction: if id is a LID and we have a phone somewhere
-          if (c.id?.endsWith("@lid")) {
-            // Check if there's a matching phone JID in our existing map
-            const existingPhone = this.lidToPhone.get(c.id);
-            if (!existingPhone) {
-              logger.debug({ lid: c.id, name: c.name }, "LID contact without phone mapping");
-            }
+            const lidKey = c.lid.replace("@lid", ""); // normalize — strip suffix if present
+            this.lidToPhone.set(lidKey, phone);
+            logger.debug({ lid: lidKey, phone }, "LID mapping captured from contacts.upsert");
           }
         }
         logger.info({ mapSize: this.lidToPhone.size }, "LID→phone map updated");
@@ -131,13 +125,13 @@ class BaileysManager {
           if (remoteJid.endsWith("@s.whatsapp.net")) {
             from = remoteJid.replace("@s.whatsapp.net", "");
           } else if (remoteJid.endsWith("@lid")) {
-            const resolved = this.lidToPhone.get(remoteJid);
+            const lidKey = remoteJid.replace("@lid", ""); // normalize for lookup
+            const resolved = this.lidToPhone.get(lidKey);
             if (resolved) {
               from = resolved;
               logger.info({ lid: remoteJid, phone: from }, "LID resolved to phone");
             } else {
-              // Pass the raw LID digits — processIncomingResponse will handle unknown
-              from = remoteJid.replace("@lid", "");
+              from = lidKey;
               logger.warn({ lid: remoteJid }, "Unresolved LID — passing raw to response handler");
             }
           } else {
@@ -221,8 +215,9 @@ class BaileysManager {
       // Capture LID mapping if the response contains a LID JID
       const responseJid = result?.key?.remoteJid;
       if (responseJid?.endsWith("@lid")) {
-        this.lidToPhone.set(responseJid, normalized);
-        logger.info({ lid: responseJid, phone: normalized }, "LID mapping captured from send");
+        const lidKey = responseJid.replace("@lid", "");
+        this.lidToPhone.set(lidKey, normalized);
+        logger.info({ lid: lidKey, phone: normalized }, "LID mapping captured from send");
       }
       return { success: true };
     } catch (error) {
