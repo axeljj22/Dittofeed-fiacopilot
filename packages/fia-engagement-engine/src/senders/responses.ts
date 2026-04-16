@@ -131,16 +131,20 @@ export async function processIncomingResponse(
   const classified = classifyResponse(message.body);
 
   // ── 2. Look up profile ──────────────────────────────────────────────────
+  // Try both "5491125120212" and "+5491125120212" — apps may store either format.
   const { data: profile } = await getSupabaseClient()
     .from("profiles")
     .select("id, whatsapp_opt_in, wp_opted_out")
-    .eq("phone", normalizedFrom)
-    .single();
+    .or(`phone.eq.${normalizedFrom},phone.eq.+${normalizedFrom}`)
+    .maybeSingle();
 
   if (!profile) {
-    logger.warn({ from: message.from }, "Incoming message from unregistered number");
+    // Silenciar — no enviar UNREGISTERED_MESSAGE. Si alguien escribe y no está
+    // en la DB, probablemente fue alguien que recibió un mensaje nuestro (piloto)
+    // cuyo teléfono aún no está sincronizado. Logueamos y quedamos en silencio.
+    logger.warn({ from: message.from, normalizedFrom }, "No profile found for incoming number — silencing");
     await insertIncomingMessage(message.from, message.body, null, message.messageId ?? null);
-    return { type: "default", replyText: UNREGISTERED_MESSAGE };
+    return { type: "default", replyText: "" };
   }
 
   const userId = profile.id as string;

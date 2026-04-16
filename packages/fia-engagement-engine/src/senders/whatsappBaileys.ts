@@ -57,9 +57,11 @@ class BaileysManager {
   /** Maps LID bare digits → phone digits (e.g. "211436978581513" → "5491125120212") */
   private lidToPhone = new Map<string, string>();
 
-  /** Path to the persisted LID map JSON file */
+  /** Path to the persisted LID map JSON file.
+   *  Stored ONE LEVEL UP from the session dir so it survives session resets
+   *  (resetSession wipes only the session dir contents, not the parent). */
   private get lidMapPath(): string {
-    return path.join(config.whatsapp.sessionDir, "lid_map.json");
+    return path.join(path.dirname(config.whatsapp.sessionDir), "lid_map.json");
   }
 
   private loadLidMap(): void {
