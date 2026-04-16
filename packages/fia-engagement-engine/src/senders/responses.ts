@@ -225,7 +225,8 @@ export async function processIncomingResponse(
   }
 
   // ── 7. Pilot mode guard ──────────────────────────────────────────────────
-  const isAIPilot = !config.engine.pilotPhone || normalizedFrom.includes(config.engine.pilotPhone);
+  const isWhitelisted = config.engine.pilotWhitelistPhones.some((p) => normalizedFrom.includes(p));
+  const isAIPilot = !config.engine.pilotPhone || normalizedFrom.includes(config.engine.pilotPhone) || isWhitelisted;
   if (!isAIPilot) {
     logger.info({ userId }, "AI inbound reply skipped — not in pilot");
     return action;

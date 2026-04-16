@@ -173,10 +173,19 @@ class BaileysManager {
           const body: string = msg.message?.conversation ?? msg.message?.extendedTextMessage?.text ?? "";
           if (!from || !body) continue;
           logger.info({ from, body: body.slice(0, 50), jid: remoteJid }, "Incoming WhatsApp message");
+          const normalizedSender = from.replace(/\D/g, "");
           void processIncomingResponse({ from, body, messageId: msg.key.id ?? undefined })
-            .then((action) => {
+            .then(async (action) => {
               if (action.replyText) {
-                void sock.sendMessage(remoteJid, { text: action.replyText });
+                await sock.sendMessage(remoteJid, { text: action.replyText });
+              }
+              // Notify Axel when a pilot whitelisted user sends a message
+              const isWhitelisted = config.engine.pilotWhitelistPhones.some((p) => normalizedSender.includes(p));
+              if (isWhitelisted && config.engine.notifyPhone && normalizedSender !== config.engine.notifyPhone) {
+                const notifyJid = `${config.engine.notifyPhone}@s.whatsapp.net`;
+                const replyPreview = action.replyText ? action.replyText.slice(0, 200) : "(sin respuesta)";
+                const notifText = `🔔 *${from}* escribió\n📥 "${body.slice(0, 200)}"\n💬 Sofía: "${replyPreview}"`;
+                await sock.sendMessage(notifyJid, { text: notifText });
               }
             })
             .catch((err: unknown) => {

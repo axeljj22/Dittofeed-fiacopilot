@@ -509,7 +509,7 @@ DIAGNÓSTICO:
 - Áreas de dolor: ${painAreas.length > 0 ? painAreas.join(", ") : "no disponible"}
 
 BÓVEDA:
-${vaultContext}`.trim();
+${vaultContext}${profile?.preferences?.['sofia_notes'] ? `\n\nCONTEXTO ESPECIAL DE ESTA CONVERSACIÓN:\n${profile.preferences['sofia_notes'] as string}` : ""}`.trim();
 
     const fullUserMessage = `${userContext}\n\nMensaje del usuario: ${incomingText}\n\nRespondé SOLO con el texto del mensaje, sin prefijos ni comillas.`;
 

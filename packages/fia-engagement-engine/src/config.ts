@@ -88,6 +88,10 @@ export const config = {
     pilotPhone: optionalEnv("PILOT_PHONE", ""),
     // Bypass business hours check (for testing only)
     bypassBusinessHours: optionalEnv("BYPASS_BUSINESS_HOURS", "") === "true",
+    // Pilot whitelist — phones that bypass PILOT_PHONE restriction and trigger Axel notifications
+    pilotWhitelistPhones: optionalEnv("PILOT_WHITELIST_PHONES", "").split(",").map((p) => p.trim()).filter(Boolean),
+    // Phone to notify when a whitelisted pilot user sends a message
+    notifyPhone: optionalEnv("SOFIA_NOTIFY_PHONE", ""),
     // Total capsules in the Método FIA (update if the method scales)
     totalCapsules: parseInt(optionalEnv("TOTAL_CAPSULES", "25"), 10),
     // Default timezone for business hours check (IANA format)
