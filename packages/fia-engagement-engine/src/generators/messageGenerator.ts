@@ -9,6 +9,7 @@
 import { config } from "../config";
 import { logger } from "../logger";
 import {
+  getProfileWithWhatsapp,
   getVaultOutputsForUser,
   getCapsuleProgressForUser,
   getLeadScoreForUser,
@@ -386,6 +387,85 @@ function enforceLength(text: string, deepLink: string): string {
 const useClaudeAI =
   config.anthropic.apiKey !== "placeholder" &&
   config.anthropic.apiKey !== "";
+
+const INBOUND_SYSTEM_ADDENDUM = `El usuario te está respondiendo un mensaje. Respondé de forma natural, breve y empática. No ofrezcas nada, no des instrucciones. Solo conversá.`;
+
+/**
+ * Genera una respuesta AI a un mensaje libre entrante de WhatsApp.
+ * Retorna null si Claude falla o si la API key no está configurada.
+ */
+export async function generateInboundReply(
+  userId: string,
+  incomingText: string,
+): Promise<string | null> {
+  if (!useClaudeAI) return null;
+
+  try {
+    const [profile, vaultOutputs, capsuleProgress, scores, assessment] = await Promise.all([
+      getProfileWithWhatsapp(userId),
+      getVaultOutputsForUser(userId),
+      getCapsuleProgressForUser(userId),
+      getLeadScoreForUser(userId),
+      getAssessmentForUser(userId),
+    ]);
+
+    const completedCount = capsuleProgress.filter((p) => p.status === "completed").length;
+    const vaultContext = buildVaultContext(vaultOutputs);
+    const painAreas = assessment?.pain_areas ?? [];
+    const companySize = resolveCompanySize(assessment);
+
+    const userContext = `
+PERFIL DEL USUARIO:
+- Nombre: ${profile?.name ?? "desconocido"}
+- Empresa: ${profile?.company_name ?? "desconocida"}
+- Industria: ${profile?.industry ?? "desconocida"}
+- Objetivo: ${profile?.objective ?? "no disponible"}
+- Temperatura: ${profile?.temperature ?? "desconocida"}
+- Tamaño de empresa: ${companySize ?? "desconocido"}
+- Cápsulas completadas: ${completedCount}/25
+
+SCORES:
+- Fit Score: ${scores?.fit_score ?? "N/A"}
+- Intent Score: ${scores?.intent_score ?? "N/A"}
+- Overall: ${scores?.overall_score ?? "N/A"}
+
+DIAGNÓSTICO:
+- Áreas de dolor: ${painAreas.length > 0 ? painAreas.join(", ") : "no disponible"}
+
+BÓVEDA:
+${vaultContext}
+`.trim();
+
+    const Anthropic = (await import("@anthropic-ai/sdk")).default;
+    const client = new Anthropic({ apiKey: config.anthropic.apiKey });
+
+    const response = await client.messages.create({
+      model: config.anthropic.model,
+      max_tokens: 150,
+      system: `${SYSTEM_PROMPT}\n\n${INBOUND_SYSTEM_ADDENDUM}`,
+      messages: [
+        {
+          role: "user",
+          content: `${userContext}\n\nMensaje del usuario: ${incomingText}\n\nRespondé SOLO con el texto del mensaje, sin prefijos ni explicaciones.`,
+        },
+      ],
+    });
+
+    const textBlock = response.content.find((b) => b.type === "text");
+    if (!textBlock || textBlock.type !== "text") return null;
+
+    const reply = textBlock.text.trim();
+    logger.info({ userId, mode: "claude_inbound" }, "Inbound AI reply generated");
+
+    // Enforce max length — no deep link to preserve
+    return reply.length <= MAX_MESSAGE_CHARS
+      ? reply
+      : reply.slice(0, MAX_MESSAGE_CHARS - 1).trimEnd() + "…";
+  } catch (error) {
+    logger.error({ error, userId }, "generateInboundReply failed");
+    return null;
+  }
+}
 
 export async function generateMessage(
   opportunity: EngagementOpportunity,

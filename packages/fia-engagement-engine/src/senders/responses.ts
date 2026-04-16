@@ -13,7 +13,8 @@
  */
 import { config } from "../config";
 import { logger } from "../logger";
-import { getSupabaseClient, getLeadScoreForUser, insertIncomingMessage } from "../db/supabase";
+import { getSupabaseClient, getLeadScoreForUser, getRecentEngagementForUser, insertIncomingMessage } from "../db/supabase";
+import { generateInboundReply } from "../generators/messageGenerator";
 
 export interface IncomingMessage {
   from: string; // WhatsApp number
@@ -195,6 +196,19 @@ export async function processIncomingResponse(
         ...action,
         replyText: `Acá tenés el acceso directo: ${deepLink}`,
       };
+    }
+  }
+
+  // AI reply for free-text messages — skip if user already received 2+ messages today (loop guard)
+  if (action.type === "default") {
+    const recentEngagement = await getRecentEngagementForUser(userId, 24);
+    if (recentEngagement.length < 2) {
+      const aiReply = await generateInboundReply(userId, message.body);
+      if (aiReply) {
+        action = { ...action, replyText: aiReply };
+      }
+    } else {
+      logger.info({ userId, recentCount: recentEngagement.length }, "AI inbound reply skipped — rate limit");
     }
   }
 
