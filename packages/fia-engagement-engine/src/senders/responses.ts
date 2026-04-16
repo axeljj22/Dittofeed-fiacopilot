@@ -199,9 +199,8 @@ export async function processIncomingResponse(
     }
   }
 
-  // Pilot mode — only enable AI replies for whitelisted numbers
-  const AI_PILOT_NUMBERS = ["542914070870"];
-  const isAIPilot = AI_PILOT_NUMBERS.includes(normalizedFrom);
+  // Pilot mode — restrict AI replies to pilotPhone if set, otherwise all users
+  const isAIPilot = !config.engine.pilotPhone || normalizedFrom.includes(config.engine.pilotPhone);
 
   // AI reply for free-text messages — skip if user already received 2+ messages today (loop guard)
   if (action.type === "default" && isAIPilot) {

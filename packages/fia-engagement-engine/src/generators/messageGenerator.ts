@@ -12,11 +12,14 @@ import {
   getProfileWithWhatsapp,
   getVaultOutputsForUser,
   getCapsuleProgressForUser,
+  getCapsules,
   getLeadScoreForUser,
   getAssessmentForUser,
+  getConversationHistory,
+  appendConversationMessages,
 } from "../db/supabase";
 import type { EngagementOpportunity, VaultOutput, CapsuleProgress, LeadScore, AssessmentSubmission } from "../db/types";
-import { generateWithCodex } from "./codexGenerator";
+import { generateWithCodex, generateWithCodexConversation } from "./codexGenerator";
 
 export interface GeneratedMessage {
   text: string;
@@ -196,33 +199,54 @@ DATOS DEL JOURNEY:
 `.trim();
 }
 
-// ─── Claude API messages (when API key is available) ───
+// ─── AI generation (Codex + Claude) ───
 
-const SYSTEM_PROMPT = `Sos Sofía, Coach de FIA Copilot. Tenés 24 años, sos argentina, vivís en Olivos y estudiás administración de empresas. Tu trabajo es acompañar a los usuarios en su recorrido por el Método FIA (25 cápsulas para implementar IA en PyMEs latinoamericanas).
+const SOFIA_SYSTEM_PROMPT = `Sos Sofía, la Coach de FIA Copilot.
 
-Tu personalidad:
-- Cercana y humana, pero siempre respetuosa y profesional
-- Tuteo natural latinoamericano — nada forzado
-- Mensajes cortos como los manda cualquier persona real por WhatsApp
-- Pocos emojis — máximo uno por mensaje, y solo si suma
-- Texto plano — sin markdown, sin asteriscos, sin listas con guiones
+QUIÉN SOS:
+- 24 años, argentina, vivís en Olivos (zona norte de Buenos Aires)
+- Estudiás administración de empresas y te apasiona la IA aplicada a negocios reales
+- Trabajás en FIA Copilot hace más de un año acompañando a dueños de PyMEs y equipos en su implementación de IA
 
-Lo que podés hacer:
-- Hablar del contenido y avance de las cápsulas
-- Hacer seguimiento del progreso del usuario
-- Motivar a retomar o continuar el programa
-- Responder dudas sobre la plataforma FIA Copilot
+SOBRE FIA COPILOT:
+- Plataforma de 25 cápsulas para implementar IA en PyMEs latinoamericanas
+- Cada cápsula tiene una mini-acción práctica y un entregable concreto para el negocio
+- La Bóveda guarda todo lo que el usuario construyó (prompts, procesos, análisis, ideas)
+- El Diagnóstico mide el nivel de madurez de IA de la empresa (score 0-100)
+- Hay comunidad de empresarios y eventos periódicos
+- El programa está pensado para implementar, no solo aprender — cada cápsula genera algo concreto
 
-Lo que nunca hacés:
-- Hablar de precios, planes o pagos
-- Dar diagnósticos, consejos legales ni médicos
-- Prometer resultados específicos o garantías
-- Inventar información sobre el usuario o su empresa
+TU PERSONALIDAD:
+- Cálida y cercana, como una amiga que sabe del tema
+- No exagerada — no escribís "¡¡Genial!!" ni abusás de los signos de exclamación
+- Tuteo natural latinoamericano, nunca "usted"
+- Mensajes cortos — 1-3 oraciones como una persona real por WhatsApp
+- Emojis solo cuando son genuinos, máximo uno por mensaje
+- Texto plano — sin markdown, asteriscos ni listas con guiones
+- No te presentás en cada mensaje — ya te conocen
+- Cuando hay historial de conversación, lo usás naturalmente sin forzarlo
 
-Formato de respuesta:
-- Máximo 300 caracteres
-- Solo el texto del mensaje, sin prefijos ni explicaciones
-- Si tenés el deep link, incluilo de forma natural al final`;
+LO QUE PODÉS HACER:
+- Conversar sobre el programa y el progreso del usuario
+- Hablar del contenido de las cápsulas y qué construyeron en la Bóveda
+- Motivar a retomar o continuar sin ser pesada
+- Responder preguntas sobre la plataforma, la Bóveda, el diagnóstico, la comunidad
+- Escuchar cuando el usuario quiere hablar de su negocio
+
+LO QUE NUNCA HACÉS:
+- Hablar de precios, planes o pagos — decís "eso lo maneja el equipo"
+- Dar consejos legales, contables, médicos o financieros
+- Prometer resultados o garantías
+- Inventar información sobre el usuario, su empresa o el programa
+- Mandar listas con viñetas — siempre texto corrido
+
+FORMATO:
+- Máximo 300 caracteres por mensaje
+- Solo el texto del mensaje, sin prefijos ni comillas
+- Si tenés un link relevante, lo incluís de forma natural al final`;
+
+// Alias para compatibilidad con generateMessage() outbound
+const SYSTEM_PROMPT = SOFIA_SYSTEM_PROMPT;
 
 
 
@@ -388,28 +412,43 @@ const useClaudeAI =
   config.anthropic.apiKey !== "placeholder" &&
   config.anthropic.apiKey !== "";
 
-const INBOUND_SYSTEM_ADDENDUM = `El usuario te está respondiendo un mensaje. Respondé de forma natural, breve y empática. No ofrezcas nada, no des instrucciones. Solo conversá.`;
-
 /**
  * Genera una respuesta AI a un mensaje libre entrante de WhatsApp.
- * Retorna null si Claude falla o si la API key no está configurada.
+ * Intenta Codex (ChatGPT Plus) primero, luego Claude como fallback.
+ * Guarda el intercambio en wa_conversation_history para memoria de conversación.
+ * Retorna null si ambos fallan (el caller usa el texto fijo).
  */
 export async function generateInboundReply(
   userId: string,
   incomingText: string,
 ): Promise<string | null> {
-  if (!useClaudeAI) return null;
-
   try {
-    const [profile, vaultOutputs, capsuleProgress, scores, assessment] = await Promise.all([
-      getProfileWithWhatsapp(userId),
-      getVaultOutputsForUser(userId),
-      getCapsuleProgressForUser(userId),
-      getLeadScoreForUser(userId),
-      getAssessmentForUser(userId),
-    ]);
+    // Load all context in parallel
+    const [history, profile, vaultOutputs, capsuleProgress, capsules, scores, assessment] =
+      await Promise.all([
+        getConversationHistory(userId, 10),
+        getProfileWithWhatsapp(userId),
+        getVaultOutputsForUser(userId),
+        getCapsuleProgressForUser(userId),
+        getCapsules(),
+        getLeadScoreForUser(userId),
+        getAssessmentForUser(userId),
+      ]);
+
+    // Save user message to history immediately
+    await appendConversationMessages(userId, [{ role: "user", content: incomingText }]);
 
     const completedCount = capsuleProgress.filter((p) => p.status === "completed").length;
+    const completedCapsules = capsuleProgress
+      .filter((p) => p.status === "completed")
+      .map((p) => `Cápsula ${p.capsule_number}${p.capsule_title ? `: ${p.capsule_title}` : ""}`)
+      .join(", ");
+
+    const inProgressCapsule = capsuleProgress.find((p) => p.status === "in_progress");
+    const inProgressTitle = inProgressCapsule
+      ? capsules.find((c) => c.id === inProgressCapsule.capsule_id)?.title ?? null
+      : null;
+
     const vaultContext = buildVaultContext(vaultOutputs);
     const painAreas = assessment?.pain_areas ?? [];
     const companySize = resolveCompanySize(assessment);
@@ -422,7 +461,7 @@ PERFIL DEL USUARIO:
 - Objetivo: ${profile?.objective ?? "no disponible"}
 - Temperatura: ${profile?.temperature ?? "desconocida"}
 - Tamaño de empresa: ${companySize ?? "desconocido"}
-- Cápsulas completadas: ${completedCount}/25
+- Cápsulas completadas: ${completedCount}/25${completedCapsules ? `\n- Completadas: ${completedCapsules}` : ""}${inProgressCapsule ? `\n- En progreso: Cápsula ${inProgressCapsule.capsule_number}${inProgressTitle ? `: ${inProgressTitle}` : ""}` : ""}
 
 SCORES:
 - Fit Score: ${scores?.fit_score ?? "N/A"}
@@ -433,34 +472,61 @@ DIAGNÓSTICO:
 - Áreas de dolor: ${painAreas.length > 0 ? painAreas.join(", ") : "no disponible"}
 
 BÓVEDA:
-${vaultContext}
-`.trim();
+${vaultContext}`.trim();
 
-    const Anthropic = (await import("@anthropic-ai/sdk")).default;
-    const client = new Anthropic({ apiKey: config.anthropic.apiKey });
+    const fullUserMessage = `${userContext}\n\nMensaje del usuario: ${incomingText}\n\nRespondé SOLO con el texto del mensaje, sin prefijos ni comillas.`;
 
-    const response = await client.messages.create({
-      model: config.anthropic.model,
-      max_tokens: 150,
-      system: `${SYSTEM_PROMPT}\n\n${INBOUND_SYSTEM_ADDENDUM}`,
-      messages: [
-        {
-          role: "user",
-          content: `${userContext}\n\nMensaje del usuario: ${incomingText}\n\nRespondé SOLO con el texto del mensaje, sin prefijos ni explicaciones.`,
-        },
-      ],
-    });
+    let reply: string | null = null;
 
-    const textBlock = response.content.find((b) => b.type === "text");
-    if (!textBlock || textBlock.type !== "text") return null;
+    // 1. Try Codex with conversation history
+    reply = await generateWithCodexConversation(
+      SOFIA_SYSTEM_PROMPT,
+      history as Array<{ role: "user" | "assistant"; content: string }>,
+      fullUserMessage,
+    );
 
-    const reply = textBlock.text.trim();
-    logger.info({ userId, mode: "claude_inbound" }, "Inbound AI reply generated");
+    // 2. Fallback to Claude with conversation history
+    if (!reply && useClaudeAI) {
+      try {
+        const Anthropic = (await import("@anthropic-ai/sdk")).default;
+        const client = new Anthropic({ apiKey: config.anthropic.apiKey });
 
-    // Enforce max length — no deep link to preserve
-    return reply.length <= MAX_MESSAGE_CHARS
+        const claudeHistory = history.map((m) => ({
+          role: m.role as "user" | "assistant",
+          content: m.content,
+        }));
+
+        const response = await client.messages.create({
+          model: config.anthropic.model,
+          max_tokens: 150,
+          system: SOFIA_SYSTEM_PROMPT,
+          messages: [
+            ...claudeHistory,
+            { role: "user", content: fullUserMessage },
+          ],
+        });
+
+        const textBlock = response.content.find((b) => b.type === "text");
+        if (textBlock && textBlock.type === "text") {
+          reply = textBlock.text.trim();
+        }
+      } catch (error) {
+        logger.error({ error, userId }, "Claude inbound fallback failed");
+      }
+    }
+
+    if (!reply) return null;
+
+    // Enforce max length
+    const finalReply = reply.length <= MAX_MESSAGE_CHARS
       ? reply
       : reply.slice(0, MAX_MESSAGE_CHARS - 1).trimEnd() + "…";
+
+    // Save Sofía's reply to history
+    await appendConversationMessages(userId, [{ role: "assistant", content: finalReply }]);
+
+    logger.info({ userId, historyLength: history.length }, "Inbound AI reply generated");
+    return finalReply;
   } catch (error) {
     logger.error({ error, userId }, "generateInboundReply failed");
     return null;

@@ -130,6 +130,73 @@ export async function isCodexAvailable(): Promise<boolean> {
   return auth !== null && Boolean(auth.tokens?.access_token);
 }
 
+export async function generateWithCodexConversation(
+  systemPrompt: string,
+  history: Array<{ role: "user" | "assistant"; content: string }>,
+  newMessage: string,
+): Promise<string | null> {
+  const auth = await getValidAuth();
+  if (!auth) return null;
+
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${auth.tokens.access_token}`,
+    "Content-Type": "application/json",
+    "ChatGPT-Account-Id": auth.tokens.account_id,
+  };
+
+  const historyInput = history.map((m) => ({
+    role: m.role,
+    content: [{ type: m.role === "user" ? "input_text" : "output_text", text: m.content }],
+  }));
+
+  const body = {
+    model: config.codex.model,
+    store: false,
+    instructions: systemPrompt,
+    input: [
+      ...historyInput,
+      { role: "user", content: [{ type: "input_text", text: newMessage }] },
+    ],
+  };
+
+  try {
+    const resp = await fetch(CODEX_ENDPOINT, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+
+    if (!resp.ok) {
+      const text = await resp.text();
+      logger.error({ status: resp.status, body: text.slice(0, 300) }, "Codex conversation API error");
+      return null;
+    }
+
+    const data = (await resp.json()) as {
+      output?: Array<{
+        type: string;
+        content?: Array<{ type: string; text: string }>;
+      }>;
+    };
+
+    for (const item of data.output ?? []) {
+      if (item.type === "message" && item.content) {
+        for (const block of item.content) {
+          if (block.type === "output_text" && block.text) {
+            return block.text.trim();
+          }
+        }
+      }
+    }
+
+    logger.error({ data: JSON.stringify(data).slice(0, 300) }, "No text in Codex conversation response");
+    return null;
+  } catch (error) {
+    logger.error({ error }, "Codex conversation API call failed");
+    return null;
+  }
+}
+
 export async function generateWithCodex(
   systemPrompt: string,
   userMessage: string,

@@ -654,6 +654,45 @@ export async function getProfilesForUsers(
   return result;
 }
 
+// ─── Conversation history (Sofía inbound memory) ───
+
+export async function getConversationHistory(
+  userId: string,
+  limit = 10,
+): Promise<Array<{ role: string; content: string }>> {
+  const { data, error } = await getSupabaseClient()
+    .from("wa_conversation_history")
+    .select("role, content")
+    .eq("user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    logger.error({ error, userId }, "Failed to fetch conversation history");
+    return [];
+  }
+
+  // Reverse to chronological order
+  return ((data ?? []) as Array<{ role: string; content: string }>).reverse();
+}
+
+export async function appendConversationMessages(
+  userId: string,
+  messages: Array<{ role: string; content: string }>,
+): Promise<void> {
+  if (messages.length === 0) return;
+
+  const rows = messages.map((m) => ({ user_id: userId, role: m.role, content: m.content }));
+
+  const { error } = await getSupabaseClient()
+    .from("wa_conversation_history")
+    .insert(rows);
+
+  if (error) {
+    logger.error({ error, userId }, "Failed to save conversation messages");
+  }
+}
+
 /** Shared transform for capsule_progress rows joined with capsules */
 function transformCapsuleProgressRow(row: unknown): CapsuleProgress {
   const r = row as Record<string, unknown>;
