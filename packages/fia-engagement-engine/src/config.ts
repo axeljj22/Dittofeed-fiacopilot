@@ -42,7 +42,7 @@ export const config = {
       | "cloud_api"
       | "twilio",
     // Baileys session persistence directory
-    sessionDir: optionalEnv("WA_SESSION_DIR", "/app/sessions/baileys"),
+    sessionDir: process.env["WHATSAPP_SESSION_DIR"] ?? process.env["WA_SESSION_DIR"] ?? "/app/sessions/baileys",
     // Meta Cloud API
     cloudApi: {
       token: process.env["WHATSAPP_CLOUD_API_TOKEN"] ?? "",

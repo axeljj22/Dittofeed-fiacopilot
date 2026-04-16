@@ -9,6 +9,7 @@
  */
 import QRCode from "qrcode";
 import fs from "fs";
+import path from "path";
 import { config } from "../config";
 import { logger } from "../logger";
 import { processIncomingResponse } from "./responses";
@@ -53,8 +54,35 @@ class BaileysManager {
   private _status: WAStatus = "disconnected";
   private _qrDataUrl: string | null = null;
   private _connectedPhone: string | null = null;
-  /** Maps LID JIDs (e.g. "12345@lid") → phone digits (e.g. "5491125120212") */
+  /** Maps LID bare digits → phone digits (e.g. "211436978581513" → "5491125120212") */
   private lidToPhone = new Map<string, string>();
+
+  /** Path to the persisted LID map JSON file */
+  private get lidMapPath(): string {
+    return path.join(config.whatsapp.sessionDir, "lid_map.json");
+  }
+
+  private loadLidMap(): void {
+    try {
+      const raw = fs.readFileSync(this.lidMapPath, "utf8");
+      const entries = JSON.parse(raw) as Record<string, string>;
+      for (const [lid, phone] of Object.entries(entries)) {
+        this.lidToPhone.set(lid, phone);
+      }
+      logger.info({ count: this.lidToPhone.size }, "LID map loaded from disk");
+    } catch {
+      // File doesn't exist yet — start with empty map
+    }
+  }
+
+  private saveLidMap(): void {
+    try {
+      const entries = Object.fromEntries(this.lidToPhone);
+      fs.writeFileSync(this.lidMapPath, JSON.stringify(entries, null, 2));
+    } catch (error) {
+      logger.warn({ error }, "Could not save LID map to disk");
+    }
+  }
 
   get status(): WAStatus {
     return this._status;
@@ -76,6 +104,9 @@ class BaileysManager {
 
     // Ensure session directory exists
     fs.mkdirSync(config.whatsapp.sessionDir, { recursive: true });
+
+    // Load persisted LID map (survives container restarts)
+    this.loadLidMap();
 
     try {
       // Dynamic import — avoids native module compilation on Windows dev machines
@@ -110,6 +141,7 @@ class BaileysManager {
           }
         }
         logger.info({ mapSize: this.lidToPhone.size }, "LID→phone map updated");
+        this.saveLidMap();
       });
 
       // Handle incoming messages — route to response processor
@@ -217,6 +249,7 @@ class BaileysManager {
       if (responseJid?.endsWith("@lid")) {
         const lidKey = responseJid.replace("@lid", "");
         this.lidToPhone.set(lidKey, normalized);
+        this.saveLidMap();
         logger.info({ lid: lidKey, phone: normalized }, "LID mapping captured from send");
       }
       return { success: true };
