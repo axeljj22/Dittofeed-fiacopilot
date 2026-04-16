@@ -163,8 +163,11 @@ class BaileysManager {
               from = resolved;
               logger.info({ lid: remoteJid, phone: from }, "LID resolved to phone");
             } else {
-              from = lidKey;
-              logger.warn({ lid: remoteJid }, "Unresolved LID — passing raw to response handler");
+              // LID no resuelto — silenciar en lugar de enviar UNREGISTERED_MESSAGE.
+              // El mapping se captura automáticamente la próxima vez que el engine
+              // envíe un mensaje a este usuario (vía sendMessage → result.key.remoteJid).
+              logger.warn({ lid: remoteJid }, "Unresolved LID — skipping message (no phone mapping)");
+              continue;
             }
           } else {
             from = remoteJid;
