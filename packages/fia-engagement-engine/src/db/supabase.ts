@@ -120,7 +120,7 @@ export async function getCapsuleProgressForUser(
     .from("capsule_progress")
     .select("*, capsules(number, title, path_id)")
     .eq("lead_id", userId)
-    .order("created_at", { ascending: true });
+    .order("started_at", { ascending: true });
 
   if (error) {
     logger.error({ error, userId }, "Failed to fetch capsule progress");
