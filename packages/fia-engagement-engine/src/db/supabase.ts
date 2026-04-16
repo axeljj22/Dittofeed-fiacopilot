@@ -739,3 +739,92 @@ export async function getCapsuleProgressForUsers(
   }
   return result;
 }
+
+// ─── Segmentation ───
+
+export interface UserSegment {
+  isPaid: boolean;
+  isFiaVentas: boolean;
+  isFiaEmpresas: boolean;
+  orgRole: string | null;
+  planId: string | null;
+  trialOfferExpiresAt: string | null;
+}
+
+/**
+ * Returns the user's segment for inbound AI personalization.
+ * Priority: FIA Empresas > FIA Ventas > Pro > Lead frío
+ */
+export async function getUserSegment(userId: string): Promise<UserSegment> {
+  const [programAccess, subscription, profile] = await Promise.all([
+    getSupabaseClient()
+      .from("user_program_access")
+      .select("program_slug")
+      .eq("user_id", userId)
+      .eq("status", "active"),
+    getSupabaseClient()
+      .from("subscriptions")
+      .select("plan_id, status")
+      .eq("user_id", userId)
+      .eq("status", "active")
+      .order("created_at", { ascending: false })
+      .limit(1)
+      .maybeSingle(),
+    getSupabaseClient()
+      .from("profiles")
+      .select("org_role, trial_offer_expires_at")
+      .eq("id", userId)
+      .single(),
+  ]);
+
+  const slugs = (programAccess.data ?? []).map((r) => (r as { program_slug: string }).program_slug);
+  const sub = subscription.data as { plan_id: string; status: string } | null;
+  const prof = profile.data as { org_role: string | null; trial_offer_expires_at: string | null } | null;
+
+  return {
+    isPaid: !!sub || slugs.length > 0,
+    isFiaVentas: slugs.includes("fia-ventas"),
+    isFiaEmpresas: slugs.includes("fia-empresas") || prof?.org_role === "sponsor" || prof?.org_role === "implementador",
+    orgRole: prof?.org_role ?? null,
+    planId: sub?.plan_id ?? null,
+    trialOfferExpiresAt: prof?.trial_offer_expires_at ?? null,
+  };
+}
+
+// ─── Conversation State ───
+
+export interface ConversationState {
+  consecutiveLowEngagement: number;
+  lastAiReplyAt: string | null;
+}
+
+export async function getConversationState(userId: string): Promise<ConversationState> {
+  const { data } = await getSupabaseClient()
+    .from("wa_conversation_state")
+    .select("consecutive_low_engagement, last_ai_reply_at")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  if (!data) return { consecutiveLowEngagement: 0, lastAiReplyAt: null };
+
+  const row = data as { consecutive_low_engagement: number; last_ai_reply_at: string | null };
+  return {
+    consecutiveLowEngagement: row.consecutive_low_engagement,
+    lastAiReplyAt: row.last_ai_reply_at,
+  };
+}
+
+export async function upsertConversationState(
+  userId: string,
+  updates: { consecutiveLowEngagement?: number; lastAiReplyAt?: string },
+): Promise<void> {
+  const row: Record<string, unknown> = { user_id: userId, updated_at: new Date().toISOString() };
+  if (updates.consecutiveLowEngagement !== undefined) row["consecutive_low_engagement"] = updates.consecutiveLowEngagement;
+  if (updates.lastAiReplyAt !== undefined) row["last_ai_reply_at"] = updates.lastAiReplyAt;
+
+  const { error } = await getSupabaseClient()
+    .from("wa_conversation_state")
+    .upsert(row, { onConflict: "user_id" });
+
+  if (error) logger.warn({ error, userId }, "Failed to upsert conversation state");
+}

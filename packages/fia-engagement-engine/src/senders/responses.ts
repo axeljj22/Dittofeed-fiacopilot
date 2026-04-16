@@ -9,11 +9,18 @@
  * - DIAGNOSTICO → link to diagnostic results
  * - PERFIL → link to user profile
  * - PUNTOS → fetch and reply with current lead score
- * - Anything else → reply with dashboard link
+ * - Anything else → AI reply (Sofía) with segmentation, rate limiting, loop detection
  */
 import { config } from "../config";
 import { logger } from "../logger";
-import { getSupabaseClient, getLeadScoreForUser, getRecentEngagementForUser, insertIncomingMessage } from "../db/supabase";
+import {
+  getSupabaseClient,
+  getLeadScoreForUser,
+  insertIncomingMessage,
+  getUserSegment,
+  getConversationState,
+  upsertConversationState,
+} from "../db/supabase";
 import { generateInboundReply } from "../generators/messageGenerator";
 
 export interface IncomingMessage {
@@ -27,6 +34,20 @@ export interface ResponseAction {
   replyText: string;
   updateProfile?: Record<string, unknown>;
   logEvent?: string;
+}
+
+/** Mensaje para números no registrados en FIA Copilot */
+const UNREGISTERED_MESSAGE =
+  `Hola! Para recibir mensajes de Sofía necesitás registrarte en FIA Copilot ` +
+  `y agregar tu número de WhatsApp en Ajustes: ${config.engine.appBaseUrl}/ajustes`;
+
+/** Mensaje de cierre por loop de baja calidad */
+const LOW_ENGAGEMENT_CLOSE = `Cuando quieras retomar estoy acá. Tu dashboard: ${config.engine.appBaseUrl}/dashboard`;
+
+/** ¿El mensaje es de baja calidad? (< 5 palabras Y sin pregunta) */
+function isLowEngagement(body: string): boolean {
+  const words = body.trim().split(/\s+/).filter(Boolean);
+  return words.length < 5 && !body.includes("?");
 }
 
 export function classifyResponse(body: string): ResponseAction {
@@ -93,74 +114,94 @@ export function classifyResponse(body: string): ResponseAction {
 
   return {
     type: "default",
-    replyText:
-      `Hola! Soy el recordatorio automático de FIA Copilot — no tengo IA para responder mensajes libres.\n\n` +
-      `Podés escribirme estas palabras:\n` +
-      `• SI → retomar el programa\n` +
-      `• STOP → dejar de recibir mensajes\n` +
-      `• PUNTOS → ver tu score\n` +
-      `• AYUDA → contactar soporte\n\n` +
-      `Tu dashboard: ${config.engine.appBaseUrl}/dashboard`,
+    replyText: "",
   };
 }
 
 /**
  * Process an incoming WhatsApp response.
- * Returns the reply text to send back.
+ * Returns the reply text to send back (empty string = no reply / silence).
  */
 export async function processIncomingResponse(
   message: IncomingMessage,
 ): Promise<ResponseAction> {
-  let action = classifyResponse(message.body);
-
-  // Find user by WhatsApp number — normalize to digits only before comparing
   const normalizedFrom = message.from.replace(/\D/g, "");
+
+  // ── 1. Classify message ──────────────────────────────────────────────────
+  const classified = classifyResponse(message.body);
+
+  // ── 2. Look up profile ──────────────────────────────────────────────────
   const { data: profile } = await getSupabaseClient()
     .from("profiles")
-    .select("id")
+    .select("id, whatsapp_opt_in, wp_opted_out")
     .eq("phone", normalizedFrom)
     .single();
 
   if (!profile) {
-    logger.warn(
-      { from: message.from },
-      "Incoming message from unknown number",
-    );
-    // Save to DB even if we can't identify the user
+    logger.warn({ from: message.from }, "Incoming message from unregistered number");
     await insertIncomingMessage(message.from, message.body, null, message.messageId ?? null);
+    return { type: "default", replyText: UNREGISTERED_MESSAGE };
+  }
+
+  const userId = profile.id as string;
+
+  // ── 3. Opt-out check ────────────────────────────────────────────────────
+  // If user opted out, stay silent (don't even save to DB to avoid noise)
+  const optedOut =
+    profile.whatsapp_opt_in === false ||
+    (profile as Record<string, unknown>)["wp_opted_out"] === true;
+
+  if (optedOut && classified.type !== "opt_out") {
+    logger.info({ userId }, "Incoming message from opted-out user — silencing");
+    return { type: "default", replyText: "" };
+  }
+
+  // ── 4. Save incoming message ─────────────────────────────────────────────
+  await insertIncomingMessage(message.from, message.body, userId, message.messageId ?? null);
+
+  // ── 5. Handle commands (non-default) ────────────────────────────────────
+  if (classified.type !== "default") {
+    let action = classified;
+
+    // Enrich PUNTOS with actual score
+    if (action.type === "puntos") {
+      const scores = await getLeadScoreForUser(userId);
+      if (scores) {
+        action = {
+          ...action,
+          replyText:
+            `Tu score FIA: ${scores.overall_score}/100 ` +
+            `(Fit: ${scores.fit_score}, Intent: ${scores.intent_score}). ` +
+            `Ver detalle: ${config.engine.appBaseUrl}/diagnostico`,
+        };
+      }
+    }
+
+    // Update profile if needed (opt-out)
+    if (action.updateProfile) {
+      await getSupabaseClient()
+        .from("profiles")
+        .update(action.updateProfile)
+        .eq("id", userId);
+      logger.info({ userId, action: action.type }, "Profile updated from response");
+    }
+
+    // Log event if needed
+    if (action.logEvent) {
+      await getSupabaseClient().from("events").insert({
+        lead_id: userId,
+        event_type: action.logEvent,
+        metadata: { source: "whatsapp_response", message: message.body.slice(0, 500) },
+      });
+    }
+
+    logger.info({ userId, type: action.type, from: message.from }, "Command response processed");
     return action;
   }
 
-  const userId = profile.id;
+  // ── 6. Free-text: log response in engagement_log + enrich deep link ─────
+  let action = classified; // type === "default", replyText === ""
 
-  // Save incoming message to DB (identified user)
-  await insertIncomingMessage(message.from, message.body, userId, message.messageId ?? null);
-
-  // Enrich PUNTOS reply with actual score from DB
-  if (action.type === "puntos") {
-    const scores = await getLeadScoreForUser(userId);
-    if (scores) {
-      action = {
-        ...action,
-        replyText:
-          `Tu score FIA: ${scores.overall_score}/100 ` +
-          `(Fit: ${scores.fit_score}, Intent: ${scores.intent_score}). ` +
-          `Ver detalle: ${config.engine.appBaseUrl}/diagnostico`,
-      };
-    }
-  }
-
-  // Update profile if needed (opt-out)
-  if (action.updateProfile) {
-    await getSupabaseClient()
-      .from("profiles")
-      .update(action.updateProfile)
-      .eq("id", userId);
-
-    logger.info({ userId, action: action.type }, "Profile updated from response");
-  }
-
-  // Log response in the most recent engagement_log entry for this user
   const { data: latestLog } = await getSupabaseClient()
     .from("engagement_log")
     .select("id, message, metadata")
@@ -181,51 +222,63 @@ export async function processIncomingResponse(
         },
       })
       .eq("id", latestLog.id);
-
-    // Enrich reactivation/default reply with the deep link from the last message
-    const lastMeta = latestLog.metadata as { deep_link?: string; journey_name?: string } | null;
-    const deepLink = lastMeta?.deep_link;
-
-    if (deepLink && action.type === "reactivation") {
-      action = {
-        ...action,
-        replyText: `¡Genial! Retomá desde donde lo dejaste: ${deepLink}`,
-      };
-    } else if (deepLink && action.type === "default") {
-      action = {
-        ...action,
-        replyText: `Acá tenés el acceso directo: ${deepLink}`,
-      };
-    }
   }
 
-  // Pilot mode — restrict AI replies to pilotPhone if set, otherwise all users
+  // ── 7. Pilot mode guard ──────────────────────────────────────────────────
   const isAIPilot = !config.engine.pilotPhone || normalizedFrom.includes(config.engine.pilotPhone);
+  if (!isAIPilot) {
+    logger.info({ userId }, "AI inbound reply skipped — not in pilot");
+    return action;
+  }
 
-  // AI reply for free-text messages — skip if user already received 2+ messages today (loop guard)
-  if (action.type === "default" && isAIPilot) {
-    const recentEngagement = await getRecentEngagementForUser(userId, 24);
-    if (recentEngagement.length < 2) {
-      const aiReply = await generateInboundReply(userId, message.body);
-      if (aiReply) {
-        action = { ...action, replyText: aiReply };
-      }
-    } else {
-      logger.info({ userId, recentCount: recentEngagement.length }, "AI inbound reply skipped — rate limit");
+  // ── 8. Rate limiting + loop detection ───────────────────────────────────
+  const state = await getConversationState(userId);
+  const consecutiveLow = state?.consecutiveLowEngagement ?? 0;
+
+  if (isLowEngagement(message.body)) {
+    const newCount = consecutiveLow + 1;
+    await upsertConversationState(userId, { consecutiveLowEngagement: newCount });
+
+    if (newCount >= 3) {
+      logger.info({ userId, consecutiveLow: newCount }, "Loop detected — sending close message");
+      return { type: "default", replyText: LOW_ENGAGEMENT_CLOSE };
+    }
+
+    // 1 or 2 consecutive low-engagement messages → stay silent
+    logger.info({ userId, consecutiveLow: newCount }, "Low-engagement message — silencing");
+    return { type: "default", replyText: "" };
+  }
+
+  // Good engagement → reset counter
+  await upsertConversationState(userId, { consecutiveLowEngagement: 0 });
+
+  // 24h rate limit: max 1 AI reply per day if not engaging
+  if (state?.lastAiReplyAt) {
+    const lastReply = new Date(state.lastAiReplyAt).getTime();
+    const hoursSince = (Date.now() - lastReply) / (1000 * 60 * 60);
+    if (hoursSince < 24) {
+      logger.info({ userId, hoursSince: hoursSince.toFixed(1) }, "AI inbound rate limit — 24h window");
+      return { type: "default", replyText: "" };
     }
   }
 
-  // Log event if needed
-  if (action.logEvent) {
-    await getSupabaseClient().from("events").insert({
-      lead_id: userId,
-      event_type: action.logEvent,
-      metadata: { source: "whatsapp_response", message: message.body.slice(0, 500) },
-    });
+  // ── 9. Determine user segment ────────────────────────────────────────────
+  const segment = await getUserSegment(userId);
+
+  // ── 10. Generate AI reply ────────────────────────────────────────────────
+  const aiReply = await generateInboundReply(userId, message.body, segment);
+
+  if (aiReply) {
+    action = { ...action, replyText: aiReply };
+
+    // ── 11. Update lastAiReplyAt ─────────────────────────────────────────
+    await upsertConversationState(userId, { lastAiReplyAt: new Date().toISOString() });
+  } else {
+    logger.warn({ userId }, "AI inbound reply returned null — no reply sent");
   }
 
   logger.info(
-    { userId, type: action.type, from: message.from },
+    { userId, type: action.type, from: message.from, hasReply: Boolean(aiReply) },
     "Incoming response processed",
   );
 
