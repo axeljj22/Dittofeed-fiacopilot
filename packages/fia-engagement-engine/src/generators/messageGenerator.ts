@@ -230,9 +230,9 @@ CASOS DE ÉXITO (usá cuando sea relevante):
 SEPRIO (FIAT): respuesta leads 24h → 15min, conversión 3% → 12%. Grupo Automundo: 5h/día ahorradas por persona. Divo (retail): proyectos 6 semanas → 3 semanas. Mas Agro: análisis docs 60min → 1min (−98%). Tivoli Park: propuestas 30min → 15min.
 
 REGLAS ABSOLUTAS:
-Nunca hablar de precios ni planes concretos — "eso lo maneja el equipo". Nunca consejos legales, contables ni médicos. Nunca prometer resultados específicos. Nunca inventar info del usuario o su empresa. Nunca mandar listas con viñetas — texto corrido siempre. Si no sabés algo → "no tengo esa info, el equipo te puede ayudar". Siempre incluir link concreto al final si hay acción sugerida.
+Nunca hablar de precios ni planes concretos — "eso lo maneja el equipo". Nunca consejos legales, contables ni médicos. Nunca prometer resultados específicos. Nunca inventar info del usuario o su empresa. Nunca mandar listas con viñetas — texto corrido siempre. Si no sabés algo → "no tengo esa info, el equipo te puede ayudar". Siempre incluir link concreto al final si hay acción sugerida. Nunca menciones comandos (STOP, AYUDA, VENTAS, etc.) a menos que el usuario los pida — son contexto interno tuyo, no información para el usuario.
 
-COMANDOS QUE EL USUARIO PUEDE USAR:
+CONTEXTO INTERNO — COMANDOS (no mencionar salvo que el usuario los pida):
 STOP → opt out | SI → retomar | PUNTOS → ver score | AYUDA → contactar soporte | VENTAS → info FIA Ventas | DIAGNOSTICO → resultados | PERFIL → editar perfil
 
 FORMATO FINAL: solo el texto del mensaje, sin prefijos, sin comillas, sin presentación.`;
@@ -398,6 +398,26 @@ function enforceLength(text: string, deepLink: string): string {
   return text.slice(0, MAX_MESSAGE_CHARS - 1).trimEnd() + "…";
 }
 
+// ─── Capsule cache (never changes — avoid fetching on every inbound message) ───
+
+let _capsulesCache: Awaited<ReturnType<typeof getCapsules>> | null = null;
+let _cacheExpiry = 0;
+
+async function getCapsulesCached() {
+  if (_capsulesCache && Date.now() < _cacheExpiry) return _capsulesCache;
+  _capsulesCache = await getCapsules();
+  _cacheExpiry = Date.now() + 60 * 60 * 1000; // 1h TTL
+  return _capsulesCache;
+}
+
+// ─── Inbound fallbacks when AI is unavailable ───
+
+const INBOUND_FALLBACKS = [
+  "Te leo. Contame si querés avanzar en las cápsulas, resolver una duda o hablar con el equipo.",
+  "Estoy acá. ¿Querés que te guíe al siguiente paso o preferís hablar con el equipo?",
+  "Recibido. ¿En qué te puedo ayudar — seguir con el programa, una duda puntual o algo más?",
+];
+
 // ─── Public API ───
 
 const useClaudeAI =
@@ -462,7 +482,7 @@ export async function generateInboundReply(
         getProfileWithWhatsapp(userId),
         getVaultOutputsForUser(userId),
         getCapsuleProgressForUser(userId),
-        getCapsules(),
+        getCapsulesCached(),
         getLeadScoreForUser(userId),
         getAssessmentForUser(userId),
       ]);
@@ -552,7 +572,13 @@ ${vaultContext}${profile?.preferences?.['sofia_notes'] ? `\n\nCONTEXTO ESPECIAL 
       }
     }
 
-    if (!reply) return null;
+    // Si ambos proveedores IA fallaron, usar fallback conversacional
+    if (!reply) {
+      const fallback = INBOUND_FALLBACKS[Math.floor(Math.random() * INBOUND_FALLBACKS.length)] as string;
+      logger.warn({ userId }, "AI unavailable — using inbound conversational fallback");
+      await appendConversationMessages(userId, [{ role: "assistant", content: fallback }]);
+      return fallback;
+    }
 
     // Enforce max length
     const finalReply = reply.length <= MAX_MESSAGE_CHARS

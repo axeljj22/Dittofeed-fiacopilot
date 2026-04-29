@@ -100,8 +100,10 @@ export const config = {
 
   // Scheduler cron expressions
   cron: {
-    // Detectors run every 15 minutes
+    // Event detectors (capsule completions, diagnostics) — every 15 min, time-sensitive
     detectors: optionalEnv("CRON_DETECTORS", "*/15 * * * *"),
+    // Segment detectors (inactivity, cold leads) — every 2 hours, not time-sensitive
+    segmentDetectors: optionalEnv("CRON_SEGMENT_DETECTORS", "0 */2 * * *"),
     // Weekly sponsor report: Mondays at 9 AM
     sponsorReport: optionalEnv("CRON_SPONSOR_REPORT", "0 9 * * 1"),
   },

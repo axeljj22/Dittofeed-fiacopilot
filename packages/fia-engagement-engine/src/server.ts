@@ -42,9 +42,16 @@ async function handleHealthCheck(
   _req: http.IncomingMessage,
   res: http.ServerResponse,
 ): Promise<void> {
+  const codexOk = await isCodexAvailable().catch(() => false);
   jsonResponse(res, 200, {
     status: "ok",
     service: "fia-engagement-engine",
+    version: process.env["APP_VERSION"] ?? "unknown",
+    gitSha: process.env["GIT_SHA"] ?? "unknown",
+    buildTime: process.env["BUILD_TIME"] ?? "unknown",
+    whatsapp: baileysManager.status,
+    codex: codexOk ? "available" : "unavailable",
+    uptime: Math.floor(process.uptime()),
     timestamp: new Date().toISOString(),
   });
 }

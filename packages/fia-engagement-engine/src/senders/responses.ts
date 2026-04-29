@@ -44,10 +44,21 @@ const UNREGISTERED_MESSAGE =
 /** Mensaje de cierre por loop de baja calidad */
 const LOW_ENGAGEMENT_CLOSE = `Cuando quieras retomar estoy acá. Tu dashboard: ${config.engine.appBaseUrl}/dashboard`;
 
-/** ¿El mensaje es de baja calidad? (< 5 palabras Y sin pregunta) */
+/** Respuestas cortas con intención clara — no silenciar aunque sean breves */
+const POSITIVE_SHORT_RESPONSES = new Set([
+  "si", "sí", "dale", "ok", "okay", "bueno", "claro", "bien", "listo",
+  "me interesa", "contame", "quiero", "cómo", "como", "cuando", "cuándo",
+  "gracias", "genial", "perfecto", "entendido", "excelente", "buenísimo",
+  "buenisimo", "bárbaro", "barbaro", "piola", "copado", "interesante",
+  "adelante", "seguí", "segui", "contá", "conta", "me llama la atención",
+]);
+
+/** ¿El mensaje es de baja calidad? Solo lo verdaderamente vacío — WhatsApp es naturalmente corto */
 function isLowEngagement(body: string): boolean {
-  const words = body.trim().split(/\s+/).filter(Boolean);
-  return words.length < 5 && !body.includes("?");
+  const normalized = body.trim().toLowerCase();
+  if (POSITIVE_SHORT_RESPONSES.has(normalized)) return false;
+  const words = normalized.split(/\s+/).filter(Boolean);
+  return words.length < 3 && !body.includes("?");
 }
 
 export function classifyResponse(body: string): ResponseAction {
@@ -229,8 +240,23 @@ export async function processIncomingResponse(
   }
 
   // ── 7. Pilot mode guard ──────────────────────────────────────────────────
+  // Si el engine le escribió primero en los últimos 14 días, siempre responde con IA.
+  // Evita el caso: "te escribí pero no te reconozco cuando me respondés".
   const isWhitelisted = config.engine.pilotWhitelistPhones.some((p) => normalizedFrom.includes(p));
-  const isAIPilot = !config.engine.pilotPhone || normalizedFrom.includes(config.engine.pilotPhone) || isWhitelisted;
+  const since14d = new Date(Date.now() - 14 * 24 * 60 * 60 * 1000).toISOString();
+  const { data: recentOutbound } = await getSupabaseClient()
+    .from("engagement_log")
+    .select("id")
+    .eq("lead_id", userId)
+    .eq("status", "sent")
+    .gte("created_at", since14d)
+    .limit(1)
+    .maybeSingle();
+  const hadRecentOutbound = recentOutbound !== null;
+  const isAIPilot = !config.engine.pilotPhone
+    || normalizedFrom.includes(config.engine.pilotPhone)
+    || isWhitelisted
+    || hadRecentOutbound;
   if (!isAIPilot) {
     logger.info({ userId }, "AI inbound reply skipped — not in pilot");
     return action;

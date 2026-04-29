@@ -31,13 +31,22 @@ function startScheduler(): void {
     "Starting FIA Engagement Engine scheduler",
   );
 
-  // Event detectors: check for completions, diagnostics (every 15 min)
+  // Event detectors: time-sensitive (capsule completions, diagnostics) — every 15 min
   cron.schedule(config.cron.detectors, async () => {
     try {
       await runEventDetectors();
+    } catch (error) {
+      logger.error({ error }, "Event detector cycle failed");
+    }
+  });
+
+  // Segment detectors: inactivity, cold leads, content unlocked — every 2 hours
+  // These are not time-sensitive; running less often reduces DB load significantly
+  cron.schedule(config.cron.segmentDetectors, async () => {
+    try {
       await runSegmentDetectors();
     } catch (error) {
-      logger.error({ error }, "Detector cycle failed");
+      logger.error({ error }, "Segment detector cycle failed");
     }
   });
 

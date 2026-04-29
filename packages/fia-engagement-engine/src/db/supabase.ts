@@ -157,7 +157,8 @@ export async function getVaultOutputsForUser(
     .from("vault_outputs")
     .select("*")
     .eq("lead_id", userId)
-    .order("created_at", { ascending: false });
+    .order("created_at", { ascending: false })
+    .limit(10);
 
   if (error) {
     logger.error({ error, userId }, "Failed to fetch vault outputs");

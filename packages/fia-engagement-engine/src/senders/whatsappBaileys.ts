@@ -54,6 +54,7 @@ class BaileysManager {
   private _status: WAStatus = "disconnected";
   private _qrDataUrl: string | null = null;
   private _connectedPhone: string | null = null;
+  private _reconnectAttempts = 0;
   /** Maps LID bare digits → phone digits (e.g. "211436978581513" → "5491125120212") */
   private lidToPhone = new Map<string, string>();
 
@@ -222,8 +223,11 @@ class BaileysManager {
           this.sock = null;
 
           if (!loggedOut) {
-            logger.info("Reconnecting WhatsApp in 5s...");
-            setTimeout(() => void this.connect(), 5000);
+            // Exponential backoff: 5s → 10s → 20s → 40s → ... max 5 min
+            const delay = Math.min(5000 * Math.pow(2, this._reconnectAttempts), 5 * 60 * 1000);
+            this._reconnectAttempts++;
+            logger.info({ delay, attempt: this._reconnectAttempts }, "Reconnecting WhatsApp...");
+            setTimeout(() => void this.connect(), delay);
           } else {
             logger.warn("WhatsApp logged out — resetSession() to re-scan QR");
           }
@@ -233,6 +237,7 @@ class BaileysManager {
           this._status = "connected";
           this._qrDataUrl = null;
           this._connectedPhone = this.sock?.user?.id ?? null;
+          this._reconnectAttempts = 0;
           logger.info({ phone: this._connectedPhone }, "WhatsApp connected");
         }
       });
