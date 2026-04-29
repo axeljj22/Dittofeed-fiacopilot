@@ -1,0 +1,255 @@
+/**
+ * Agente Ejecutor — WhatsApp
+ *
+ * Envía mensajes por WhatsApp usando Meta Cloud API o Twilio.
+ * Registra el resultado en engagement_log.
+ */
+import axios from "axios";
+import { config } from "../config";
+import { logger } from "../logger";
+import { insertEngagementLog } from "../db/supabase";
+import type { EngagementOpportunity } from "../db/types";
+import type { GeneratedMessage } from "../generators/messageGenerator";
+import { baileysManager } from "./whatsappBaileys";
+
+interface SendResult {
+  success: boolean;
+  messageId?: string;
+  error?: string;
+}
+
+/**
+ * Send via Meta WhatsApp Cloud API
+ */
+async function sendViaCloudApi(
+  to: string,
+  text: string,
+): Promise<SendResult> {
+  try {
+    const response = await axios.post(
+      `https://graph.facebook.com/v18.0/${config.whatsapp.cloudApi.phoneNumberId}/messages`,
+      {
+        messaging_product: "whatsapp",
+        to: to.replace(/[^0-9]/g, ""),
+        type: "text",
+        text: { body: text },
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${config.whatsapp.cloudApi.token}`,
+          "Content-Type": "application/json",
+        },
+      },
+    );
+
+    return {
+      success: true,
+      messageId: response.data?.messages?.[0]?.id,
+    };
+  } catch (error: unknown) {
+    const message =
+      error instanceof Error ? error.message : "Unknown error";
+    return { success: false, error: message };
+  }
+}
+
+/**
+ * Send via Twilio WhatsApp
+ */
+async function sendViaTwilio(
+  to: string,
+  text: string,
+): Promise<SendResult> {
+  try {
+    const fromNumber = config.whatsapp.twilio.fromNumber;
+    const toNumber = `whatsapp:+${to.replace(/[^0-9]/g, "")}`;
+
+    const response = await axios.post(
+      `https://api.twilio.com/2010-04-01/Accounts/${config.whatsapp.twilio.accountSid}/Messages.json`,
+      new URLSearchParams({
+        From: fromNumber,
+        To: toNumber,
+        Body: text,
+      }),
+      {
+        auth: {
+          username: config.whatsapp.twilio.accountSid,
+          password: config.whatsapp.twilio.authToken,
+        },
+      },
+    );
+
+    return {
+      success: true,
+      messageId: response.data?.sid,
+    };
+  } catch (error: unknown) {
+    const message =
+      error instanceof Error ? error.message : "Unknown error";
+    return { success: false, error: message };
+  }
+}
+
+/**
+ * Send a WhatsApp message and log the result.
+ */
+export async function sendWhatsAppMessage(
+  opportunity: EngagementOpportunity,
+  message: GeneratedMessage,
+): Promise<boolean> {
+  const whatsappNumber = opportunity.profile.phone;
+
+  if (!whatsappNumber) {
+    logger.warn(
+      { userId: opportunity.userId },
+      "No WhatsApp number — skipping",
+    );
+    return false;
+  }
+
+  // Check opt-out
+  if (!opportunity.profile.whatsapp_opt_in) {
+    await insertEngagementLog({
+      lead_id: opportunity.userId,
+      status: "opted_out",
+      message: message.text,
+      channel: "whatsapp",
+      trigger_type: "scheduled",
+      metadata: {
+        journey_name: message.journeyName,
+        whatsapp_number: whatsappNumber,
+        deep_link: message.deepLink,
+      },
+    });
+    logger.info(
+      { userId: opportunity.userId },
+      "User opted out — logged and skipped",
+    );
+    return false;
+  }
+
+  // Insert log entry first to get the ID for click tracking.
+  const logEntry = await insertEngagementLog({
+    lead_id: opportunity.userId,
+    status: "sent",
+    message: message.text,
+    channel: "whatsapp",
+    trigger_type: "scheduled",
+    metadata: {
+      journey_name: message.journeyName,
+      whatsapp_number: whatsappNumber,
+      deep_link: message.deepLink,
+      ...(opportunity.level !== undefined ? { level: opportunity.level } : {}),
+    },
+  });
+
+  // Replace direct deep link with tracked redirect URL
+  const engineBaseUrl = config.engine.engineBaseUrl;
+  let finalMessage = message.text;
+  if (logEntry?.id) {
+    const trackedLink = `${engineBaseUrl}/r/${logEntry.id}`;
+    finalMessage = message.text.replace(message.deepLink, trackedLink);
+  }
+
+  // Send based on configured provider
+  let result: SendResult;
+  if (config.whatsapp.provider === "baileys") {
+    result = await baileysManager.sendMessage(whatsappNumber, finalMessage);
+  } else if (config.whatsapp.provider === "twilio") {
+    result = await sendViaTwilio(whatsappNumber, finalMessage);
+  } else {
+    result = await sendViaCloudApi(whatsappNumber, finalMessage);
+  }
+
+  // Update to "failed" if send didn't succeed
+  if (!result.success && logEntry?.id) {
+    const { getSupabaseClient } = await import("../db/supabase");
+    const { error: updateError } = await getSupabaseClient()
+      .from("engagement_log")
+      .update({ status: "failed" })
+      .eq("id", logEntry.id);
+    if (updateError) {
+      logger.error({ updateError, logId: logEntry.id }, "Failed to mark log entry as failed");
+    }
+  }
+
+  if (result.success) {
+    logger.info(
+      {
+        userId: opportunity.userId,
+        journey: message.journeyName,
+        messageId: result.messageId,
+      },
+      "WhatsApp message sent",
+    );
+  } else {
+    logger.error(
+      {
+        userId: opportunity.userId,
+        journey: message.journeyName,
+        error: result.error,
+      },
+      "WhatsApp message failed",
+    );
+  }
+
+  return result.success;
+}
+
+/**
+ * Send a raw campaign message to a specific phone number.
+ * Used for manual outreach campaigns where the message is pre-written.
+ * Does not require an EngagementOpportunity — phone and text are provided directly.
+ */
+export async function sendCampaignMessage(
+  phone: string,
+  userId: string,
+  messageText: string,
+  journeyName: string,
+): Promise<boolean> {
+  const normalizedPhone = phone.replace(/\D/g, "");
+
+  if (!normalizedPhone) {
+    logger.warn({ phone }, "Campaign send skipped — empty phone after normalization");
+    return false;
+  }
+
+  // Log before sending so we have a record even if delivery fails
+  const logEntry = await insertEngagementLog({
+    lead_id: userId,
+    status: "sent",
+    message: messageText,
+    channel: "whatsapp",
+    trigger_type: "campaign",
+    metadata: {
+      journey_name: journeyName,
+      whatsapp_number: normalizedPhone,
+      deep_link: "",
+    },
+  });
+
+  let result: SendResult;
+  if (config.whatsapp.provider === "baileys") {
+    result = await baileysManager.sendMessage(normalizedPhone, messageText);
+  } else if (config.whatsapp.provider === "twilio") {
+    result = await sendViaTwilio(normalizedPhone, messageText);
+  } else {
+    result = await sendViaCloudApi(normalizedPhone, messageText);
+  }
+
+  if (!result.success && logEntry?.id) {
+    const { getSupabaseClient } = await import("../db/supabase");
+    await getSupabaseClient()
+      .from("engagement_log")
+      .update({ status: "failed" })
+      .eq("id", logEntry.id);
+  }
+
+  if (result.success) {
+    logger.info({ phone: normalizedPhone, journey: journeyName }, "Campaign message sent");
+  } else {
+    logger.error({ phone: normalizedPhone, journey: journeyName, error: result.error }, "Campaign message failed");
+  }
+
+  return result.success;
+}
