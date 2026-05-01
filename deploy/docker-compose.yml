@@ -47,12 +47,19 @@ services:
   # ═══════════════════════════════════════════
   fia-engine:
     build:
-      context: ../packages/fia-engagement-engine
+      # CI copies engine source to /opt/dittofeed/fia-engine before running compose.
+      # Don't change to ../packages/... — that path doesn't exist on the VPS.
+      context: ./fia-engine
       dockerfile: Dockerfile
     image: fia-engagement-engine:latest
     restart: always
     ports:
       - "127.0.0.1:3001:3001"
+    volumes:
+      # Persist Baileys WhatsApp session across container recreates
+      - /opt/dittofeed/fia-engine-data:/app/sessions
+      # Mount Codex auth.json (uploaded via /admin/codex)
+      - /opt/dittofeed/codex-auth:/root/.codex
     environment:
       # Supabase (FIA Copilot DB — read-only)
       - SUPABASE_URL=${SUPABASE_URL}

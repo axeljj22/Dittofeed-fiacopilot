@@ -74,11 +74,20 @@ jobs:
             ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }}:/opt/dittofeed/
 
       - name: Build and restart engine
+        env:
+          GIT_SHA: ${{ github.sha }}
         run: |
+          BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} "
             cd /opt/dittofeed
-            docker compose build fia-engine
-            docker compose up -d fia-engine
+            mkdir -p fia-engine-data codex-auth
+            export GIT_SHA=${GIT_SHA}
+            export BUILD_TIME=${BUILD_TIME}
+            docker compose build --no-cache \
+              --build-arg GIT_SHA=${GIT_SHA} \
+              --build-arg BUILD_TIME=${BUILD_TIME} \
+              fia-engine
+            docker compose up -d --force-recreate fia-engine
             docker compose ps
           "
 

@@ -23,7 +23,14 @@ COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY package.json ./
 
-ENV NODE_ENV=production
+# Build metadata — surfaced in /health so we can verify which version is running
+ARG GIT_SHA=unknown
+ARG BUILD_TIME=unknown
+ARG APP_VERSION=unknown
+ENV GIT_SHA=$GIT_SHA \
+    BUILD_TIME=$BUILD_TIME \
+    APP_VERSION=$APP_VERSION \
+    NODE_ENV=production
 
 EXPOSE 3001
 
