@@ -191,7 +191,8 @@ class BaileysManager {
           void processIncomingResponse({ from, body, messageId: msg.key.id ?? undefined })
             .then(async (action) => {
               if (action.replyText) {
-                // Typing indicator: humaniza la conversación (1s base + 30ms/char, max 4s)
+                // Typing indicator: humaniza la conversación (1s base + 30ms/char, max 4s).
+                // Inline await is intentional — the user should see "typing..." before the message lands.
                 const typingMs = Math.min(1000 + action.replyText.length * 30, 4000);
                 await this.sendTyping(remoteJid, typingMs);
                 await sock.sendMessage(remoteJid, { text: action.replyText });

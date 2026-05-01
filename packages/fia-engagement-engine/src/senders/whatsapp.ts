@@ -341,6 +341,13 @@ export async function retryFailedMessages(): Promise<{ retried: number; succeede
     // Respect 30min spacing between retries
     if (lastRetryAt && lastRetryAt > thirtyMinAgo) continue;
 
+    // Skip if user signalled busy after the original send — wait for pause to expire
+    const userState = await getConversationState(row.lead_id as string);
+    if (userState.pausedUntil && new Date(userState.pausedUntil).getTime() > Date.now()) {
+      logger.info({ logId: row.id, leadId: row.lead_id, pausedUntil: userState.pausedUntil }, "Retry skipped — user paused");
+      continue;
+    }
+
     if (retryCount >= 3) {
       // Give up — mark as terminal failed
       await supabase

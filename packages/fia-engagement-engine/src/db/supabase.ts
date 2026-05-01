@@ -835,6 +835,13 @@ export async function getConversationState(userId: string): Promise<Conversation
   };
 }
 
+/**
+ * Per-user serialization map for upsertConversationState.
+ * Prevents lost-write races when two messages from the same user are processed
+ * in overlapping fashion (which can happen via the async messages.upsert handler).
+ */
+const _stateUpsertChain = new Map<string, Promise<void>>();
+
 export async function upsertConversationState(
   userId: string,
   updates: {
@@ -845,29 +852,39 @@ export async function upsertConversationState(
     aiReplyTimestamps?: string[];
   },
 ): Promise<void> {
-  const row: Record<string, unknown> = { user_id: userId, updated_at: new Date().toISOString() };
-  if (updates.consecutiveLowEngagement !== undefined) row["consecutive_low_engagement"] = updates.consecutiveLowEngagement;
-  if (updates.lastAiReplyAt !== undefined) row["last_ai_reply_at"] = updates.lastAiReplyAt;
+  // Serialize per user — chain new updates after the previous one finishes.
+  const prev = _stateUpsertChain.get(userId) ?? Promise.resolve();
+  const next = prev.catch(() => undefined).then(async () => {
+    const row: Record<string, unknown> = { user_id: userId, updated_at: new Date().toISOString() };
+    if (updates.consecutiveLowEngagement !== undefined) row["consecutive_low_engagement"] = updates.consecutiveLowEngagement;
+    if (updates.lastAiReplyAt !== undefined) row["last_ai_reply_at"] = updates.lastAiReplyAt;
 
-  // Merge metadata fields — read existing first to avoid clobbering
-  if (updates.userFacts !== undefined || updates.pausedUntil !== undefined || updates.aiReplyTimestamps !== undefined) {
-    const { data: existing } = await getSupabaseClient()
+    // Merge metadata fields — read existing first to avoid clobbering OTHER metadata fields
+    if (updates.userFacts !== undefined || updates.pausedUntil !== undefined || updates.aiReplyTimestamps !== undefined) {
+      const { data: existing } = await getSupabaseClient()
+        .from("wa_conversation_state")
+        .select("metadata")
+        .eq("user_id", userId)
+        .maybeSingle();
+      const prevMeta = (existing?.metadata as Record<string, unknown> | null) ?? {};
+      row["metadata"] = {
+        ...prevMeta,
+        ...(updates.userFacts !== undefined ? { userFacts: updates.userFacts } : {}),
+        ...(updates.pausedUntil !== undefined ? { pausedUntil: updates.pausedUntil } : {}),
+        ...(updates.aiReplyTimestamps !== undefined ? { aiReplyTimestamps: updates.aiReplyTimestamps } : {}),
+      };
+    }
+
+    const { error } = await getSupabaseClient()
       .from("wa_conversation_state")
-      .select("metadata")
-      .eq("user_id", userId)
-      .maybeSingle();
-    const prevMeta = (existing?.metadata as Record<string, unknown> | null) ?? {};
-    row["metadata"] = {
-      ...prevMeta,
-      ...(updates.userFacts !== undefined ? { userFacts: updates.userFacts } : {}),
-      ...(updates.pausedUntil !== undefined ? { pausedUntil: updates.pausedUntil } : {}),
-      ...(updates.aiReplyTimestamps !== undefined ? { aiReplyTimestamps: updates.aiReplyTimestamps } : {}),
-    };
-  }
+      .upsert(row, { onConflict: "user_id" });
 
-  const { error } = await getSupabaseClient()
-    .from("wa_conversation_state")
-    .upsert(row, { onConflict: "user_id" });
-
-  if (error) logger.warn({ error, userId }, "Failed to upsert conversation state");
+    if (error) logger.warn({ error, userId }, "Failed to upsert conversation state");
+  });
+  _stateUpsertChain.set(userId, next);
+  // Garbage-collect: if this is the latest in the chain, delete after settled
+  void next.finally(() => {
+    if (_stateUpsertChain.get(userId) === next) _stateUpsertChain.delete(userId);
+  });
+  await next;
 }

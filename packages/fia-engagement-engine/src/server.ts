@@ -36,6 +36,26 @@ function jsonResponse(
   res.end(JSON.stringify(data));
 }
 
+/**
+ * Bearer-token auth gate for admin endpoints.
+ * Returns true if authorized; otherwise writes the response and returns false.
+ * Caller should `return` immediately if false.
+ */
+function requireAdminAuth(req: http.IncomingMessage, res: http.ServerResponse): boolean {
+  const authHeader = req.headers["authorization"];
+  const expectedToken = process.env["ADMIN_API_TOKEN"];
+  if (!expectedToken || expectedToken === "admin-secret") {
+    // Caller intent is admin-only — if env is missing/default, fail closed
+    jsonResponse(res, 503, { error: "ADMIN_API_TOKEN not configured (or set to default)" });
+    return false;
+  }
+  if (authHeader !== `Bearer ${expectedToken}`) {
+    jsonResponse(res, 401, { error: "Unauthorized" });
+    return false;
+  }
+  return true;
+}
+
 // ─── Route handlers ───
 
 async function handleHealthCheck(
@@ -144,13 +164,7 @@ async function handleCampaignSend(
   req: http.IncomingMessage,
   res: http.ServerResponse,
 ): Promise<void> {
-  const authHeader = req.headers["authorization"];
-  const expectedToken = process.env["ADMIN_API_TOKEN"] ?? "admin-secret";
-
-  if (authHeader !== `Bearer ${expectedToken}`) {
-    jsonResponse(res, 401, { error: "Unauthorized" });
-    return;
-  }
+  if (!requireAdminAuth(req, res)) return;
 
   let body: { phone?: string; message?: string; journeyName?: string; name?: string };
   try {
@@ -214,13 +228,7 @@ async function handleManualTrigger(
   req: http.IncomingMessage,
   res: http.ServerResponse,
 ): Promise<void> {
-  const authHeader = req.headers["authorization"];
-  const expectedToken = process.env["ADMIN_API_TOKEN"] ?? "admin-secret";
-
-  if (authHeader !== `Bearer ${expectedToken}`) {
-    jsonResponse(res, 401, { error: "Unauthorized" });
-    return;
-  }
+  if (!requireAdminAuth(req, res)) return;
 
   try {
     const body = JSON.parse(await parseBody(req));
@@ -248,13 +256,7 @@ async function handleTestMessage(
   req: http.IncomingMessage,
   res: http.ServerResponse,
 ): Promise<void> {
-  const authHeader = req.headers["authorization"];
-  const expectedToken = process.env["ADMIN_API_TOKEN"] ?? "admin-secret";
-
-  if (authHeader !== `Bearer ${expectedToken}`) {
-    jsonResponse(res, 401, { error: "Unauthorized" });
-    return;
-  }
+  if (!requireAdminAuth(req, res)) return;
 
   try {
     const body = JSON.parse(await parseBody(req)) as {
@@ -408,12 +410,7 @@ async function handleDashboard(
   req: http.IncomingMessage,
   res: http.ServerResponse,
 ): Promise<void> {
-  const authHeader = req.headers["authorization"];
-  const expectedToken = process.env["ADMIN_API_TOKEN"] ?? "admin-secret";
-  if (authHeader !== `Bearer ${expectedToken}`) {
-    jsonResponse(res, 401, { error: "Unauthorized" });
-    return;
-  }
+  if (!requireAdminAuth(req, res)) return;
   try {
     const supabase = getSupabaseClient();
     const now = Date.now();
@@ -888,12 +885,13 @@ async function handleClickRedirect(
 
 /**
  * GET /admin/stats — quality metrics for last 24h.
- * No auth — internal admin only behind reverse proxy.
+ * Requires Bearer token (ADMIN_API_TOKEN).
  */
 async function handleAdminStats(
-  _req: http.IncomingMessage,
+  req: http.IncomingMessage,
   res: http.ServerResponse,
 ): Promise<void> {
+  if (!requireAdminAuth(req, res)) return;
   try {
     const supabase = getSupabaseClient();
     const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
@@ -1053,11 +1051,7 @@ async function router(
 
   // WhatsApp reset session (admin only)
   if (url === "/api/whatsapp/reset" && method === "POST") {
-    const authHeader = req.headers["authorization"];
-    if (authHeader !== `Bearer ${process.env["ADMIN_API_TOKEN"] ?? "admin-secret"}`) {
-      jsonResponse(res, 401, { error: "Unauthorized" });
-      return;
-    }
+    if (!requireAdminAuth(req, res)) return;
     baileysManager.resetSession();
     setTimeout(() => void baileysManager.connect(), 1000);
     jsonResponse(res, 200, { status: "session_reset" });
@@ -1256,11 +1250,7 @@ function showMsg(text, ok) {
 
   // POST /api/codex/auth — save auth.json content (admin only)
   if (url === "/api/codex/auth" && method === "POST") {
-    const authHeader = req.headers["authorization"];
-    if (authHeader !== `Bearer ${process.env["ADMIN_API_TOKEN"] ?? "admin-secret"}`) {
-      jsonResponse(res, 401, { error: "Unauthorized" });
-      return;
-    }
+    if (!requireAdminAuth(req, res)) return;
     try {
       const body = JSON.parse(await parseBody(req)) as { auth?: string };
       if (!body.auth) { jsonResponse(res, 400, { error: "Missing auth field" }); return; }
@@ -1282,11 +1272,7 @@ function showMsg(text, ok) {
 
   // DELETE /api/codex/auth — remove auth.json (admin only)
   if (url === "/api/codex/auth" && method === "DELETE") {
-    const authHeader = req.headers["authorization"];
-    if (authHeader !== `Bearer ${process.env["ADMIN_API_TOKEN"] ?? "admin-secret"}`) {
-      jsonResponse(res, 401, { error: "Unauthorized" });
-      return;
-    }
+    if (!requireAdminAuth(req, res)) return;
     try {
       fs.unlinkSync(config.codex.authFilePath);
       invalidateCodexAuthCache();

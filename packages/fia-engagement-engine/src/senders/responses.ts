@@ -342,9 +342,13 @@ export async function processIncomingResponse(
 /**
  * Replace fiacopilot.com links in inbound replies with tracked redirect URLs.
  * Creates a minimal engagement_log entry per link so click tracking works.
+ *
+ * Trims trailing punctuation (.,!?;) from the matched URL so the redirect doesn't break.
  */
 async function wrapLinksWithTracking(text: string, userId: string, phone: string): Promise<string> {
-  const linkRegex = new RegExp(`${config.engine.appBaseUrl.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[^\\s]+`, "g");
+  const escaped = config.engine.appBaseUrl.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  // [^\s.,!?;]+ avoids consuming sentence-final punctuation as part of the URL
+  const linkRegex = new RegExp(`${escaped}[^\\s]*?[^\\s.,!?;\\)]`, "g");
   const links = text.match(linkRegex);
   if (!links || links.length === 0) return text;
 
@@ -354,7 +358,7 @@ async function wrapLinksWithTracking(text: string, userId: string, phone: string
   const logEntry = await insertEngagementLog({
     lead_id: userId,
     status: "sent",
-    message: text,
+    message: text.slice(0, 2000),
     channel: "whatsapp",
     trigger_type: "inbound_reply",
     metadata: {

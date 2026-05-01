@@ -430,20 +430,31 @@ function nextFallback(userId: string): string {
   return INBOUND_FALLBACKS[next] as string;
 }
 
-// Cooldown: si IA falla repetidamente en <5min, no llamar — devolver fallback directo
-const _aiFailureCooldown = new Map<string, number>();
-function isInAiCooldown(): boolean {
-  // Global cooldown: si hubo 3 fallas en los últimos 5min, esperar
+// Cooldown per-user: si IA falla 3 veces en <5min para este user, devolver fallback directo
+// Map<userId, number[]> donde el array son timestamps de fallas recientes
+const _aiFailureByUser = new Map<string, number[]>();
+const COOLDOWN_WINDOW_MS = 5 * 60 * 1000;
+const COOLDOWN_THRESHOLD = 3;
+
+function isInAiCooldown(userId: string): boolean {
   const now = Date.now();
-  const recent = Array.from(_aiFailureCooldown.values()).filter((t) => now - t < 5 * 60 * 1000);
-  return recent.length >= 3;
+  const failures = _aiFailureByUser.get(userId) ?? [];
+  const recent = failures.filter((t) => now - t < COOLDOWN_WINDOW_MS);
+  // Keep map clean — overwrite with pruned list
+  if (recent.length !== failures.length) _aiFailureByUser.set(userId, recent);
+  return recent.length >= COOLDOWN_THRESHOLD;
 }
-function recordAiFailure(): void {
+
+function recordAiFailure(userId: string): void {
   const now = Date.now();
-  _aiFailureCooldown.set(String(now), now);
-  // Limpieza: eliminar entradas viejas
-  for (const [k, t] of _aiFailureCooldown) {
-    if (now - t > 10 * 60 * 1000) _aiFailureCooldown.delete(k);
+  const failures = (_aiFailureByUser.get(userId) ?? []).filter((t) => now - t < COOLDOWN_WINDOW_MS);
+  failures.push(now);
+  _aiFailureByUser.set(userId, failures);
+  // Best-effort: cap total entries to prevent unbounded growth (older users get evicted)
+  if (_aiFailureByUser.size > 1000) {
+    const oldest = Array.from(_aiFailureByUser.entries())
+      .sort(([, a], [, b]) => Math.max(...a) - Math.max(...b))[0];
+    if (oldest) _aiFailureByUser.delete(oldest[0]);
   }
 }
 
@@ -466,11 +477,30 @@ const FACT_PATTERNS: Array<{ regex: RegExp; format: (m: RegExpMatchArray) => str
   { regex: /\b(no\s+tengo\s+tiempo|estoy\s+ocupad[oa]|a\s+fin\s+de\s+mes|la\s+pr[oó]xima\s+semana|el\s+pr[oó]ximo\s+mes)\b/i, format: (m) => `Disponibilidad: ${m[1].toLowerCase()}` },
 ];
 
+// Max length per fact in the rotating memory (defends against memory bloat).
+const FACT_MAX_LEN = 120;
+
+/** Sanitize a fact: strip newlines, collapse whitespace, cap length, drop suspicious patterns. */
+function sanitizeFact(fact: string): string | null {
+  // Collapse newlines and whitespace
+  let s = fact.replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();
+  if (s.length === 0) return null;
+  // Drop facts that look like prompt-injection attempts
+  const suspicious = /\b(ignore|disregard|forget|olvidate|olvidá|sistema|system\s*prompt|admin|password|api[_\s]?key|bearer|sudo)\b/i;
+  if (suspicious.test(s)) return null;
+  // Cap length
+  if (s.length > FACT_MAX_LEN) s = s.slice(0, FACT_MAX_LEN - 1) + "…";
+  return s;
+}
+
 function extractFacts(text: string): string[] {
   const found: string[] = [];
   for (const { regex, format } of FACT_PATTERNS) {
     const match = text.match(regex);
-    if (match) found.push(format(match));
+    if (match) {
+      const cleaned = sanitizeFact(format(match));
+      if (cleaned) found.push(cleaned);
+    }
   }
   return found;
 }
@@ -481,10 +511,13 @@ function mergeFacts(existing: string[], incoming: string[]): string[] {
   const merged: string[] = [];
   // New facts first (most relevant)
   for (const f of [...incoming, ...existing]) {
-    const key = f.toLowerCase();
+    // Re-sanitize existing facts on read (defensive — handles old data without sanitization)
+    const cleaned = sanitizeFact(f);
+    if (!cleaned) continue;
+    const key = cleaned.toLowerCase();
     if (!seen.has(key)) {
       seen.add(key);
-      merged.push(f);
+      merged.push(cleaned);
     }
     if (merged.length >= 8) break;
   }
@@ -679,9 +712,9 @@ ${vaultContext}${profile?.preferences?.['sofia_notes'] ? `\n\nCONTEXTO ESPECIAL 
 
     let reply: string | null = null;
 
-    // ── Cooldown: si IA falló mucho recientemente, ir directo a fallback ──
-    if (isInAiCooldown()) {
-      logger.warn({ userId }, "AI in cooldown — using fallback without calling provider");
+    // ── Cooldown: si IA falló mucho recientemente para este usuario, ir directo a fallback ──
+    if (isInAiCooldown(userId)) {
+      logger.warn({ userId }, "AI in cooldown for this user — using fallback without calling provider");
     } else {
       // 1. Try Codex with conversation history
       reply = await generateWithCodexConversation(
@@ -720,7 +753,7 @@ ${vaultContext}${profile?.preferences?.['sofia_notes'] ? `\n\nCONTEXTO ESPECIAL 
         }
       }
 
-      if (!reply) recordAiFailure();
+      if (!reply) recordAiFailure(userId);
     }
 
     // Si ambos proveedores IA fallaron, usar fallback rotativo + avisar a Axel
