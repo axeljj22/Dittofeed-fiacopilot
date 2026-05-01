@@ -886,6 +886,86 @@ async function handleClickRedirect(
   }
 }
 
+/**
+ * GET /admin/stats — quality metrics for last 24h.
+ * No auth — internal admin only behind reverse proxy.
+ */
+async function handleAdminStats(
+  _req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<void> {
+  try {
+    const supabase = getSupabaseClient();
+    const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+
+    const [logsRes, incomingRes] = await Promise.all([
+      supabase.from("engagement_log").select("status, metadata, created_at").gte("created_at", since),
+      supabase.from("wa_incoming_messages").select("created_at, resolved_user_id").gte("created_at", since),
+    ]);
+
+    const logs = (logsRes.data ?? []) as Array<{ status: string; metadata: { journey_name?: string; clicked?: boolean; responded?: boolean; recovered?: boolean } | null; created_at: string }>;
+    const incoming = (incomingRes.data ?? []) as Array<{ created_at: string; resolved_user_id: string | null }>;
+
+    const sent = logs.filter((l) => l.status === "sent").length;
+    const failed = logs.filter((l) => l.status === "failed").length;
+    const pendingRetry = logs.filter((l) => l.status === "failed_pending_retry").length;
+    const skippedPaused = logs.filter((l) => l.status === "skipped_paused").length;
+    const optedOut = logs.filter((l) => l.status === "opted_out").length;
+    const recovered = logs.filter((l) => l.metadata?.recovered).length;
+    const clicked = logs.filter((l) => l.metadata?.clicked).length;
+    const responded = logs.filter((l) => l.metadata?.responded).length;
+
+    const inboundReplies = logs.filter((l) => l.metadata?.journey_name === "inbound_ai_reply").length;
+    const incomingTotal = incoming.length;
+    const incomingResolved = incoming.filter((i) => i.resolved_user_id).length;
+    const incomingUnresolved = incomingTotal - incomingResolved;
+
+    // Group by journey
+    const byJourney: Record<string, number> = {};
+    for (const l of logs) {
+      if (l.status !== "sent") continue;
+      const j = l.metadata?.journey_name ?? "unknown";
+      byJourney[j] = (byJourney[j] ?? 0) + 1;
+    }
+
+    jsonResponse(res, 200, {
+      period: "last_24h",
+      timestamp: new Date().toISOString(),
+      outbound: {
+        sent,
+        failed_terminal: failed,
+        failed_pending_retry: pendingRetry,
+        skipped_paused: skippedPaused,
+        opted_out: optedOut,
+        recovered_via_retry: recovered,
+        delivery_rate: (sent + failed) > 0 ? Math.round((sent / (sent + failed)) * 1000) / 10 : 100,
+      },
+      engagement: {
+        click_rate: sent > 0 ? Math.round((clicked / sent) * 1000) / 10 : 0,
+        response_rate: sent > 0 ? Math.round((responded / sent) * 1000) / 10 : 0,
+        clicked,
+        responded,
+      },
+      inbound: {
+        messages_received: incomingTotal,
+        resolved_to_user: incomingResolved,
+        unresolved: incomingUnresolved,
+        ai_replies_sent: inboundReplies,
+      },
+      by_journey: byJourney,
+      whatsapp_provider: {
+        primary: config.whatsapp.provider,
+        baileys_status: baileysManager.status,
+        baileys_phone: baileysManager.connectedPhone,
+        fallback_configured: config.whatsapp.fallbackProvider || "none",
+      },
+    });
+  } catch (error) {
+    logger.error({ error }, "Failed to build admin stats");
+    jsonResponse(res, 500, { error: "Stats failed" });
+  }
+}
+
 // ─── Router ───
 
 async function router(
@@ -944,6 +1024,10 @@ async function router(
 
   if (url === "/api/dashboard" && method === "GET") {
     return handleDashboard(req, res);
+  }
+
+  if (url === "/admin/stats" && method === "GET") {
+    return handleAdminStats(req, res);
   }
 
   // Admin panel

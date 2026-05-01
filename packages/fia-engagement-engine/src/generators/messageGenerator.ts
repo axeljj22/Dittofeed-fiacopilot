@@ -17,6 +17,8 @@ import {
   getAssessmentForUser,
   getConversationHistory,
   appendConversationMessages,
+  getConversationState,
+  upsertConversationState,
 } from "../db/supabase";
 import type { UserSegment } from "../db/supabase";
 import type { EngagementOpportunity, VaultOutput, CapsuleProgress, LeadScore, AssessmentSubmission } from "../db/types";
@@ -410,13 +412,103 @@ async function getCapsulesCached() {
   return _capsulesCache;
 }
 
-// ─── Inbound fallbacks when AI is unavailable ───
+// ─── Inbound fallbacks when AI is unavailable (rotating, not random) ───
 
 const INBOUND_FALLBACKS = [
   "Te leo. Contame si querés avanzar en las cápsulas, resolver una duda o hablar con el equipo.",
   "Estoy acá. ¿Querés que te guíe al siguiente paso o preferís hablar con el equipo?",
   "Recibido. ¿En qué te puedo ayudar — seguir con el programa, una duda puntual o algo más?",
+  "Anotado. Decime por dónde querés seguir — cápsula, duda concreta, o agendar con el equipo.",
 ];
+
+// Track last-used fallback index per user to rotate (simple in-memory, resets on restart)
+const _fallbackIndexByUser = new Map<string, number>();
+function nextFallback(userId: string): string {
+  const prev = _fallbackIndexByUser.get(userId) ?? -1;
+  const next = (prev + 1) % INBOUND_FALLBACKS.length;
+  _fallbackIndexByUser.set(userId, next);
+  return INBOUND_FALLBACKS[next] as string;
+}
+
+// Cooldown: si IA falla repetidamente en <5min, no llamar — devolver fallback directo
+const _aiFailureCooldown = new Map<string, number>();
+function isInAiCooldown(): boolean {
+  // Global cooldown: si hubo 3 fallas en los últimos 5min, esperar
+  const now = Date.now();
+  const recent = Array.from(_aiFailureCooldown.values()).filter((t) => now - t < 5 * 60 * 1000);
+  return recent.length >= 3;
+}
+function recordAiFailure(): void {
+  const now = Date.now();
+  _aiFailureCooldown.set(String(now), now);
+  // Limpieza: eliminar entradas viejas
+  for (const [k, t] of _aiFailureCooldown) {
+    if (now - t > 10 * 60 * 1000) _aiFailureCooldown.delete(k);
+  }
+}
+
+// ─── User fact extraction ───
+// Heurísticas simples — captura datos auto-revelados sin llamar al LLM otra vez
+const FACT_PATTERNS: Array<{ regex: RegExp; format: (m: RegExpMatchArray) => string }> = [
+  // "tengo una agencia de 8 personas" / "somos 12 en la empresa"
+  { regex: /\b(?:tengo|tenemos|somos|son)\b[^.!?]{0,40}\b(\d{1,3})\s*(?:personas|empleados|colaboradores|gente)/i, format: (m) => `Tamaño de equipo: ${m[1]} personas` },
+  // "soy contador / abogado / dueño / fundador / CEO / freelance / consultor"
+  { regex: /\bsoy\s+(contador|abogado|dueñ[oa]|fundador[a]?|ceo|director[a]?|gerente|freelance|consultor[a]?|emprendedor[a]?|coach|m[ée]dico|arquitect[oa]|ingenier[oa]|diseñador[a]?|programador[a]?|developer)\b/i, format: (m) => `Profesión: ${m[1]}` },
+  // "tengo una agencia / empresa / pyme / startup / consultora / estudio"
+  { regex: /\b(?:tengo|manejo|dirijo|fundé|fund[ée])\s+(?:una?\s+)?(agencia|empresa|pyme|startup|consultora|estudio|negocio|comercio|tienda|fábrica|inmobiliaria|clínica|gimnasio|escuela)\b/i, format: (m) => `Tipo de negocio: ${m[1]}` },
+  // "facturamos X / facturo X"
+  { regex: /\bfactur[oa]?(?:mos)?\s+(?:unos?\s+)?\$?\s*([\d.,kKmM]+)/i, format: (m) => `Facturación mencionada: ${m[1]}` },
+  // "estoy atascado / trabado / no puedo con la cápsula X"
+  { regex: /\b(?:atascad[oa]|trabad[oa]|no\s+puedo|cuesta)\b[^.!?]{0,30}\bc[áa]psula\s+(\d+)/i, format: (m) => `Atascado en cápsula ${m[1]}` },
+  // "uso ChatGPT / Claude / Gemini"
+  { regex: /\b(?:uso|trabajo\s+con|conozco)\s+(chatgpt|claude|gemini|copilot|midjourney|dall[\s-]?e)/i, format: (m) => `Usa: ${m[1]}` },
+  // "no tengo tiempo / estoy ocupado / a fin de mes / la próxima semana"
+  { regex: /\b(no\s+tengo\s+tiempo|estoy\s+ocupad[oa]|a\s+fin\s+de\s+mes|la\s+pr[oó]xima\s+semana|el\s+pr[oó]ximo\s+mes)\b/i, format: (m) => `Disponibilidad: ${m[1].toLowerCase()}` },
+];
+
+function extractFacts(text: string): string[] {
+  const found: string[] = [];
+  for (const { regex, format } of FACT_PATTERNS) {
+    const match = text.match(regex);
+    if (match) found.push(format(match));
+  }
+  return found;
+}
+
+/** Merge new facts with existing, keep last 8 unique (LRU style). */
+function mergeFacts(existing: string[], incoming: string[]): string[] {
+  const seen = new Set<string>();
+  const merged: string[] = [];
+  // New facts first (most relevant)
+  for (const f of [...incoming, ...existing]) {
+    const key = f.toLowerCase();
+    if (!seen.has(key)) {
+      seen.add(key);
+      merged.push(f);
+    }
+    if (merged.length >= 8) break;
+  }
+  return merged;
+}
+
+// ─── Detección de "ocupado" — pausar outbound ───
+const BUSY_PATTERNS = [
+  /\b(ahora\s+no|m[áa]s\s+tarde|despu[eé]s|luego)\b/i,
+  /\b(ma[ñn]ana|en\s+un\s+rato|en\s+unas?\s+horas?)\b/i,
+  /\b(la\s+pr[oó]xima\s+semana|el\s+pr[oó]ximo\s+mes|fin\s+de\s+(?:semana|mes))\b/i,
+  /\b(estoy\s+ocupad[oa]|no\s+tengo\s+tiempo|no\s+puedo\s+ahora|estoy\s+en\s+(?:una\s+)?reuni[oó]n|en\s+el\s+trabajo)\b/i,
+];
+
+/** Returns pause duration in hours, or 0 if user didn't signal busy. */
+export function detectBusySignal(text: string): number {
+  const lower = text.toLowerCase();
+  if (/\bma[ñn]ana\b/i.test(lower)) return 18; // hablamos mañana → 18h
+  if (/\bla\s+pr[oó]xima\s+semana\b/i.test(lower)) return 7 * 24;
+  if (/\bel\s+pr[oó]ximo\s+mes|fin\s+de\s+mes\b/i.test(lower)) return 14 * 24;
+  if (/\b(estoy\s+ocupad[oa]|no\s+tengo\s+tiempo|reuni[oó]n)\b/i.test(lower)) return 24;
+  for (const p of BUSY_PATTERNS) if (p.test(lower)) return 8; // default: 8h
+  return 0;
+}
 
 // ─── Public API ───
 
@@ -475,39 +567,48 @@ export async function generateInboundReply(
   segment: UserSegment,
 ): Promise<string | null> {
   try {
-    // Load all context in parallel
-    const [history, profile, vaultOutputs, capsuleProgress, capsules, scores, assessment] =
-      await Promise.all([
-        getConversationHistory(userId, 10),
-        getProfileWithWhatsapp(userId),
-        getVaultOutputsForUser(userId),
-        getCapsuleProgressForUser(userId),
-        getCapsulesCached(),
-        getLeadScoreForUser(userId),
-        getAssessmentForUser(userId),
-      ]);
+    // Load history + state first to decide whether this is a new or ongoing conversation
+    const [history, state] = await Promise.all([
+      getConversationHistory(userId, 10),
+      getConversationState(userId),
+    ]);
 
-    // Save user message to history immediately
-    await appendConversationMessages(userId, [{ role: "user", content: incomingText }]);
+    // ── Cold start vs continuation ──
+    // First turn (no history) → load full context (perfil + cápsulas + bóveda + scores)
+    // Subsequent turns → only load minimal context (perfil + cápsula en progreso + facts)
+    // Esto reduce ~70% los tokens en conversaciones largas → respuestas más rápidas y enfocadas.
+    const isColdStart = history.length === 0;
 
-    const completedCount = capsuleProgress.filter((p) => p.status === "completed").length;
-    const completedCapsules = capsuleProgress
-      .filter((p) => p.status === "completed")
-      .map((p) => `Cápsula ${p.capsule_number}${p.capsule_title ? `: ${p.capsule_title}` : ""}`)
-      .join(", ");
+    let userContext: string;
+    if (isColdStart) {
+      const [profile, vaultOutputs, capsuleProgress, capsules, scores, assessment] =
+        await Promise.all([
+          getProfileWithWhatsapp(userId),
+          getVaultOutputsForUser(userId),
+          getCapsuleProgressForUser(userId),
+          getCapsulesCached(),
+          getLeadScoreForUser(userId),
+          getAssessmentForUser(userId),
+        ]);
 
-    const inProgressCapsule = capsuleProgress.find((p) => p.status === "in_progress");
-    const inProgressTitle = inProgressCapsule
-      ? capsules.find((c) => c.id === inProgressCapsule.capsule_id)?.title ?? null
-      : null;
+      const completedCount = capsuleProgress.filter((p) => p.status === "completed").length;
+      const completedCapsules = capsuleProgress
+        .filter((p) => p.status === "completed")
+        .map((p) => `Cápsula ${p.capsule_number}${p.capsule_title ? `: ${p.capsule_title}` : ""}`)
+        .join(", ");
 
-    const vaultContext = buildVaultContext(vaultOutputs);
-    const painAreas = assessment?.pain_areas ?? [];
-    const companySize = resolveCompanySize(assessment);
+      const inProgressCapsule = capsuleProgress.find((p) => p.status === "in_progress");
+      const inProgressTitle = inProgressCapsule
+        ? capsules.find((c) => c.id === inProgressCapsule.capsule_id)?.title ?? null
+        : null;
 
-    const { name: segmentName, objective: segmentObjective } = resolveSegmentInfo(segment);
+      const vaultContext = buildVaultContext(vaultOutputs);
+      const painAreas = assessment?.pain_areas ?? [];
+      const companySize = resolveCompanySize(assessment);
 
-    const userContext = `
+      const { name: segmentName, objective: segmentObjective } = resolveSegmentInfo(segment);
+
+      userContext = `
 SEGMENTO: ${segmentName}
 OBJETIVO DE ESTA CONVERSACIÓN: ${segmentObjective}
 
@@ -530,53 +631,107 @@ DIAGNÓSTICO:
 
 BÓVEDA:
 ${vaultContext}${profile?.preferences?.['sofia_notes'] ? `\n\nCONTEXTO ESPECIAL DE ESTA CONVERSACIÓN:\n${profile.preferences['sofia_notes'] as string}` : ""}`.trim();
+    } else {
+      // Continuation: minimal context — el historial ya contiene el resto
+      const [profile, capsuleProgress, capsules] = await Promise.all([
+        getProfileWithWhatsapp(userId),
+        getCapsuleProgressForUser(userId),
+        getCapsulesCached(),
+      ]);
+      const completedCount = capsuleProgress.filter((p) => p.status === "completed").length;
+      const inProgressCapsule = capsuleProgress.find((p) => p.status === "in_progress");
+      const inProgressTitle = inProgressCapsule
+        ? capsules.find((c) => c.id === inProgressCapsule.capsule_id)?.title ?? null
+        : null;
+      const facts = state.userFacts && state.userFacts.length > 0
+        ? `\n\nHECHOS DEL USUARIO (mencionados en mensajes anteriores):\n${state.userFacts.map((f) => `- ${f}`).join("\n")}`
+        : "";
+      userContext = `PERFIL: ${profile?.name ?? "desconocido"} (${profile?.company_name ?? "—"}) · ${completedCount}/25 cápsulas${inProgressCapsule ? ` · cursando ${inProgressCapsule.capsule_number}${inProgressTitle ? `: ${inProgressTitle}` : ""}` : ""}${facts}`;
+    }
+
+    // Save user message AFTER deciding cold-start (so history.length is accurate above)
+    await appendConversationMessages(userId, [{ role: "user", content: incomingText }]);
+
+    // ── Rate limit: max 5 AI replies per hour per user ──
+    const now = Date.now();
+    const oneHourAgo = now - 60 * 60 * 1000;
+    const recentReplies = state.aiReplyTimestamps.filter((ts) => new Date(ts).getTime() > oneHourAgo);
+    if (recentReplies.length >= 5) {
+      logger.warn({ userId, repliesLastHour: recentReplies.length }, "AI reply rate limit hit — using fallback");
+      const fallback = nextFallback(userId);
+      await appendConversationMessages(userId, [{ role: "assistant", content: fallback }]);
+      return fallback;
+    }
+
+    // ── Detectar señal de "ocupado" → pausar outbound ──
+    const busyHours = detectBusySignal(incomingText);
+    if (busyHours > 0) {
+      const pausedUntil = new Date(now + busyHours * 60 * 60 * 1000).toISOString();
+      await upsertConversationState(userId, { pausedUntil });
+      logger.info({ userId, busyHours, pausedUntil }, "Busy signal detected — outbound paused");
+    }
+
+    // ── Extraer hechos del mensaje y mergear con existentes ──
+    const newFacts = extractFacts(incomingText);
+    const updatedFacts = mergeFacts(state.userFacts, newFacts);
 
     const fullUserMessage = `${userContext}\n\nMensaje del usuario: ${incomingText}\n\nRespondé SOLO con el texto del mensaje, sin prefijos ni comillas.`;
 
     let reply: string | null = null;
 
-    // 1. Try Codex with conversation history
-    reply = await generateWithCodexConversation(
-      SOFIA_SYSTEM_PROMPT,
-      history as Array<{ role: "user" | "assistant"; content: string }>,
-      fullUserMessage,
-    );
+    // ── Cooldown: si IA falló mucho recientemente, ir directo a fallback ──
+    if (isInAiCooldown()) {
+      logger.warn({ userId }, "AI in cooldown — using fallback without calling provider");
+    } else {
+      // 1. Try Codex with conversation history
+      reply = await generateWithCodexConversation(
+        SOFIA_SYSTEM_PROMPT,
+        history as Array<{ role: "user" | "assistant"; content: string }>,
+        fullUserMessage,
+      );
 
-    // 2. Fallback to Claude with conversation history
-    if (!reply && useClaudeAI) {
-      try {
-        const Anthropic = (await import("@anthropic-ai/sdk")).default;
-        const client = new Anthropic({ apiKey: config.anthropic.apiKey });
+      // 2. Fallback to Claude with conversation history
+      if (!reply && useClaudeAI) {
+        try {
+          const Anthropic = (await import("@anthropic-ai/sdk")).default;
+          const client = new Anthropic({ apiKey: config.anthropic.apiKey });
 
-        const claudeHistory = history.map((m) => ({
-          role: m.role as "user" | "assistant",
-          content: m.content,
-        }));
+          const claudeHistory = history.map((m) => ({
+            role: m.role as "user" | "assistant",
+            content: m.content,
+          }));
 
-        const response = await client.messages.create({
-          model: config.anthropic.model,
-          max_tokens: 150,
-          system: SOFIA_SYSTEM_PROMPT,
-          messages: [
-            ...claudeHistory,
-            { role: "user", content: fullUserMessage },
-          ],
-        });
+          const response = await client.messages.create({
+            model: config.anthropic.model,
+            max_tokens: 150,
+            system: SOFIA_SYSTEM_PROMPT,
+            messages: [
+              ...claudeHistory,
+              { role: "user", content: fullUserMessage },
+            ],
+          });
 
-        const textBlock = response.content.find((b) => b.type === "text");
-        if (textBlock && textBlock.type === "text") {
-          reply = textBlock.text.trim();
+          const textBlock = response.content.find((b) => b.type === "text");
+          if (textBlock && textBlock.type === "text") {
+            reply = textBlock.text.trim();
+          }
+        } catch (error) {
+          logger.error({ error, userId }, "Claude inbound fallback failed");
         }
-      } catch (error) {
-        logger.error({ error, userId }, "Claude inbound fallback failed");
       }
+
+      if (!reply) recordAiFailure();
     }
 
-    // Si ambos proveedores IA fallaron, usar fallback conversacional + avisar a Axel
+    // Si ambos proveedores IA fallaron, usar fallback rotativo + avisar a Axel
     if (!reply) {
-      const fallback = INBOUND_FALLBACKS[Math.floor(Math.random() * INBOUND_FALLBACKS.length)] as string;
-      logger.error({ userId, incomingText: incomingText.slice(0, 100) }, "AI unavailable — both Codex and Claude failed");
+      const fallback = nextFallback(userId);
+      logger.error({ userId, incomingText: incomingText.slice(0, 100) }, "AI unavailable — both Codex and Claude failed (or cooldown)");
       await appendConversationMessages(userId, [{ role: "assistant", content: fallback }]);
+      // Persist facts even if reply failed
+      if (updatedFacts.length > 0) {
+        await upsertConversationState(userId, { userFacts: updatedFacts });
+      }
       // Avisar a Axel — IA caída es crítico, Sofía suena robótica
       try {
         const { baileysManager } = await import("../senders/whatsappBaileys");
@@ -585,15 +740,19 @@ ${vaultContext}${profile?.preferences?.['sofia_notes'] ? `\n\nCONTEXTO ESPECIAL 
       return fallback;
     }
 
-    // Enforce max length
-    const finalReply = reply.length <= MAX_MESSAGE_CHARS
-      ? reply
-      : reply.slice(0, MAX_MESSAGE_CHARS - 1).trimEnd() + "…";
+    // Smart trim: cortar en último punto/coma antes de 300 en lugar de slice brutal
+    const finalReply = smartTrim(reply, MAX_MESSAGE_CHARS);
 
-    // Save Sofía's reply to history
+    // Save Sofía's reply to history + persist state (facts + reply timestamp)
     await appendConversationMessages(userId, [{ role: "assistant", content: finalReply }]);
+    const newTimestamps = [...recentReplies, new Date().toISOString()].slice(-20);
+    await upsertConversationState(userId, {
+      userFacts: updatedFacts,
+      aiReplyTimestamps: newTimestamps,
+      lastAiReplyAt: new Date().toISOString(),
+    });
 
-    logger.info({ userId, historyLength: history.length }, "Inbound AI reply generated");
+    logger.info({ userId, historyLength: history.length, factsCount: updatedFacts.length, isColdStart }, "Inbound AI reply generated");
     return finalReply;
   } catch (error) {
     logger.error({ error, userId }, "generateInboundReply failed");
@@ -601,25 +760,68 @@ ${vaultContext}${profile?.preferences?.['sofia_notes'] ? `\n\nCONTEXTO ESPECIAL 
   }
 }
 
+// ─── Smart trim: corta en último punto/coma antes del límite ───
+function smartTrim(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const slice = text.slice(0, maxChars);
+  // Buscar último '.', '!', '?' o '\n' (en ese orden de preferencia)
+  const lastSentence = Math.max(
+    slice.lastIndexOf("."),
+    slice.lastIndexOf("!"),
+    slice.lastIndexOf("?"),
+    slice.lastIndexOf("\n"),
+  );
+  if (lastSentence > maxChars * 0.5) {
+    return slice.slice(0, lastSentence + 1).trim();
+  }
+  // Si no hay buen punto de corte, intentar coma
+  const lastComma = slice.lastIndexOf(",");
+  if (lastComma > maxChars * 0.6) {
+    return slice.slice(0, lastComma).trim() + "…";
+  }
+  // Último recurso: cortar en último espacio
+  const lastSpace = slice.lastIndexOf(" ");
+  if (lastSpace > maxChars * 0.7) {
+    return slice.slice(0, lastSpace).trim() + "…";
+  }
+  return slice.trim() + "…";
+}
+
 export async function generateMessage(
   opportunity: EngagementOpportunity,
 ): Promise<GeneratedMessage | null> {
   // Fetch all user data once — shared across all generation paths
-  const [vaultOutputs, capsuleProgress, scores, assessment] = await Promise.all([
+  // Also fetch last 5 messages of conversation so outbound respects what user said
+  const [vaultOutputs, capsuleProgress, scores, assessment, recentHistory, state] = await Promise.all([
     getVaultOutputsForUser(opportunity.userId),
     getCapsuleProgressForUser(opportunity.userId),
     getLeadScoreForUser(opportunity.userId),
     getAssessmentForUser(opportunity.userId),
+    getConversationHistory(opportunity.userId, 5),
+    getConversationState(opportunity.userId),
   ]);
 
   const userContext = buildUserContext(opportunity, vaultOutputs, capsuleProgress, scores, assessment);
+
+  // Inject últimos mensajes de conversación si existen (para no insistir si dijo "no")
+  const conversationContext = recentHistory.length > 0
+    ? `\n\nÚLTIMOS MENSAJES DE LA CONVERSACIÓN POR WHATSAPP (chronological):\n${recentHistory.map((m) => `${m.role === "user" ? "Usuario" : "Sofía"}: ${m.content.slice(0, 200)}`).join("\n")}\n\nIMPORTANTE: si el usuario expresó que está ocupado, no quiere ahora, o ya respondió a este journey, NO insistas — saltea o postergá.`
+    : "";
+
+  // Inject hechos del usuario para personalización
+  const factsContext = state.userFacts.length > 0
+    ? `\n\nHECHOS DEL USUARIO (datos que mencionó en conversaciones previas):\n${state.userFacts.map((f) => `- ${f}`).join("\n")}`
+    : "";
+
+  const fullContext = `${userContext}${conversationContext}${factsContext}`;
+
   const journeyPrompt =
     JOURNEY_PROMPTS[opportunity.journeyName] ?? "Genera un mensaje de seguimiento personalizado.";
 
   // 1. Try Codex OAuth (ChatGPT Plus) first
   const codexText = await generateWithCodex(
     SYSTEM_PROMPT,
-    `${journeyPrompt}\n\n${userContext}\n\nGenera SOLO el texto del mensaje de WhatsApp, sin explicaciones ni prefijos.`,
+    `${journeyPrompt}\n\n${fullContext}\n\nGenera SOLO el texto del mensaje de WhatsApp, sin explicaciones ni prefijos.`,
   );
 
   if (codexText) {
@@ -636,7 +838,7 @@ export async function generateMessage(
 
   // 2. Try Claude API if Codex unavailable
   if (useClaudeAI) {
-    const aiMessage = await generateWithClaude(opportunity, userContext, journeyPrompt);
+    const aiMessage = await generateWithClaude(opportunity, fullContext, journeyPrompt);
     if (aiMessage) {
       logger.info(
         { userId: opportunity.userId, journey: opportunity.journeyName, mode: "claude" },

@@ -108,7 +108,7 @@ export interface UserProgramAccess {
 
 export interface EngagementLogInsert {
   lead_id: string;
-  status: "sent" | "failed" | "opted_out";
+  status: "sent" | "failed" | "opted_out" | "skipped_paused" | "failed_pending_retry";
   message: string;
   channel: string; // 'whatsapp'
   trigger_type: string; // 'campaign' | 'scheduled' | 'manual'
@@ -117,6 +117,10 @@ export interface EngagementLogInsert {
     whatsapp_number: string;
     deep_link: string;
     level?: number; // journey level for multi-step journeys (e.g. inactivity 1/2/3)
+    paused_until?: string; // ISO timestamp if status === 'skipped_paused'
+    retry_count?: number; // # of attempts if status === 'failed_pending_retry'
+    last_retry_at?: string; // ISO timestamp of last retry
+    last_error?: string; // last error message
   };
 }
 

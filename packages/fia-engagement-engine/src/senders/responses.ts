@@ -231,6 +231,11 @@ export async function processIncomingResponse(
       });
     }
 
+    // Wrap link in command replies for click tracking too
+    if (action.replyText && action.replyText.includes("http")) {
+      action = { ...action, replyText: await wrapLinksWithTracking(action.replyText, userId, normalizedFrom) };
+    }
+
     logger.info({ userId, type: action.type, from: message.from }, "Command response processed");
     return action;
   }
@@ -321,7 +326,7 @@ export async function processIncomingResponse(
   const aiReply = await generateInboundReply(userId, message.body, segment);
 
   if (aiReply) {
-    action = { ...action, replyText: aiReply };
+    action = { ...action, replyText: await wrapLinksWithTracking(aiReply, userId, normalizedFrom) };
   } else {
     logger.warn({ userId }, "AI inbound reply returned null — no reply sent");
   }
@@ -332,4 +337,33 @@ export async function processIncomingResponse(
   );
 
   return action;
+}
+
+/**
+ * Replace fiacopilot.com links in inbound replies with tracked redirect URLs.
+ * Creates a minimal engagement_log entry per link so click tracking works.
+ */
+async function wrapLinksWithTracking(text: string, userId: string, phone: string): Promise<string> {
+  const linkRegex = new RegExp(`${config.engine.appBaseUrl.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[^\\s]+`, "g");
+  const links = text.match(linkRegex);
+  if (!links || links.length === 0) return text;
+
+  // Use only the first link to avoid creating excessive log entries per reply
+  const link = links[0] as string;
+  const { insertEngagementLog } = await import("../db/supabase");
+  const logEntry = await insertEngagementLog({
+    lead_id: userId,
+    status: "sent",
+    message: text,
+    channel: "whatsapp",
+    trigger_type: "inbound_reply",
+    metadata: {
+      journey_name: "inbound_ai_reply",
+      whatsapp_number: phone,
+      deep_link: link,
+    },
+  });
+  if (!logEntry?.id) return text;
+  const trackedLink = `${config.engine.engineBaseUrl}/r/${logEntry.id}`;
+  return text.replace(link, trackedLink);
 }

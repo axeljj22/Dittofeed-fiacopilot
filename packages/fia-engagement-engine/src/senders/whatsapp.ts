@@ -7,7 +7,7 @@
 import axios from "axios";
 import { config } from "../config";
 import { logger } from "../logger";
-import { insertEngagementLog } from "../db/supabase";
+import { insertEngagementLog, getConversationState } from "../db/supabase";
 import type { EngagementOpportunity } from "../db/types";
 import type { GeneratedMessage } from "../generators/messageGenerator";
 import { baileysManager } from "./whatsappBaileys";
@@ -119,6 +119,29 @@ export async function sendWhatsAppMessage(
     return false;
   }
 
+  // Check user pause (set when user replies "ahora no", "mañana", etc.)
+  const state = await getConversationState(opportunity.userId);
+  if (state.pausedUntil && new Date(state.pausedUntil).getTime() > Date.now()) {
+    logger.info(
+      { userId: opportunity.userId, pausedUntil: state.pausedUntil, journey: message.journeyName },
+      "Outbound paused — user signaled busy",
+    );
+    await insertEngagementLog({
+      lead_id: opportunity.userId,
+      status: "skipped_paused",
+      message: message.text,
+      channel: "whatsapp",
+      trigger_type: "scheduled",
+      metadata: {
+        journey_name: message.journeyName,
+        whatsapp_number: whatsappNumber,
+        deep_link: message.deepLink,
+        paused_until: state.pausedUntil,
+      },
+    });
+    return false;
+  }
+
   // Check opt-out
   if (!opportunity.profile.whatsapp_opt_in) {
     await insertEngagementLog({
@@ -176,15 +199,19 @@ export async function sendWhatsAppMessage(
     }
   }
 
-  // Update to "failed" if send didn't succeed
+  // Update to "failed_pending_retry" if send didn't succeed (cron will retry up to 3 times)
   if (!result.success && logEntry?.id) {
     const { getSupabaseClient } = await import("../db/supabase");
+    const existingMeta = (logEntry.metadata as Record<string, unknown> | null) ?? {};
     const { error: updateError } = await getSupabaseClient()
       .from("engagement_log")
-      .update({ status: "failed" })
+      .update({
+        status: "failed_pending_retry",
+        metadata: { ...existingMeta, retry_count: 0, last_error: result.error ?? "unknown" },
+      })
       .eq("id", logEntry.id);
     if (updateError) {
-      logger.error({ updateError, logId: logEntry.id }, "Failed to mark log entry as failed");
+      logger.error({ updateError, logId: logEntry.id }, "Failed to mark log entry as failed_pending_retry");
     }
   }
 
@@ -257,9 +284,13 @@ export async function sendCampaignMessage(
 
   if (!result.success && logEntry?.id) {
     const { getSupabaseClient } = await import("../db/supabase");
+    const existingMeta = (logEntry.metadata as Record<string, unknown> | null) ?? {};
     await getSupabaseClient()
       .from("engagement_log")
-      .update({ status: "failed" })
+      .update({
+        status: "failed_pending_retry",
+        metadata: { ...existingMeta, retry_count: 0, last_error: result.error ?? "unknown" },
+      })
       .eq("id", logEntry.id);
   }
 
@@ -270,4 +301,89 @@ export async function sendCampaignMessage(
   }
 
   return result.success;
+}
+
+/**
+ * Retry messages with status 'failed_pending_retry' (max 3 attempts).
+ * After 3 attempts → mark as 'failed' (terminal). Cron should call this every 30 min.
+ */
+export async function retryFailedMessages(): Promise<{ retried: number; succeeded: number; gaveUp: number }> {
+  const { getSupabaseClient } = await import("../db/supabase");
+  const supabase = getSupabaseClient();
+
+  // Find candidates: failed_pending_retry from last 24h, not retried in last 30min
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  const thirtyMinAgo = Date.now() - 30 * 60 * 1000;
+
+  const { data: candidates, error } = await supabase
+    .from("engagement_log")
+    .select("id, lead_id, message, metadata")
+    .eq("status", "failed_pending_retry")
+    .gte("created_at", since)
+    .limit(20);
+
+  if (error) {
+    logger.error({ error }, "Failed to fetch retry candidates");
+    return { retried: 0, succeeded: 0, gaveUp: 0 };
+  }
+
+  let retried = 0;
+  let succeeded = 0;
+  let gaveUp = 0;
+
+  for (const row of candidates ?? []) {
+    const meta = (row.metadata as { whatsapp_number?: string; retry_count?: number; last_retry_at?: string } | null) ?? {};
+    const phone = meta.whatsapp_number;
+    const retryCount = meta.retry_count ?? 0;
+    const lastRetryAt = meta.last_retry_at ? new Date(meta.last_retry_at).getTime() : 0;
+
+    if (!phone) continue;
+    // Respect 30min spacing between retries
+    if (lastRetryAt && lastRetryAt > thirtyMinAgo) continue;
+
+    if (retryCount >= 3) {
+      // Give up — mark as terminal failed
+      await supabase
+        .from("engagement_log")
+        .update({ status: "failed", metadata: { ...meta, gave_up_at: new Date().toISOString() } })
+        .eq("id", row.id);
+      gaveUp++;
+      logger.warn({ logId: row.id, phone, retryCount }, "Giving up on failed message after 3 retries");
+      continue;
+    }
+
+    retried++;
+    const result = await sendWithProvider(config.whatsapp.provider, phone, row.message as string);
+    let finalResult = result;
+    if (!result.success && config.whatsapp.fallbackProvider) {
+      finalResult = await sendWithProvider(config.whatsapp.fallbackProvider, phone, row.message as string);
+    }
+
+    if (finalResult.success) {
+      await supabase
+        .from("engagement_log")
+        .update({ status: "sent", metadata: { ...meta, retry_count: retryCount + 1, last_retry_at: new Date().toISOString(), recovered: true } })
+        .eq("id", row.id);
+      succeeded++;
+      logger.info({ logId: row.id, phone, attempt: retryCount + 1 }, "Failed message recovered on retry");
+    } else {
+      await supabase
+        .from("engagement_log")
+        .update({
+          metadata: {
+            ...meta,
+            retry_count: retryCount + 1,
+            last_retry_at: new Date().toISOString(),
+            last_error: finalResult.error ?? "unknown",
+          },
+        })
+        .eq("id", row.id);
+      logger.warn({ logId: row.id, phone, attempt: retryCount + 1, error: finalResult.error }, "Retry failed");
+    }
+  }
+
+  if (retried > 0) {
+    logger.info({ retried, succeeded, gaveUp }, "Retry cycle completed");
+  }
+  return { retried, succeeded, gaveUp };
 }

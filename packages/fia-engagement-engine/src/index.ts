@@ -21,6 +21,7 @@ import {
   runSponsorReports,
   runAllDetectors,
 } from "./orchestrator";
+import { retryFailedMessages } from "./senders/whatsapp";
 
 function startScheduler(): void {
   logger.info(
@@ -56,6 +57,15 @@ function startScheduler(): void {
       await runSponsorReports();
     } catch (error) {
       logger.error({ error }, "Sponsor report cycle failed");
+    }
+  });
+
+  // Retry failed messages every 30 minutes (max 3 attempts per message, then mark terminal failed)
+  cron.schedule("*/30 * * * *", async () => {
+    try {
+      await retryFailedMessages();
+    } catch (error) {
+      logger.error({ error }, "Failed message retry cycle failed");
     }
   });
 

@@ -797,31 +797,73 @@ export async function getUserSegment(userId: string): Promise<UserSegment> {
 export interface ConversationState {
   consecutiveLowEngagement: number;
   lastAiReplyAt: string | null;
+  /** Facts mentioned by the user in past turns (rotating, max 8 items). */
+  userFacts: string[];
+  /** ISO timestamp until which outbound messages should be paused for this user. */
+  pausedUntil: string | null;
+  /** Recent AI reply timestamps (for hourly rate limiting). Stored as ISO array, max 20. */
+  aiReplyTimestamps: string[];
 }
 
 export async function getConversationState(userId: string): Promise<ConversationState> {
   const { data } = await getSupabaseClient()
     .from("wa_conversation_state")
-    .select("consecutive_low_engagement, last_ai_reply_at")
+    .select("consecutive_low_engagement, last_ai_reply_at, metadata")
     .eq("user_id", userId)
     .maybeSingle();
 
-  if (!data) return { consecutiveLowEngagement: 0, lastAiReplyAt: null };
+  const empty: ConversationState = {
+    consecutiveLowEngagement: 0,
+    lastAiReplyAt: null,
+    userFacts: [],
+    pausedUntil: null,
+    aiReplyTimestamps: [],
+  };
+  if (!data) return empty;
 
-  const row = data as { consecutive_low_engagement: number; last_ai_reply_at: string | null };
+  const row = data as {
+    consecutive_low_engagement: number;
+    last_ai_reply_at: string | null;
+    metadata?: { userFacts?: string[]; pausedUntil?: string | null; aiReplyTimestamps?: string[] } | null;
+  };
   return {
     consecutiveLowEngagement: row.consecutive_low_engagement,
     lastAiReplyAt: row.last_ai_reply_at,
+    userFacts: row.metadata?.userFacts ?? [],
+    pausedUntil: row.metadata?.pausedUntil ?? null,
+    aiReplyTimestamps: row.metadata?.aiReplyTimestamps ?? [],
   };
 }
 
 export async function upsertConversationState(
   userId: string,
-  updates: { consecutiveLowEngagement?: number; lastAiReplyAt?: string },
+  updates: {
+    consecutiveLowEngagement?: number;
+    lastAiReplyAt?: string;
+    userFacts?: string[];
+    pausedUntil?: string | null;
+    aiReplyTimestamps?: string[];
+  },
 ): Promise<void> {
   const row: Record<string, unknown> = { user_id: userId, updated_at: new Date().toISOString() };
   if (updates.consecutiveLowEngagement !== undefined) row["consecutive_low_engagement"] = updates.consecutiveLowEngagement;
   if (updates.lastAiReplyAt !== undefined) row["last_ai_reply_at"] = updates.lastAiReplyAt;
+
+  // Merge metadata fields — read existing first to avoid clobbering
+  if (updates.userFacts !== undefined || updates.pausedUntil !== undefined || updates.aiReplyTimestamps !== undefined) {
+    const { data: existing } = await getSupabaseClient()
+      .from("wa_conversation_state")
+      .select("metadata")
+      .eq("user_id", userId)
+      .maybeSingle();
+    const prevMeta = (existing?.metadata as Record<string, unknown> | null) ?? {};
+    row["metadata"] = {
+      ...prevMeta,
+      ...(updates.userFacts !== undefined ? { userFacts: updates.userFacts } : {}),
+      ...(updates.pausedUntil !== undefined ? { pausedUntil: updates.pausedUntil } : {}),
+      ...(updates.aiReplyTimestamps !== undefined ? { aiReplyTimestamps: updates.aiReplyTimestamps } : {}),
+    };
+  }
 
   const { error } = await getSupabaseClient()
     .from("wa_conversation_state")
