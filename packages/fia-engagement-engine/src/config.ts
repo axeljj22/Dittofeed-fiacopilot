@@ -111,6 +111,8 @@ export const config = {
     segmentDetectors: optionalEnv("CRON_SEGMENT_DETECTORS", "0 */2 * * *"),
     // Weekly sponsor report: Mondays at 9 AM
     sponsorReport: optionalEnv("CRON_SPONSOR_REPORT", "0 9 * * 1"),
+    // Retry failed messages — every 30 minutes (set to "0 0 31 2 *" to disable)
+    retryFailed: optionalEnv("CRON_RETRY_FAILED", "*/30 * * * *"),
   },
 
   // Logging

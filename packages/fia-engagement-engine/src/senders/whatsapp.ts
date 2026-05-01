@@ -119,6 +119,23 @@ export async function sendWhatsAppMessage(
     return false;
   }
 
+  // ── Hard pilot gate (defense in depth) ──
+  // The orchestrator already filters by pilotPhone, but anything that calls
+  // sendWhatsAppMessage directly (test endpoints, manual triggers, retries)
+  // could bypass that. Block here as a last line of defense.
+  if (config.engine.pilotPhone) {
+    const normalized = whatsappNumber.replace(/\D/g, "");
+    const pilot = config.engine.pilotPhone.replace(/\D/g, "");
+    const whitelistedFor = config.engine.pilotWhitelistPhones.some((w) => normalized.includes(w));
+    if (normalized !== pilot && !whitelistedFor) {
+      logger.warn(
+        { userId: opportunity.userId, to: normalized, pilot },
+        "BLOCKED outbound — pilot mode active and recipient not in pilot/whitelist",
+      );
+      return false;
+    }
+  }
+
   // Check user pause (set when user replies "ahora no", "mañana", etc.)
   const state = await getConversationState(opportunity.userId);
   if (state.pausedUntil && new Date(state.pausedUntil).getTime() > Date.now()) {
@@ -256,6 +273,19 @@ export async function sendCampaignMessage(
     return false;
   }
 
+  // Hard pilot gate (defense in depth — see sendWhatsAppMessage for rationale)
+  if (config.engine.pilotPhone) {
+    const pilot = config.engine.pilotPhone.replace(/\D/g, "");
+    const whitelistedFor = config.engine.pilotWhitelistPhones.some((w) => normalizedPhone.includes(w));
+    if (normalizedPhone !== pilot && !whitelistedFor) {
+      logger.warn(
+        { to: normalizedPhone, pilot },
+        "BLOCKED campaign send — pilot mode active",
+      );
+      return false;
+    }
+  }
+
   // Log before sending so we have a record even if delivery fails
   const logEntry = await insertEngagementLog({
     lead_id: userId,
@@ -340,6 +370,21 @@ export async function retryFailedMessages(): Promise<{ retried: number; succeede
     if (!phone) continue;
     // Respect 30min spacing between retries
     if (lastRetryAt && lastRetryAt > thirtyMinAgo) continue;
+
+    // Hard pilot gate — never retry to non-pilot phones
+    if (config.engine.pilotPhone) {
+      const normalizedPhone = phone.replace(/\D/g, "");
+      const pilot = config.engine.pilotPhone.replace(/\D/g, "");
+      const whitelistedFor = config.engine.pilotWhitelistPhones.some((w) => normalizedPhone.includes(w));
+      if (normalizedPhone !== pilot && !whitelistedFor) {
+        // Mark as terminally failed so we don't keep evaluating it forever
+        await supabase.from("engagement_log")
+          .update({ status: "failed", metadata: { ...meta, blocked_by_pilot_mode: true } })
+          .eq("id", row.id);
+        gaveUp++;
+        continue;
+      }
+    }
 
     // Skip if user signalled busy after the original send — wait for pause to expire
     const userState = await getConversationState(row.lead_id as string);

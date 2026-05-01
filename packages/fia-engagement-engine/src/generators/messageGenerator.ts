@@ -49,66 +49,69 @@ interface TemplateContext {
   companySize: "emprendedor" | "empresa" | null; // derived from answers.m_size
 }
 
+/**
+ * Standard outbound footer — required when WhatsApp may flag unsolicited messages
+ * as automation. Includes who is writing and how to opt out.
+ * Cap kept short so 300-char limit isn't blown for short bodies.
+ */
+const OPT_OUT_FOOTER = "\n\nRespondé STOP si no querés más mensajes.";
+const FIRST_CONTACT_INTRO = (nombre: string) => `Hola ${nombre}, soy Sofía de FIA Copilot 👋`;
+
 const TEMPLATES: Record<string, (ctx: TemplateContext) => string> = {
   reactivacion_inactividad_1: (ctx) => {
     const capsulaNombre = ctx.capsulaTitle ? `${ctx.capsulaPendiente}: ${ctx.capsulaTitle}` : `${ctx.capsulaPendiente}`;
-    return `Hola ${ctx.nombre}! Soy Sofía de FIA Copilot. ` +
-      `Tenés la cápsula ${capsulaNombre} esperándote. ` +
-      `Cuando puedas: ${ctx.deepLink}`;
+    return `${FIRST_CONTACT_INTRO(ctx.nombre)}. ` +
+      `Te escribo porque dejaste pendiente la cápsula ${capsulaNombre} en la plataforma. ` +
+      `Cuando puedas retomar: ${ctx.deepLink}` + OPT_OUT_FOOTER;
   },
 
   reactivacion_inactividad_2: (ctx) => {
     const capsulaNombre = ctx.capsulaTitle ? `${ctx.capsulaPendiente}: ${ctx.capsulaTitle}` : `${ctx.capsulaPendiente}`;
-    const empresaCtx = ctx.empresa !== "tu empresa" ? ` en ${ctx.empresa}` : "";
-    return `${ctx.nombre}, hace ${ctx.daysInactive} días que no entrás. ` +
-      `La cápsula ${capsulaNombre} está justo donde la dejaste${empresaCtx}. ` +
-      `Retomá cuando quieras: ${ctx.deepLink}`;
+    const empresaCtx = ctx.empresa !== "tu empresa" ? ` (${ctx.empresa})` : "";
+    return `${ctx.nombre}, soy Sofía de FIA Copilot. ` +
+      `Hace ${ctx.daysInactive} días no entrás${empresaCtx}. La cápsula ${capsulaNombre} sigue ahí cuando quieras: ${ctx.deepLink}` + OPT_OUT_FOOTER;
   },
 
   reactivacion_inactividad_3: (ctx) =>
-    `${ctx.nombre}, te escribo por última vez sobre esto. ` +
-    `Si querés retomar el programa, respondé SI y te ayudo. ` +
-    `O entrá directo: ${ctx.deepLink}`,
+    `${ctx.nombre}, soy Sofía de FIA Copilot — última vez que te escribo por esto. ` +
+    `Si querés retomar respondé SI. O entrá directo: ${ctx.deepLink}` + OPT_OUT_FOOTER,
 
   celebracion_capsula: (ctx) =>
-    `Muy bien ${ctx.nombre}! Completaste la cápsula ${ctx.capsulaPendiente - 1}. ` +
-    `Ya vas ${ctx.capsulasTotales}/25. La próxima te espera: ${ctx.deepLink}`,
+    `${ctx.nombre}, soy Sofía de FIA Copilot 🎉 ` +
+    `Completaste la cápsula ${ctx.capsulaPendiente - 1} (${ctx.capsulasTotales}/25). ` +
+    `Próxima: ${ctx.deepLink}` + OPT_OUT_FOOTER,
 
   celebracion_capsula_final: (ctx) =>
-    `${ctx.nombre}, completaste las 25 cápsulas del Método FIA. ` +
-    `Todo lo que construiste está en tu Bóveda: ${ctx.deepLink}`,
+    `${ctx.nombre}, soy Sofía de FIA Copilot. Completaste las 25 cápsulas del Método FIA 🎉 ` +
+    `Todo lo que construiste está en tu Bóveda: ${ctx.deepLink}` + OPT_OUT_FOOTER,
 
   bienvenida_diagnostico: (ctx) => {
     const painCtx = ctx.painAreas.length > 0
       ? ` Detectamos oportunidades en ${ctx.painAreas.slice(0, 2).join(" y ")}.`
       : "";
     const capsulaNombre = ctx.capsulaTitle ? `${ctx.capsulaPendiente}: ${ctx.capsulaTitle}` : `${ctx.capsulaPendiente}`;
-    return `Hola ${ctx.nombre}, soy Sofía, tu Coach de FIA Copilot. ` +
+    return `${FIRST_CONTACT_INTRO(ctx.nombre)}, tu Coach. ` +
       `Tu diagnóstico está listo — score ${ctx.overallScore}/100.${painCtx} ` +
-      `Te recomiendo empezar por la cápsula ${capsulaNombre}: ${ctx.deepLink}\n\n` +
-      `Vas a recibir mensajes míos de seguimiento. Respondé STOP en cualquier momento para cancelarlos.`;
+      `Empezá por la cápsula ${capsulaNombre}: ${ctx.deepLink}` + OPT_OUT_FOOTER;
   },
 
   recuperacion_lead_frio: (ctx) => {
-    if (ctx.companySize === "emprendedor") {
-      return `${ctx.nombre}, tu diagnóstico FIA marcó ${ctx.overallScore}/100. ` +
-        `Tenés herramientas de IA que podés aplicar vos solo, paso a paso. Mirá el plan: ${ctx.deepLink}`;
-    }
-    return `${ctx.nombre}, tu diagnóstico FIA marcó ${ctx.overallScore}/100 para ${ctx.empresa}. ` +
-      `Hay pasos concretos para mejorar eso. Mirá el plan: ${ctx.deepLink}`;
+    const empresaCtx = ctx.companySize === "emprendedor"
+      ? "Tenés herramientas de IA para aplicar vos solo paso a paso"
+      : `Hay pasos concretos para ${ctx.empresa}`;
+    return `${FIRST_CONTACT_INTRO(ctx.nombre)}. ` +
+      `Hace un tiempo hiciste el diagnóstico (score ${ctx.overallScore}). ${empresaCtx}. Mirá el plan: ${ctx.deepLink}` + OPT_OUT_FOOTER;
   },
 
   resumen_semanal_sponsor: (ctx) =>
-    `Hola! Acá el resumen de esta semana de ${ctx.empresa}. ` +
-    `Revisá quién avanzó y quién necesita un empujón: ${ctx.deepLink}`,
+    `Hola, soy Sofía de FIA Copilot. Te paso el resumen semanal de ${ctx.empresa}: ${ctx.deepLink}` + OPT_OUT_FOOTER,
 
   campana_activa: (ctx) => {
     const capsulaNombre = ctx.capsulaTitle
       ? `${ctx.capsulaPendiente}: ${ctx.capsulaTitle}`
       : `${ctx.capsulaPendiente}`;
-    return `${ctx.nombre}, tenés acceso especial a FIA Copilot. ` +
-      `Tu próxima cápsula es la ${capsulaNombre}. ` +
-      `Entrá cuando quieras: ${ctx.deepLink}`;
+    return `${FIRST_CONTACT_INTRO(ctx.nombre)}. ` +
+      `Tenés acceso especial activo. Tu próxima cápsula es la ${capsulaNombre}: ${ctx.deepLink}` + OPT_OUT_FOOTER;
   },
 };
 
@@ -233,6 +236,12 @@ SEPRIO (FIAT): respuesta leads 24h → 15min, conversión 3% → 12%. Grupo Auto
 
 REGLAS ABSOLUTAS:
 Nunca hablar de precios ni planes concretos — "eso lo maneja el equipo". Nunca consejos legales, contables ni médicos. Nunca prometer resultados específicos. Nunca inventar info del usuario o su empresa. Nunca mandar listas con viñetas — texto corrido siempre. Si no sabés algo → "no tengo esa info, el equipo te puede ayudar". Siempre incluir link concreto al final si hay acción sugerida. Nunca menciones comandos (STOP, AYUDA, VENTAS, etc.) a menos que el usuario los pida — son contexto interno tuyo, no información para el usuario.
+
+REGLAS DE OUTBOUND (mensaje saliente que vos iniciás):
+Si NO hay historial de conversación con este usuario, SIEMPRE empezá presentándote: "Hola [nombre], soy Sofía de FIA Copilot". Sin excepciones — la persona puede no reconocer el número y marcarte como spam. Después de presentarte, decí en una frase POR QUÉ le escribís ("te escribo porque dejaste pendiente X" / "tu diagnóstico está listo" / "tenés acceso a Y"). Cerrá con el link y sumá: "Respondé STOP si no querés más mensajes". Esto último es OBLIGATORIO en cualquier outbound de primer contacto — sin esto, WhatsApp puede flaggear el número como automatización.
+
+REGLAS DE LINKS:
+Usá SIEMPRE el "Deep link a incluir" que te paso en el contexto — NUNCA inventes URLs. Si no hay link en el contexto, no inventes uno. Los links deben ir al final del mensaje precedidos de un espacio, nunca pegados a una palabra.
 
 CONTEXTO INTERNO — COMANDOS (no mencionar salvo que el usuario los pida):
 STOP → opt out | SI → retomar | PUNTOS → ver score | AYUDA → contactar soporte | VENTAS → info FIA Ventas | DIAGNOSTICO → resultados | PERFIL → editar perfil
@@ -379,25 +388,50 @@ function generateFromTemplate(
 
 // ─── Message length enforcement ───
 
-const MAX_MESSAGE_CHARS = 300;
+const MAX_MESSAGE_CHARS = 320;
 
 /**
- * Enforces the 300-char limit.
- * If the message exceeds it, truncates the body but preserves the deep link at the end.
+ * Sanitize an outbound message before sending:
+ * 1. Replace any URL the model invented with the canonical deepLink (if model wrote a different one)
+ * 2. Enforce length (preserves deepLink at the end, even if body has to be truncated)
+ *
+ * This is the LAST line of defense — must guarantee the message ends with a clean,
+ * complete URL that matches the engagement_log's deep_link (so click tracking works).
  */
 function enforceLength(text: string, deepLink: string): string {
-  if (text.length <= MAX_MESSAGE_CHARS) return text;
+  let safe = text.trim();
 
-  // If deep link is at the end, keep it — truncate the body before it
-  const linkIndex = text.lastIndexOf(deepLink);
-  if (linkIndex !== -1 && linkIndex + deepLink.length === text.length) {
-    const bodyBudget = MAX_MESSAGE_CHARS - deepLink.length - 1; // 1 for space/separator
-    const truncatedBody = text.slice(0, linkIndex).trimEnd().slice(0, bodyBudget);
-    return `${truncatedBody} ${deepLink}`;
+  // Step 1: if the model wrote a fiacopilot.com URL that differs from deepLink, swap it
+  const urlPattern = /https?:\/\/(?:www\.)?fiacopilot\.com[^\s]*/g;
+  const urls = safe.match(urlPattern) ?? [];
+  for (const url of urls) {
+    if (url !== deepLink) {
+      safe = safe.replace(url, deepLink);
+    }
   }
 
-  // No link at end — truncate with ellipsis
-  return text.slice(0, MAX_MESSAGE_CHARS - 1).trimEnd() + "…";
+  // Step 2: ensure the deepLink is present at the end of the message
+  if (!safe.includes(deepLink)) {
+    safe = `${safe} ${deepLink}`;
+  }
+
+  if (safe.length <= MAX_MESSAGE_CHARS) return safe;
+
+  // Truncation: keep the deepLink at the end, trim body to fit
+  const linkIndex = safe.lastIndexOf(deepLink);
+  const bodyBudget = MAX_MESSAGE_CHARS - deepLink.length - 1; // 1 for space
+  if (bodyBudget < 40) {
+    // Edge: deepLink alone almost fills the budget — return link + minimal context
+    return deepLink;
+  }
+  let body = safe.slice(0, linkIndex).trim();
+  if (body.length > bodyBudget) {
+    // Cut on the last sentence boundary inside the budget
+    const cut = body.slice(0, bodyBudget);
+    const lastBoundary = Math.max(cut.lastIndexOf("."), cut.lastIndexOf("!"), cut.lastIndexOf("?"), cut.lastIndexOf("\n"));
+    body = lastBoundary > bodyBudget * 0.5 ? cut.slice(0, lastBoundary + 1) : cut.replace(/\s+\S*$/, "") + "…";
+  }
+  return `${body.trim()} ${deepLink}`;
 }
 
 // ─── Capsule cache (never changes — avoid fetching on every inbound message) ───

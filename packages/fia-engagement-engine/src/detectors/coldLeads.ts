@@ -47,7 +47,9 @@ export async function detectColdLeads(): Promise<EngagementOpportunity[]> {
       new Date(scores.last_calculated_at),
     );
 
-    const deepLink = `${config.engine.appBaseUrl}/upgrade?ref=reactivacion_lead`;
+    // Public landing — does NOT force login. /upgrade redirected to /login which
+    // looked like phishing to recipients who didn't recognize FIA Copilot.
+    const deepLink = `${config.engine.appBaseUrl}/?ref=reactivacion_lead`;
 
     opportunities.push({
       userId: user.id,

@@ -60,8 +60,8 @@ function startScheduler(): void {
     }
   });
 
-  // Retry failed messages every 30 minutes (max 3 attempts per message, then mark terminal failed)
-  cron.schedule("*/30 * * * *", async () => {
+  // Retry failed messages — schedule via CRON_RETRY_FAILED (set to never-fire to disable)
+  cron.schedule(config.cron.retryFailed, async () => {
     try {
       await retryFailedMessages();
     } catch (error) {
