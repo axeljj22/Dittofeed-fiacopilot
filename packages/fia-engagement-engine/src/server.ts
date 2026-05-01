@@ -49,7 +49,12 @@ async function handleHealthCheck(
     version: process.env["APP_VERSION"] ?? "unknown",
     gitSha: process.env["GIT_SHA"] ?? "unknown",
     buildTime: process.env["BUILD_TIME"] ?? "unknown",
-    whatsapp: baileysManager.status,
+    whatsapp: {
+      primary: config.whatsapp.provider,
+      baileys: baileysManager.status,
+      cloudApi: config.whatsapp.cloudApi.token ? "configured" : "not_configured",
+      fallback: config.whatsapp.fallbackProvider || "none",
+    },
     codex: codexOk ? "available" : "unavailable",
     uptime: Math.floor(process.uptime()),
     timestamp: new Date().toISOString(),

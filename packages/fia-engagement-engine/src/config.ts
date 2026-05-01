@@ -41,6 +41,11 @@ export const config = {
       | "baileys"
       | "cloud_api"
       | "twilio",
+    // Fallback provider if primary fails (empty = no fallback)
+    fallbackProvider: optionalEnv("WHATSAPP_FALLBACK_PROVIDER", "") as
+      | ""
+      | "baileys"
+      | "cloud_api",
     // Baileys session persistence directory
     sessionDir: process.env["WHATSAPP_SESSION_DIR"] ?? process.env["WA_SESSION_DIR"] ?? "/app/sessions/baileys",
     // Meta Cloud API

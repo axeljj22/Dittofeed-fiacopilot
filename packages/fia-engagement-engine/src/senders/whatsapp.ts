@@ -90,6 +90,18 @@ async function sendViaTwilio(
   }
 }
 
+/** Route a send to the right provider implementation */
+async function sendWithProvider(
+  provider: "baileys" | "cloud_api" | "twilio" | "",
+  phone: string,
+  text: string,
+): Promise<SendResult> {
+  if (provider === "baileys") return baileysManager.sendMessage(phone, text);
+  if (provider === "twilio") return sendViaTwilio(phone, text);
+  if (provider === "cloud_api") return sendViaCloudApi(phone, text);
+  return { success: false, error: `Unknown provider: ${provider}` };
+}
+
 /**
  * Send a WhatsApp message and log the result.
  */
@@ -151,14 +163,17 @@ export async function sendWhatsAppMessage(
     finalMessage = message.text.replace(message.deepLink, trackedLink);
   }
 
-  // Send based on configured provider
-  let result: SendResult;
-  if (config.whatsapp.provider === "baileys") {
-    result = await baileysManager.sendMessage(whatsappNumber, finalMessage);
-  } else if (config.whatsapp.provider === "twilio") {
-    result = await sendViaTwilio(whatsappNumber, finalMessage);
-  } else {
-    result = await sendViaCloudApi(whatsappNumber, finalMessage);
+  // Send via primary provider, fall back if configured
+  let result = await sendWithProvider(config.whatsapp.provider, whatsappNumber, finalMessage);
+  if (!result.success && config.whatsapp.fallbackProvider) {
+    logger.warn(
+      { primaryError: result.error, fallback: config.whatsapp.fallbackProvider },
+      "Primary WhatsApp provider failed — trying fallback",
+    );
+    result = await sendWithProvider(config.whatsapp.fallbackProvider, whatsappNumber, finalMessage);
+    if (result.success) {
+      logger.info({ provider: config.whatsapp.fallbackProvider }, "Fallback provider succeeded");
+    }
   }
 
   // Update to "failed" if send didn't succeed
@@ -228,13 +243,16 @@ export async function sendCampaignMessage(
     },
   });
 
-  let result: SendResult;
-  if (config.whatsapp.provider === "baileys") {
-    result = await baileysManager.sendMessage(normalizedPhone, messageText);
-  } else if (config.whatsapp.provider === "twilio") {
-    result = await sendViaTwilio(normalizedPhone, messageText);
-  } else {
-    result = await sendViaCloudApi(normalizedPhone, messageText);
+  let result = await sendWithProvider(config.whatsapp.provider, normalizedPhone, messageText);
+  if (!result.success && config.whatsapp.fallbackProvider) {
+    logger.warn(
+      { primaryError: result.error, fallback: config.whatsapp.fallbackProvider },
+      "Primary WhatsApp provider failed — trying fallback",
+    );
+    result = await sendWithProvider(config.whatsapp.fallbackProvider, normalizedPhone, messageText);
+    if (result.success) {
+      logger.info({ provider: config.whatsapp.fallbackProvider }, "Fallback provider succeeded");
+    }
   }
 
   if (!result.success && logEntry?.id) {
