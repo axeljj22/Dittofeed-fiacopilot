@@ -79,23 +79,46 @@ jobs:
         run: |
           BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} "
+            set -e
             cd /opt/dittofeed
             mkdir -p fia-engine-data codex-auth
             export GIT_SHA=${GIT_SHA}
             export BUILD_TIME=${BUILD_TIME}
+
+            echo '── Killing any container holding port 3001 ──'
+            STALE=\$(docker ps --filter 'publish=3001' --format '{{.ID}} {{.Names}}')
+            if [ -n \"\$STALE\" ]; then
+              echo \"Found stale: \$STALE\"
+              docker ps --filter 'publish=3001' -q | xargs -r docker stop
+              docker ps -a --filter 'publish=3001' -q | xargs -r docker rm
+            fi
+
+            echo '── Building new image ──'
             docker compose build --no-cache \
               --build-arg GIT_SHA=${GIT_SHA} \
               --build-arg BUILD_TIME=${BUILD_TIME} \
               fia-engine
+
+            echo '── Recreating container ──'
             docker compose up -d --force-recreate fia-engine
-            docker compose ps
+            sleep 5
+            docker compose ps fia-engine
           "
 
-      - name: Health check
+      - name: Health check (verify gitSha matches deployed commit)
+        env:
+          EXPECTED_SHA: ${{ github.sha }}
         run: |
-          sleep 10
-          ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
-            "curl -sf http://localhost:3001/health || exit 1"
+          sleep 8
+          RESPONSE=$(ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} 'curl -sf http://localhost:3001/health')
+          echo "Health response: $RESPONSE"
+          DEPLOYED_SHA=$(echo "$RESPONSE" | grep -oP '"gitSha":"\K[^"]+' || echo "unknown")
+          if [ "$DEPLOYED_SHA" != "$EXPECTED_SHA" ]; then
+            echo "❌ Deploy did not land. Expected gitSha=$EXPECTED_SHA, got $DEPLOYED_SHA"
+            ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} 'cd /opt/dittofeed && docker compose logs --tail=80 fia-engine'
+            exit 1
+          fi
+          echo "✅ Deploy verified — running gitSha=$DEPLOYED_SHA"
 
       - name: Notify success
         if: success()
