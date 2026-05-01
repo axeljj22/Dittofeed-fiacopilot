@@ -572,11 +572,16 @@ ${vaultContext}${profile?.preferences?.['sofia_notes'] ? `\n\nCONTEXTO ESPECIAL 
       }
     }
 
-    // Si ambos proveedores IA fallaron, usar fallback conversacional
+    // Si ambos proveedores IA fallaron, usar fallback conversacional + avisar a Axel
     if (!reply) {
       const fallback = INBOUND_FALLBACKS[Math.floor(Math.random() * INBOUND_FALLBACKS.length)] as string;
-      logger.warn({ userId }, "AI unavailable — using inbound conversational fallback");
+      logger.error({ userId, incomingText: incomingText.slice(0, 100) }, "AI unavailable — both Codex and Claude failed");
       await appendConversationMessages(userId, [{ role: "assistant", content: fallback }]);
+      // Avisar a Axel — IA caída es crítico, Sofía suena robótica
+      try {
+        const { baileysManager } = await import("../senders/whatsappBaileys");
+        await baileysManager.notifyAdmin(`🚨 IA caída — ambos providers fallaron.\nUsuario: ${userId}\nMsg: "${incomingText.slice(0, 150)}"`);
+      } catch { /* notify es best-effort */ }
       return fallback;
     }
 

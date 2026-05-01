@@ -19,6 +19,9 @@ interface WASocketLike {
     on(event: string, handler: (...args: never[]) => void): void;
   };
   sendMessage(jid: string, content: { text: string }): Promise<unknown>;
+  sendPresenceUpdate?(presence: "available" | "composing" | "paused" | "recording" | "unavailable", jid?: string): Promise<void>;
+  presenceSubscribe?(jid: string): Promise<void>;
+  onWhatsApp?(...jids: string[]): Promise<Array<{ jid: string; exists: boolean; lid?: string }> | undefined>;
   user?: { id: string | null };
 }
 
@@ -148,29 +151,34 @@ class BaileysManager {
       });
 
       // Handle incoming messages — route to response processor
-      sock.ev.on("messages.upsert", ({ messages, type }: { messages: WAIncomingMessage[]; type: string }) => {
+      sock.ev.on("messages.upsert", async ({ messages, type }: { messages: WAIncomingMessage[]; type: string }) => {
         if (type !== "notify") return;
         for (const msg of messages) {
           if (msg.key.fromMe) continue; // ignore our own messages
           const remoteJid = msg.key.remoteJid;
           if (!remoteJid) continue;
 
-          // Resolve JID to phone: direct phone JID or LID lookup
+          // Resolve JID to phone: direct phone JID or LID lookup (cache → onWhatsApp → DB)
           let from: string;
           if (remoteJid.endsWith("@s.whatsapp.net")) {
             from = remoteJid.replace("@s.whatsapp.net", "");
           } else if (remoteJid.endsWith("@lid")) {
-            const lidKey = remoteJid.replace("@lid", ""); // normalize for lookup
-            const resolved = this.lidToPhone.get(lidKey);
-            if (resolved) {
-              from = resolved;
-              logger.info({ lid: remoteJid, phone: from }, "LID resolved to phone");
+            const lidKey = remoteJid.replace("@lid", "");
+            const cached = this.lidToPhone.get(lidKey);
+            if (cached) {
+              from = cached;
+              logger.info({ lid: remoteJid, phone: from }, "LID resolved from cache");
             } else {
-              // LID no resuelto — silenciar en lugar de enviar UNREGISTERED_MESSAGE.
-              // El mapping se captura automáticamente la próxima vez que el engine
-              // envíe un mensaje a este usuario (vía sendMessage → result.key.remoteJid).
-              logger.warn({ lid: remoteJid }, "Unresolved LID — skipping message (no phone mapping)");
-              continue;
+              const resolved = await this.resolveLidActive(lidKey);
+              if (resolved) {
+                from = resolved;
+                logger.info({ lid: remoteJid, phone: from }, "LID resolved actively");
+              } else {
+                // Notificar a Axel que llegó un mensaje sin poder resolver el LID
+                logger.warn({ lid: remoteJid, body: msg.message?.conversation?.slice(0, 80) }, "Unresolved LID — notifying admin");
+                await this.notifyAdmin(`⚠️ LID no resuelto: ${remoteJid}\n📥 "${(msg.message?.conversation ?? msg.message?.extendedTextMessage?.text ?? "").slice(0, 200)}"`);
+                continue;
+              }
             }
           } else {
             from = remoteJid;
@@ -183,6 +191,9 @@ class BaileysManager {
           void processIncomingResponse({ from, body, messageId: msg.key.id ?? undefined })
             .then(async (action) => {
               if (action.replyText) {
+                // Typing indicator: humaniza la conversación (1s base + 30ms/char, max 4s)
+                const typingMs = Math.min(1000 + action.replyText.length * 30, 4000);
+                await this.sendTyping(remoteJid, typingMs);
                 await sock.sendMessage(remoteJid, { text: action.replyText });
               }
               // Notify Axel when a pilot whitelisted user sends a message
@@ -227,9 +238,15 @@ class BaileysManager {
             const delay = Math.min(5000 * Math.pow(2, this._reconnectAttempts), 5 * 60 * 1000);
             this._reconnectAttempts++;
             logger.info({ delay, attempt: this._reconnectAttempts }, "Reconnecting WhatsApp...");
+            // Avisar a Axel después del 3er intento fallido (probable problema persistente)
+            if (this._reconnectAttempts === 3) {
+              void this.notifyAdminOutOfBand(`⚠️ Baileys reconectando — intento ${this._reconnectAttempts} (statusCode: ${statusCode})`);
+            }
             setTimeout(() => void this.connect(), delay);
           } else {
             logger.warn("WhatsApp logged out — resetSession() to re-scan QR");
+            // CRÍTICO: avisar a Axel que necesita re-escanear QR
+            void this.notifyAdminOutOfBand(`🚨 WhatsApp logged out — Sofía está caída.\nRe-escaneá QR: ${config.engine.engineBaseUrl}/admin/whatsapp`);
           }
         }
 
@@ -250,8 +267,97 @@ class BaileysManager {
   /** Resolve a LID to a phone number (if mapping exists) */
   resolvePhone(jid: string): string | null {
     if (jid.endsWith("@s.whatsapp.net")) return jid.replace("@s.whatsapp.net", "");
-    if (jid.endsWith("@lid")) return this.lidToPhone.get(jid) ?? null;
+    if (jid.endsWith("@lid")) return this.lidToPhone.get(jid.replace("@lid", "")) ?? null;
     return null;
+  }
+
+  /** Try to resolve a LID at runtime via DB lookup (engagement_log mapping captured by send) */
+  private async resolveLidActive(lidKey: string): Promise<string | null> {
+    try {
+      // Look in engagement_log metadata for any prior outbound that captured this LID
+      const { getSupabaseClient } = await import("../db/supabase");
+      const { data } = await getSupabaseClient()
+        .from("engagement_log")
+        .select("metadata")
+        .filter("metadata->>lid", "eq", lidKey)
+        .limit(1)
+        .maybeSingle();
+      const phone = (data?.metadata as Record<string, unknown> | null)?.["whatsapp_number"] as string | undefined;
+      if (phone) {
+        this.lidToPhone.set(lidKey, phone);
+        this.saveLidMap();
+        return phone;
+      }
+    } catch (error) {
+      logger.warn({ error, lidKey }, "resolveLidActive DB lookup failed");
+    }
+    return null;
+  }
+
+  /** Send a typing indicator before replying (humaniza la conversación) */
+  async sendTyping(jid: string, durationMs = 1500): Promise<void> {
+    try {
+      if (!this.sock?.sendPresenceUpdate) return;
+      await this.sock.sendPresenceUpdate("composing", jid);
+      await new Promise((r) => setTimeout(r, durationMs));
+      await this.sock.sendPresenceUpdate("paused", jid);
+    } catch {
+      // typing es cosmético — no romper si falla
+    }
+  }
+
+  /** Send a notification to the admin phone (config.engine.notifyPhone) */
+  async notifyAdmin(text: string): Promise<void> {
+    try {
+      if (!this.sock || !config.engine.notifyPhone || this._status !== "connected") return;
+      const jid = `${config.engine.notifyPhone}@s.whatsapp.net`;
+      await this.sock.sendMessage(jid, { text });
+    } catch (error) {
+      logger.warn({ error }, "notifyAdmin failed");
+    }
+  }
+
+  /**
+   * Send admin alert when Baileys itself is down — uses Cloud API or Twilio if configured,
+   * otherwise just logs (visible in `docker logs fia-engine`).
+   */
+  async notifyAdminOutOfBand(text: string): Promise<void> {
+    const phone = config.engine.notifyPhone;
+    if (!phone) {
+      logger.error({ text }, "ADMIN ALERT (no notify phone configured)");
+      return;
+    }
+    try {
+      // Try Cloud API
+      if (config.whatsapp.cloudApi.token && config.whatsapp.cloudApi.phoneNumberId) {
+        const axios = (await import("axios")).default;
+        await axios.post(
+          `https://graph.facebook.com/v18.0/${config.whatsapp.cloudApi.phoneNumberId}/messages`,
+          { messaging_product: "whatsapp", to: phone.replace(/\D/g, ""), type: "text", text: { body: text } },
+          { headers: { Authorization: `Bearer ${config.whatsapp.cloudApi.token}`, "Content-Type": "application/json" } },
+        );
+        logger.info({ phone }, "Admin alert sent via Cloud API");
+        return;
+      }
+      // Try Twilio
+      if (config.whatsapp.twilio.accountSid && config.whatsapp.twilio.authToken && config.whatsapp.twilio.fromNumber) {
+        const axios = (await import("axios")).default;
+        await axios.post(
+          `https://api.twilio.com/2010-04-01/Accounts/${config.whatsapp.twilio.accountSid}/Messages.json`,
+          new URLSearchParams({
+            From: config.whatsapp.twilio.fromNumber,
+            To: `whatsapp:+${phone.replace(/\D/g, "")}`,
+            Body: text,
+          }),
+          { auth: { username: config.whatsapp.twilio.accountSid, password: config.whatsapp.twilio.authToken } },
+        );
+        logger.info({ phone }, "Admin alert sent via Twilio");
+        return;
+      }
+      logger.error({ text }, "ADMIN ALERT (no out-of-band provider available)");
+    } catch (error) {
+      logger.error({ error, text }, "notifyAdminOutOfBand failed");
+    }
   }
 
   async sendMessage(phone: string, text: string): Promise<SendResult> {

@@ -46,19 +46,40 @@ const LOW_ENGAGEMENT_CLOSE = `Cuando quieras retomar estoy acá. Tu dashboard: $
 
 /** Respuestas cortas con intención clara — no silenciar aunque sean breves */
 const POSITIVE_SHORT_RESPONSES = new Set([
-  "si", "sí", "dale", "ok", "okay", "bueno", "claro", "bien", "listo",
-  "me interesa", "contame", "quiero", "cómo", "como", "cuando", "cuándo",
-  "gracias", "genial", "perfecto", "entendido", "excelente", "buenísimo",
-  "buenisimo", "bárbaro", "barbaro", "piola", "copado", "interesante",
+  // Afirmaciones
+  "si", "sí", "dale", "ok", "okay", "bueno", "buenas", "claro", "bien", "listo", "va", "vamos",
+  // Curiosidad / interés
+  "me interesa", "contame", "quiero", "cómo", "como", "cuando", "cuándo", "que", "qué",
+  "donde", "dónde", "porque", "porqué", "por qué",
+  // Agradecimiento
+  "gracias", "muchas gracias", "graci", "gracis", "thx",
+  // Apreciación
+  "genial", "perfecto", "entendido", "excelente", "buenísimo", "buenisimo",
+  "bárbaro", "barbaro", "piola", "copado", "interesante", "buena", "buenaza",
+  // Continuidad
   "adelante", "seguí", "segui", "contá", "conta", "me llama la atención",
+  // Confusión / ayuda (NO silenciar — son señales de que necesita guía)
+  "no entiendo", "no se", "no sé", "no comprendo", "explicame", "explicá", "explica",
+  "ayuda", "help", "como hago", "cómo hago", "y eso", "y entonces",
+  // Estados
+  "ahora no", "después", "despues", "más tarde", "mas tarde", "luego",
+  // Saludos
+  "hola", "buenas", "holi", "ey", "hey", "buen día", "buen dia",
+  "buenos días", "buenas tardes", "buenas noches",
+  // Despedidas
+  "chau", "nos vemos", "hasta luego", "saludos",
 ]);
 
 /** ¿El mensaje es de baja calidad? Solo lo verdaderamente vacío — WhatsApp es naturalmente corto */
 function isLowEngagement(body: string): boolean {
   const normalized = body.trim().toLowerCase();
   if (POSITIVE_SHORT_RESPONSES.has(normalized)) return false;
+  // Si tiene ?, ! o emoji, hay intención
+  if (/[?!¿¡]/.test(body)) return false;
+  if (/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(body)) return false;
   const words = normalized.split(/\s+/).filter(Boolean);
-  return words.length < 3 && !body.includes("?");
+  // Subido de <3 a <2: solo mensajes de UNA palabra sin marcadores cuentan como bajo
+  return words.length < 2;
 }
 
 export function classifyResponse(body: string): ResponseAction {
@@ -258,7 +279,17 @@ export async function processIncomingResponse(
     || isWhitelisted
     || hadRecentOutbound;
   if (!isAIPilot) {
-    logger.info({ userId }, "AI inbound reply skipped — not in pilot");
+    logger.warn(
+      { userId, from: message.from, body: message.body.slice(0, 200) },
+      "AI inbound reply skipped — user not in pilot whitelist and no recent outbound",
+    );
+    // Avisar a Axel que alguien le habló a Sofía pero no le respondimos
+    try {
+      const { baileysManager } = await import("./whatsappBaileys");
+      await baileysManager.notifyAdmin(
+        `🤐 Mensaje silenciado (fuera de piloto)\n📞 ${message.from}\n📥 "${message.body.slice(0, 200)}"\n💡 Whitelistear: agregá ${normalizedFrom} a PILOT_WHITELIST_PHONES`,
+      );
+    } catch { /* notify es best-effort */ }
     return action;
   }
 
@@ -270,13 +301,13 @@ export async function processIncomingResponse(
     const newCount = consecutiveLow + 1;
     await upsertConversationState(userId, { consecutiveLowEngagement: newCount });
 
-    if (newCount >= 3) {
+    if (newCount >= 4) {
       logger.info({ userId, consecutiveLow: newCount }, "Loop detected — sending close message");
       return { type: "default", replyText: LOW_ENGAGEMENT_CLOSE };
     }
 
-    // 1 or 2 consecutive low-engagement messages → stay silent
-    logger.info({ userId, consecutiveLow: newCount }, "Low-engagement message — silencing");
+    // 1, 2 o 3 mensajes low-engagement → stay silent
+    logger.warn({ userId, from: message.from, body: message.body.slice(0, 80), consecutiveLow: newCount }, "Low-engagement message — silencing");
     return { type: "default", replyText: "" };
   }
 
