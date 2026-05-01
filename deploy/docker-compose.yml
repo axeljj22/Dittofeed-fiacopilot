@@ -60,27 +60,15 @@ services:
       - /opt/dittofeed/fia-engine-data:/app/sessions
       # Mount Codex auth.json (uploaded via /admin/codex)
       - /opt/dittofeed/codex-auth:/root/.codex
+    # Pass through ALL vars from /opt/dittofeed/.env so PILOT_PHONE,
+    # CRON_*, WHATSAPP_FALLBACK_PROVIDER, etc. reach the container.
+    # Previously this was a hardcoded allowlist that silently dropped any
+    # var not listed → lockdown via .env appeared to work but never applied.
+    env_file:
+      - .env
     environment:
-      # Supabase (FIA Copilot DB — read-only)
-      - SUPABASE_URL=${SUPABASE_URL}
-      - SUPABASE_SERVICE_ROLE_KEY=${SUPABASE_SERVICE_ROLE_KEY}
-      # Claude API
-      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
-      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-claude-sonnet-4-20250514}
-      # WhatsApp
-      - WHATSAPP_PROVIDER=${WHATSAPP_PROVIDER:-cloud_api}
-      - WHATSAPP_CLOUD_API_TOKEN=${WHATSAPP_CLOUD_API_TOKEN:-}
-      - WHATSAPP_PHONE_NUMBER_ID=${WHATSAPP_PHONE_NUMBER_ID:-}
-      - WHATSAPP_VERIFY_TOKEN=${WHATSAPP_VERIFY_TOKEN:-fia-engine}
-      - TWILIO_ACCOUNT_SID=${TWILIO_ACCOUNT_SID:-}
-      - TWILIO_AUTH_TOKEN=${TWILIO_AUTH_TOKEN:-}
-      - TWILIO_WHATSAPP_FROM=${TWILIO_WHATSAPP_FROM:-}
-      # Engine
-      - FIA_APP_BASE_URL=${FIA_APP_BASE_URL:-https://fiacopilot.com}
-      - ENGINE_BASE_URL=${ENGINE_BASE_URL:-https://engine.axeljutoran.com}
+      # Defaults that apply only if .env doesn't set them
       - ENGINE_PORT=3001
-      - ADMIN_API_TOKEN=${ADMIN_API_TOKEN:-admin-secret}
-      - LOG_LEVEL=${ENGINE_LOG_LEVEL:-info}
       - NODE_ENV=production
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:3001/health || exit 1"]
