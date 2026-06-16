@@ -40,12 +40,14 @@ export const config = {
     provider: optionalEnv("WHATSAPP_PROVIDER", "baileys") as
       | "baileys"
       | "cloud_api"
-      | "twilio",
+      | "twilio"
+      | "evolution",
     // Fallback provider if primary fails (empty = no fallback)
     fallbackProvider: optionalEnv("WHATSAPP_FALLBACK_PROVIDER", "") as
       | ""
       | "baileys"
-      | "cloud_api",
+      | "cloud_api"
+      | "evolution",
     // Baileys session persistence directory
     sessionDir: process.env["WHATSAPP_SESSION_DIR"] ?? process.env["WA_SESSION_DIR"] ?? "/app/sessions/baileys",
     // Meta Cloud API
@@ -58,6 +60,12 @@ export const config = {
       accountSid: process.env["TWILIO_ACCOUNT_SID"] ?? "",
       authToken: process.env["TWILIO_AUTH_TOKEN"] ?? "",
       fromNumber: process.env["TWILIO_WHATSAPP_FROM"] ?? "",
+    },
+    // Evolution API (REST wrapper over Baileys, hosted in Hostinger)
+    evolution: {
+      baseUrl: optionalEnv("EVOLUTION_BASE_URL", ""),
+      apiKey: optionalEnv("EVOLUTION_API_KEY", ""),
+      instanceName: optionalEnv("EVOLUTION_INSTANCE_NAME", "Sofia"),
     },
   },
 

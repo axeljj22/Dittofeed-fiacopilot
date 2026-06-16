@@ -394,6 +394,9 @@ class BaileysManager {
     this._qrDataUrl = null;
     this._connectedPhone = null;
     this.sock = null;
+    // Reset backoff counter — without this, the next disconnect would wait
+    // up to 5 minutes before retrying (the cap from prior failed attempts).
+    this._reconnectAttempts = 0;
     logger.info("WhatsApp session cleared");
   }
 }

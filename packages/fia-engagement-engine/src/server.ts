@@ -12,6 +12,7 @@ import { logger } from "./logger";
 import { processIncomingResponse } from "./senders/responses";
 import { sendWhatsAppMessage, sendCampaignMessage } from "./senders/whatsapp";
 import { baileysManager } from "./senders/whatsappBaileys";
+import { evolutionManager } from "./senders/whatsappEvolution";
 import { getSupabaseClient, upsertCampaignLead } from "./db/supabase";
 import { runAllDetectors, runSponsorReports } from "./orchestrator";
 import { getAdminPanelHtml } from "./admin/panel";
@@ -62,7 +63,10 @@ async function handleHealthCheck(
   _req: http.IncomingMessage,
   res: http.ServerResponse,
 ): Promise<void> {
-  const codexOk = await isCodexAvailable().catch(() => false);
+  const [codexOk, evolutionState] = await Promise.all([
+    isCodexAvailable().catch(() => false),
+    evolutionManager.getStatus().catch(() => "unknown" as const),
+  ]);
   jsonResponse(res, 200, {
     status: "ok",
     service: "fia-engagement-engine",
@@ -73,6 +77,11 @@ async function handleHealthCheck(
       primary: config.whatsapp.provider,
       baileys: baileysManager.status,
       cloudApi: config.whatsapp.cloudApi.token ? "configured" : "not_configured",
+      evolution: {
+        connected: evolutionState === "open",
+        state: evolutionState,
+        instance: config.whatsapp.evolution.instanceName,
+      },
       fallback: config.whatsapp.fallbackProvider || "none",
     },
     codex: codexOk ? "available" : "unavailable",
@@ -152,6 +161,78 @@ async function handleWebhookIncoming(
   } catch (error) {
     logger.error({ error }, "Webhook processing failed");
     jsonResponse(res, 500, { error: "Internal error" });
+  }
+}
+
+/**
+ * POST /webhook/whatsapp/evolution — Evolution API webhook for inbound messages.
+ *
+ * Evolution sends events when a message lands on the Sofia instance. We only
+ * care about MESSAGES_UPSERT events where the message is NOT from us.
+ *
+ * Body shape (Evolution v2):
+ *   { event: "messages.upsert", instance: "Sofia",
+ *     data: { key: { remoteJid, fromMe, id }, message: { conversation } | { extendedTextMessage: { text } }, ... } }
+ *
+ * We mirror what whatsappBaileys.ts does on `messages.upsert`: skip fromMe,
+ * resolve phone, hand off to processIncomingResponse, then reply + optional
+ * notify-admin. Defensive parsing — log and ignore unknown shapes.
+ */
+async function handleWebhookEvolution(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<void> {
+  try {
+    const raw = await parseBody(req);
+    const body = JSON.parse(raw) as {
+      event?: string;
+      instance?: string;
+      data?: {
+        key?: { remoteJid?: string; fromMe?: boolean; id?: string };
+        message?: { conversation?: string; extendedTextMessage?: { text?: string } } | null;
+      };
+    };
+
+    // Acknowledge immediately so Evolution doesn't retry; do the work in background.
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ ok: true }));
+
+    if (body.event !== "messages.upsert") return;
+    const key = body.data?.key;
+    if (!key?.remoteJid || key.fromMe) return;
+
+    // Evolution sends @s.whatsapp.net for direct chats. Group chats (@g.us)
+    // and broadcasts are out of scope for Sofía — ignore.
+    if (!key.remoteJid.endsWith("@s.whatsapp.net")) return;
+
+    const from = key.remoteJid.replace("@s.whatsapp.net", "");
+    const text = body.data?.message?.conversation
+      ?? body.data?.message?.extendedTextMessage?.text
+      ?? "";
+    if (!from || !text) return;
+
+    logger.info({ from, body: text.slice(0, 80) }, "Evolution inbound message");
+
+    const action = await processIncomingResponse({ from, body: text, messageId: key.id ?? undefined });
+
+    if (action.replyText) {
+      // Typing indicator → small humanizing delay before the actual reply
+      const typingMs = Math.min(1000 + action.replyText.length * 30, 4000);
+      await evolutionManager.sendTyping(from, typingMs);
+      await evolutionManager.sendMessage(from, action.replyText);
+    }
+
+    // Notify Axel when a whitelisted pilot user sends a message
+    const normalizedSender = from.replace(/\D/g, "");
+    const isWhitelisted = config.engine.pilotWhitelistPhones.some((p) => normalizedSender.includes(p));
+    if (isWhitelisted && config.engine.notifyPhone && normalizedSender !== config.engine.notifyPhone) {
+      const replyPreview = action.replyText ? action.replyText.slice(0, 200) : "(sin respuesta)";
+      const notifText = `🔔 *${from}* escribió\n📥 "${text.slice(0, 200)}"\n💬 Sofía: "${replyPreview}"`;
+      await evolutionManager.sendMessage(config.engine.notifyPhone, notifText);
+    }
+  } catch (error) {
+    logger.error({ error }, "Evolution webhook processing failed");
+    // Already responded 200 — don't try to write again
   }
 }
 
@@ -998,6 +1079,10 @@ async function router(
 
   if (url === "/webhook/whatsapp" && method === "POST") {
     return handleWebhookIncoming(req, res);
+  }
+
+  if (url === "/webhook/whatsapp/evolution" && method === "POST") {
+    return handleWebhookEvolution(req, res);
   }
 
   if (url === "/api/campaign/send" && method === "POST") {

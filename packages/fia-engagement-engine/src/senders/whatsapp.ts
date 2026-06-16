@@ -11,6 +11,7 @@ import { insertEngagementLog, getConversationState } from "../db/supabase";
 import type { EngagementOpportunity } from "../db/types";
 import type { GeneratedMessage } from "../generators/messageGenerator";
 import { baileysManager } from "./whatsappBaileys";
+import { evolutionManager } from "./whatsappEvolution";
 
 interface SendResult {
   success: boolean;
@@ -92,10 +93,11 @@ async function sendViaTwilio(
 
 /** Route a send to the right provider implementation */
 async function sendWithProvider(
-  provider: "baileys" | "cloud_api" | "twilio" | "",
+  provider: "baileys" | "cloud_api" | "twilio" | "evolution" | "",
   phone: string,
   text: string,
 ): Promise<SendResult> {
+  if (provider === "evolution") return evolutionManager.sendMessage(phone, text);
   if (provider === "baileys") return baileysManager.sendMessage(phone, text);
   if (provider === "twilio") return sendViaTwilio(phone, text);
   if (provider === "cloud_api") return sendViaCloudApi(phone, text);
