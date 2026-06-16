@@ -21,6 +21,7 @@ import {
   getConversationState,
   upsertConversationState,
 } from "../db/supabase";
+import { getCommandReply } from "../config/engineConfigCache";
 import { generateInboundReply } from "../generators/messageGenerator";
 
 export interface IncomingMessage {
@@ -41,8 +42,8 @@ const UNREGISTERED_MESSAGE =
   `Hola! Para recibir mensajes de Sofía necesitás registrarte en FIA Copilot ` +
   `y agregar tu número de WhatsApp en Ajustes: ${config.engine.appBaseUrl}/ajustes`;
 
-/** Mensaje de cierre por loop de baja calidad */
-const LOW_ENGAGEMENT_CLOSE = `Cuando quieras retomar estoy acá. Tu dashboard: ${config.engine.appBaseUrl}/dashboard`;
+/** Fallback message for low-engagement loop close (overridable via /admin/config key: cmd_reply.low_engagement_close) */
+const LOW_ENGAGEMENT_CLOSE_DEFAULT = `Cuando quieras retomar estoy acá. Tu dashboard: ${config.engine.appBaseUrl}/dashboard`;
 
 /** Respuestas cortas con intención clara — no silenciar aunque sean breves */
 const POSITIVE_SHORT_RESPONSES = new Set([
@@ -160,7 +161,7 @@ export async function processIncomingResponse(
   const normalizedFrom = message.from.replace(/\D/g, "");
 
   // ── 1. Classify message ──────────────────────────────────────────────────
-  const classified = classifyResponse(message.body);
+  let classified = classifyResponse(message.body);
 
   // ── 2. Look up profile ──────────────────────────────────────────────────
   // Try both "5491125120212" and "+5491125120212" — apps may store either format.
@@ -197,6 +198,17 @@ export async function processIncomingResponse(
 
   // ── 5. Handle commands (non-default) ────────────────────────────────────
   if (classified.type !== "default") {
+    // Try to load dynamic command reply from DB (editable via /admin/config)
+    const cmdKeyMap: Partial<Record<ResponseAction["type"], string>> = {
+      opt_out: "stop", reactivation: "si", help: "ayuda",
+      ventas: "ventas", diagnostico: "diagnostico", perfil: "perfil", puntos: "puntos",
+    };
+    const cmdKey = cmdKeyMap[classified.type];
+    if (cmdKey) {
+      const dynamicReply = await getCommandReply(cmdKey);
+      if (dynamicReply) classified = { ...classified, replyText: dynamicReply };
+    }
+
     let action = classified;
 
     // Enrich PUNTOS with actual score
@@ -308,7 +320,8 @@ export async function processIncomingResponse(
 
     if (newCount >= 4) {
       logger.info({ userId, consecutiveLow: newCount }, "Loop detected — sending close message");
-      return { type: "default", replyText: LOW_ENGAGEMENT_CLOSE };
+      const closeMsg = await getCommandReply("low_engagement_close") || LOW_ENGAGEMENT_CLOSE_DEFAULT;
+      return { type: "default", replyText: closeMsg };
     }
 
     // 1, 2 o 3 mensajes low-engagement → stay silent
