@@ -32,7 +32,8 @@ export const config = {
   codex: {
     // Path to ~/.codex/auth.json created by `npx @openai/codex login`
     authFilePath: optionalEnv("CODEX_AUTH_FILE", "/root/.codex/auth.json"),
-    model: optionalEnv("CODEX_MODEL", "gpt-5.3-codex"),
+    // gpt-5.3-codex requires Codex Enterprise; gpt-5.4-mini works for ChatGPT Plus consumer accounts.
+    model: optionalEnv("CODEX_MODEL", "gpt-5.4-mini"),
   },
 
   // WhatsApp — message delivery

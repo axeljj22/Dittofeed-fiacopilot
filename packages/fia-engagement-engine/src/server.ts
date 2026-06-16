@@ -17,6 +17,7 @@ import { getSupabaseClient, upsertCampaignLead } from "./db/supabase";
 import { runAllDetectors, runSponsorReports } from "./orchestrator";
 import { getAdminPanelHtml } from "./admin/panel";
 import { isCodexAvailable, invalidateCodexAuthCache } from "./generators/codexGenerator";
+import { warmCache, setCachedConfig } from "./config/engineConfigCache";
 import fs from "fs";
 
 function parseBody(req: http.IncomingMessage): Promise<string> {
@@ -1370,6 +1371,78 @@ function showMsg(text, ok) {
     return;
   }
 
+  // ─── Engine Config Management (Prompts, Templates, Responses) ───
+
+  // GET /api/config — get all config keys (admin only)
+  if (url === "/api/config" && method === "GET") {
+    if (!requireAdminAuth(req, res)) return;
+    try {
+      const { getAllEngineConfig } = await import("./db/supabase");
+      const allConfig = await getAllEngineConfig();
+      jsonResponse(res, 200, { data: allConfig });
+    } catch (error) {
+      logger.error({ error }, "Failed to fetch engine config");
+      jsonResponse(res, 500, { error: "Failed to fetch config" });
+    }
+    return;
+  }
+
+  // GET /api/config/:key — get specific config key (admin only)
+  const getConfigMatch = url.match(/^\/api\/config\/([a-zA-Z0-9._-]+)$/);
+  if (getConfigMatch && method === "GET") {
+    if (!requireAdminAuth(req, res)) return;
+    try {
+      const { getEngineConfig } = await import("./db/supabase");
+      const key = getConfigMatch[1];
+      const value = await getEngineConfig(key);
+      if (value === null) {
+        jsonResponse(res, 404, { error: "Config key not found" });
+      } else {
+        jsonResponse(res, 200, { key, value });
+      }
+    } catch (error) {
+      logger.error({ error }, "Failed to fetch engine config key");
+      jsonResponse(res, 500, { error: "Failed to fetch config" });
+    }
+    return;
+  }
+
+  // PUT /api/config/:key — update config key (admin only)
+  const putConfigMatch = url.match(/^\/api\/config\/([a-zA-Z0-9._-]+)$/);
+  if (putConfigMatch && method === "PUT") {
+    if (!requireAdminAuth(req, res)) return;
+    try {
+      const body = JSON.parse(await parseBody(req)) as { value?: string };
+      if (!body.value) {
+        jsonResponse(res, 400, { error: "Missing value field" });
+        return;
+      }
+      const key = putConfigMatch[1];
+      const adminToken = req.headers["authorization"]?.replace("Bearer ", "");
+      await setCachedConfig(key, body.value, adminToken ?? "unknown");
+      logger.info({ key }, "Engine config updated via API");
+      jsonResponse(res, 200, { status: "updated", key, value: body.value });
+    } catch (error) {
+      logger.error({ error }, "Failed to update engine config");
+      jsonResponse(res, 500, { error: "Failed to update config" });
+    }
+    return;
+  }
+
+  // GET /admin/config — config editor UI (admin only via prompt for token)
+  if (url === "/admin/config" && method === "GET") {
+    try {
+      const { getConfigEditorHtml } = await import("./admin/config");
+      const html = getConfigEditorHtml(config.engine.appBaseUrl);
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(html);
+    } catch (error) {
+      logger.error({ error }, "Failed to serve config editor");
+      jsonResponse(res, 500, { error: "Failed to load config editor" });
+    }
+    return;
+  }
+
   // Click tracking: /r/:logId
   const clickMatch = url.match(/^\/r\/([a-f0-9-]+)$/);
   if (clickMatch && method === "GET") {
@@ -1391,6 +1464,8 @@ export function startServer(port: number = 3001): http.Server {
 
   server.listen(port, "0.0.0.0", () => {
     logger.info({ port }, "FIA Engagement Engine HTTP server started");
+    // Warm up config cache on startup (non-blocking)
+    void warmCache();
   });
 
   // Auto-start Baileys if provider is configured
