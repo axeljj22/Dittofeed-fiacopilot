@@ -12,6 +12,7 @@ import {
   getSofiaSystemPrompt,
   getOptOutFooter,
   getJourneyPrompt,
+  getAbVariantForJourney,
 } from "../config/engineConfigCache";
 import {
   getProfileWithWhatsapp,
@@ -33,6 +34,8 @@ export interface GeneratedMessage {
   text: string;
   journeyName: string;
   deepLink: string;
+  abTestName?: string;
+  abVariant?: "a" | "b";
 }
 
 // ─── Template-based messages (no API key needed) ───
@@ -823,6 +826,27 @@ export async function generateMessage(
     : "";
 
   const fullContext = `${userContext}${conversationContext}${factsContext}`;
+
+  // ── A/B Test check — if an active test targets this journey, use the variant ──
+  const abResult = await getAbVariantForJourney(opportunity.journeyName, opportunity.userId);
+  if (abResult) {
+    const profile = opportunity.profile;
+    let text = abResult.text
+      .replace(/\{\{nombre\}\}/g, profile.name ?? "ahí")
+      .replace(/\{\{empresa\}\}/g, profile.company_name ?? "tu empresa")
+      .replace(/\{\{deepLink\}\}/g, opportunity.deepLink);
+    logger.info(
+      { userId: opportunity.userId, journey: opportunity.journeyName, ab: abResult.testName, variant: abResult.variant },
+      "A/B variant used instead of AI generation",
+    );
+    return {
+      text: enforceLength(text, opportunity.deepLink),
+      journeyName: opportunity.journeyName,
+      deepLink: opportunity.deepLink,
+      abTestName: abResult.testName,
+      abVariant: abResult.variant,
+    };
+  }
 
   const [journeyPrompt, sofiaPrompt] = await Promise.all([
     getJourneyPrompt(opportunity.journeyName),

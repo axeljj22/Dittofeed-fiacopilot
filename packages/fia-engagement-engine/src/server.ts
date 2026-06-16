@@ -1536,6 +1536,89 @@ function showMsg(text, ok) {
     return;
   }
 
+  // ─── A/B Testing API ───
+
+  // GET /api/ab-tests — list all A/B tests (admin only)
+  if (url === "/api/ab-tests" && method === "GET") {
+    if (!requireAdminAuth(req, res)) return;
+    const { getAllAbTests } = await import("./config/engineConfigCache");
+    const tests = await getAllAbTests();
+    jsonResponse(res, 200, { data: tests });
+    return;
+  }
+
+  // POST /api/ab-tests — create a new A/B test (admin only)
+  if (url === "/api/ab-tests" && method === "POST") {
+    if (!requireAdminAuth(req, res)) return;
+    try {
+      const body = JSON.parse(await parseBody(req)) as { name?: string; journey?: string; variantA?: string; variantB?: string };
+      if (!body.name || !body.journey || !body.variantA || !body.variantB) {
+        jsonResponse(res, 400, { error: "Missing required: name, journey, variantA, variantB" });
+        return;
+      }
+      const safeName = body.name.replace(/[^a-z0-9_]/gi, "_");
+      await Promise.all([
+        setCachedConfig(`ab_test.${safeName}.active`, "true"),
+        setCachedConfig(`ab_test.${safeName}.journey`, body.journey),
+        setCachedConfig(`ab_test.${safeName}.a`, body.variantA),
+        setCachedConfig(`ab_test.${safeName}.b`, body.variantB),
+      ]);
+      jsonResponse(res, 201, { status: "created", name: safeName });
+    } catch (error) {
+      logger.error({ error }, "Failed to create A/B test");
+      jsonResponse(res, 500, { error: "Internal error" });
+    }
+    return;
+  }
+
+  // PUT /api/ab-tests/:name — update a test (toggle active, etc.) (admin only)
+  const abPutMatch = url.match(/^\/api\/ab-tests\/([a-zA-Z0-9_-]+)$/);
+  if (abPutMatch && method === "PUT") {
+    if (!requireAdminAuth(req, res)) return;
+    try {
+      const name = abPutMatch[1] as string;
+      const body = JSON.parse(await parseBody(req)) as { active?: boolean };
+      if (body.active !== undefined) {
+        await setCachedConfig(`ab_test.${name}.active`, body.active ? "true" : "false");
+      }
+      jsonResponse(res, 200, { status: "updated" });
+    } catch (error) {
+      logger.error({ error }, "Failed to update A/B test");
+      jsonResponse(res, 500, { error: "Internal error" });
+    }
+    return;
+  }
+
+  // DELETE /api/ab-tests/:name — delete all keys for a test (admin only)
+  const abDelMatch = url.match(/^\/api\/ab-tests\/([a-zA-Z0-9_-]+)$/);
+  if (abDelMatch && method === "DELETE") {
+    if (!requireAdminAuth(req, res)) return;
+    const name = abDelMatch[1] as string;
+    const { setEngineConfig } = await import("./db/supabase");
+    // Remove all 4 keys (soft delete: set active=false and blank variants)
+    await setEngineConfig(`ab_test.${name}.active`, "false");
+    jsonResponse(res, 200, { status: "deleted" });
+    return;
+  }
+
+  // GET /api/ab-stats/:name — get impression/response stats for a test (admin only)
+  const abStatsMatch = url.match(/^\/api\/ab-stats\/([a-zA-Z0-9_-]+)$/);
+  if (abStatsMatch && method === "GET") {
+    if (!requireAdminAuth(req, res)) return;
+    const { getAbTestStats } = await import("./db/supabase");
+    const stats = await getAbTestStats(abStatsMatch[1] as string);
+    jsonResponse(res, 200, { data: stats });
+    return;
+  }
+
+  // GET /admin/ab — A/B testing admin page
+  if (url === "/admin/ab" && method === "GET") {
+    const { getAbTestingHtml } = await import("./admin/abTesting");
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    res.end(getAbTestingHtml());
+    return;
+  }
+
   // GET /admin/config — config editor UI (admin only via prompt for token)
   if (url === "/admin/config" && method === "GET") {
     try {
