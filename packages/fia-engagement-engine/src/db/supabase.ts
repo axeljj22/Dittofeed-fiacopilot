@@ -888,3 +888,67 @@ export async function upsertConversationState(
   });
   await next;
 }
+
+// ─── Engine Config (Configurable Prompts, Templates, Responses) ───
+
+export async function getEngineConfig(key: string): Promise<string | null> {
+  const { data, error } = await getSupabaseClient()
+    .from("engine_config")
+    .select("value")
+    .eq("key", key)
+    .single();
+
+  if (error) {
+    if (error.code === "PGRST116") {
+      // Not found — return null instead of logging error
+      return null;
+    }
+    logger.warn({ error, key }, "Failed to fetch engine config");
+    return null;
+  }
+  return data?.value ?? null;
+}
+
+export async function getAllEngineConfig(): Promise<Record<string, string>> {
+  const { data, error } = await getSupabaseClient()
+    .from("engine_config")
+    .select("key, value");
+
+  if (error) {
+    logger.warn({ error }, "Failed to fetch all engine config");
+    return {};
+  }
+
+  const result: Record<string, string> = {};
+  if (Array.isArray(data)) {
+    for (const row of data) {
+      result[row.key] = row.value;
+    }
+  }
+  return result;
+}
+
+export async function setEngineConfig(
+  key: string,
+  value: string,
+  updatedBy?: string,
+): Promise<void> {
+  const { error } = await getSupabaseClient()
+    .from("engine_config")
+    .upsert(
+      {
+        key,
+        value,
+        updated_at: new Date().toISOString(),
+        updated_by: updatedBy,
+      },
+      { onConflict: "key" },
+    );
+
+  if (error) {
+    logger.error({ error, key }, "Failed to set engine config");
+    throw error;
+  }
+
+  logger.info({ key }, "Engine config updated");
+}

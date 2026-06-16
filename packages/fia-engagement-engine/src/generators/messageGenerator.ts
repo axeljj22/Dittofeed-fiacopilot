@@ -9,6 +9,17 @@
 import { config } from "../config";
 import { logger } from "../logger";
 import {
+  getCachedConfig,
+  getSofiaSystemPrompt,
+  getOptOutFooter,
+  getJourneyPrompt,
+  getCommandReply,
+  getPositiveShortResponses,
+  SOFIA_SYSTEM_PROMPT_DEFAULT,
+  OPT_OUT_FOOTER_DEFAULT,
+  JOURNEY_PROMPTS_DEFAULT,
+} from "../config/engineConfigCache";
+import {
   getProfileWithWhatsapp,
   getVaultOutputsForUser,
   getCapsuleProgressForUser,
@@ -50,70 +61,74 @@ interface TemplateContext {
 }
 
 /**
- * Standard outbound footer — required when WhatsApp may flag unsolicited messages
- * as automation. Includes who is writing and how to opt out.
- * Cap kept short so 300-char limit isn't blown for short bodies.
+ * Note: OPT_OUT_FOOTER and TEMPLATES are now loaded from cache at runtime.
+ * FIRST_CONTACT_INTRO is still static since it doesn't have external config.
  */
-const OPT_OUT_FOOTER = "\n\nRespondé STOP si no querés más mensajes.";
 const FIRST_CONTACT_INTRO = (nombre: string) => `Hola ${nombre}, soy Sofía de FIA Copilot 👋`;
 
-const TEMPLATES: Record<string, (ctx: TemplateContext) => string> = {
-  reactivacion_inactividad_1: (ctx) => {
-    const capsulaNombre = ctx.capsulaTitle ? `${ctx.capsulaPendiente}: ${ctx.capsulaTitle}` : `${ctx.capsulaPendiente}`;
-    return `${FIRST_CONTACT_INTRO(ctx.nombre)}. ` +
-      `Te escribo porque dejaste pendiente la cápsula ${capsulaNombre} en la plataforma. ` +
-      `Cuando puedas retomar: ${ctx.deepLink}` + OPT_OUT_FOOTER;
-  },
+/**
+ * Build the templates object with dynamic footer loaded from cache.
+ * Called in generateMessage() to ensure footer is up-to-date.
+ */
+function buildTemplates(footer: string): Record<string, (ctx: TemplateContext) => string> {
+  return {
+    reactivacion_inactividad_1: (ctx) => {
+      const capsulaNombre = ctx.capsulaTitle ? `${ctx.capsulaPendiente}: ${ctx.capsulaTitle}` : `${ctx.capsulaPendiente}`;
+      return `${FIRST_CONTACT_INTRO(ctx.nombre)}. ` +
+        `Te escribo porque dejaste pendiente la cápsula ${capsulaNombre} en la plataforma. ` +
+        `Cuando puedas retomar: ${ctx.deepLink}` + footer;
+    },
 
-  reactivacion_inactividad_2: (ctx) => {
-    const capsulaNombre = ctx.capsulaTitle ? `${ctx.capsulaPendiente}: ${ctx.capsulaTitle}` : `${ctx.capsulaPendiente}`;
-    const empresaCtx = ctx.empresa !== "tu empresa" ? ` (${ctx.empresa})` : "";
-    return `${ctx.nombre}, soy Sofía de FIA Copilot. ` +
-      `Hace ${ctx.daysInactive} días no entrás${empresaCtx}. La cápsula ${capsulaNombre} sigue ahí cuando quieras: ${ctx.deepLink}` + OPT_OUT_FOOTER;
-  },
+    reactivacion_inactividad_2: (ctx) => {
+      const capsulaNombre = ctx.capsulaTitle ? `${ctx.capsulaPendiente}: ${ctx.capsulaTitle}` : `${ctx.capsulaPendiente}`;
+      const empresaCtx = ctx.empresa !== "tu empresa" ? ` (${ctx.empresa})` : "";
+      return `${ctx.nombre}, soy Sofía de FIA Copilot. ` +
+        `Hace ${ctx.daysInactive} días no entrás${empresaCtx}. La cápsula ${capsulaNombre} sigue ahí cuando quieras: ${ctx.deepLink}` + footer;
+    },
 
-  reactivacion_inactividad_3: (ctx) =>
-    `${ctx.nombre}, soy Sofía de FIA Copilot — última vez que te escribo por esto. ` +
-    `Si querés retomar respondé SI. O entrá directo: ${ctx.deepLink}` + OPT_OUT_FOOTER,
+    reactivacion_inactividad_3: (ctx) =>
+      `${ctx.nombre}, soy Sofía de FIA Copilot — última vez que te escribo por esto. ` +
+      `Si querés retomar respondé SI. O entrá directo: ${ctx.deepLink}` + footer,
 
-  celebracion_capsula: (ctx) =>
-    `${ctx.nombre}, soy Sofía de FIA Copilot 🎉 ` +
-    `Completaste la cápsula ${ctx.capsulaPendiente - 1} (${ctx.capsulasTotales}/25). ` +
-    `Próxima: ${ctx.deepLink}` + OPT_OUT_FOOTER,
+    celebracion_capsula: (ctx) =>
+      `${ctx.nombre}, soy Sofía de FIA Copilot 🎉 ` +
+      `Completaste la cápsula ${ctx.capsulaPendiente - 1} (${ctx.capsulasTotales}/25). ` +
+      `Próxima: ${ctx.deepLink}` + footer,
 
-  celebracion_capsula_final: (ctx) =>
-    `${ctx.nombre}, soy Sofía de FIA Copilot. Completaste las 25 cápsulas del Método FIA 🎉 ` +
-    `Todo lo que construiste está en tu Bóveda: ${ctx.deepLink}` + OPT_OUT_FOOTER,
+    celebracion_capsula_final: (ctx) =>
+      `${ctx.nombre}, soy Sofía de FIA Copilot. Completaste las 25 cápsulas del Método FIA 🎉 ` +
+      `Todo lo que construiste está en tu Bóveda: ${ctx.deepLink}` + footer,
 
-  bienvenida_diagnostico: (ctx) => {
-    const painCtx = ctx.painAreas.length > 0
-      ? ` Detectamos oportunidades en ${ctx.painAreas.slice(0, 2).join(" y ")}.`
-      : "";
-    const capsulaNombre = ctx.capsulaTitle ? `${ctx.capsulaPendiente}: ${ctx.capsulaTitle}` : `${ctx.capsulaPendiente}`;
-    return `${FIRST_CONTACT_INTRO(ctx.nombre)}, tu Coach. ` +
-      `Tu diagnóstico está listo — score ${ctx.overallScore}/100.${painCtx} ` +
-      `Empezá por la cápsula ${capsulaNombre}: ${ctx.deepLink}` + OPT_OUT_FOOTER;
-  },
+    bienvenida_diagnostico: (ctx) => {
+      const painCtx = ctx.painAreas.length > 0
+        ? ` Detectamos oportunidades en ${ctx.painAreas.slice(0, 2).join(" y ")}.`
+        : "";
+      const capsulaNombre = ctx.capsulaTitle ? `${ctx.capsulaPendiente}: ${ctx.capsulaTitle}` : `${ctx.capsulaPendiente}`;
+      return `${FIRST_CONTACT_INTRO(ctx.nombre)}, tu Coach. ` +
+        `Tu diagnóstico está listo — score ${ctx.overallScore}/100.${painCtx} ` +
+        `Empezá por la cápsula ${capsulaNombre}: ${ctx.deepLink}` + footer;
+    },
 
-  recuperacion_lead_frio: (ctx) => {
-    const empresaCtx = ctx.companySize === "emprendedor"
-      ? "Tenés herramientas de IA para aplicar vos solo paso a paso"
-      : `Hay pasos concretos para ${ctx.empresa}`;
-    return `${FIRST_CONTACT_INTRO(ctx.nombre)}. ` +
-      `Hace un tiempo hiciste el diagnóstico (score ${ctx.overallScore}). ${empresaCtx}. Mirá el plan: ${ctx.deepLink}` + OPT_OUT_FOOTER;
-  },
+    recuperacion_lead_frio: (ctx) => {
+      const empresaCtx = ctx.companySize === "emprendedor"
+        ? "Tenés herramientas de IA para aplicar vos solo paso a paso"
+        : `Hay pasos concretos para ${ctx.empresa}`;
+      return `${FIRST_CONTACT_INTRO(ctx.nombre)}. ` +
+        `Hace un tiempo hiciste el diagnóstico (score ${ctx.overallScore}). ${empresaCtx}. Mirá el plan: ${ctx.deepLink}` + footer;
+    },
 
-  resumen_semanal_sponsor: (ctx) =>
-    `Hola, soy Sofía de FIA Copilot. Te paso el resumen semanal de ${ctx.empresa}: ${ctx.deepLink}` + OPT_OUT_FOOTER,
+    resumen_semanal_sponsor: (ctx) =>
+      `Hola, soy Sofía de FIA Copilot. Te paso el resumen semanal de ${ctx.empresa}: ${ctx.deepLink}` + footer,
 
-  campana_activa: (ctx) => {
-    const capsulaNombre = ctx.capsulaTitle
-      ? `${ctx.capsulaPendiente}: ${ctx.capsulaTitle}`
-      : `${ctx.capsulaPendiente}`;
-    return `${FIRST_CONTACT_INTRO(ctx.nombre)}. ` +
-      `Tenés acceso especial activo. Tu próxima cápsula es la ${capsulaNombre}: ${ctx.deepLink}` + OPT_OUT_FOOTER;
-  },
-};
+    campana_activa: (ctx) => {
+      const capsulaNombre = ctx.capsulaTitle
+        ? `${ctx.capsulaPendiente}: ${ctx.capsulaTitle}`
+        : `${ctx.capsulaPendiente}`;
+      return `${FIRST_CONTACT_INTRO(ctx.nombre)}. ` +
+        `Tenés acceso especial activo. Tu próxima cápsula es la ${capsulaNombre}: ${ctx.deepLink}` + footer;
+    },
+  };
+}
 
 function getTemplateKey(opportunity: EngagementOpportunity): string {
   const { journeyName, level, context } = opportunity;
@@ -327,12 +342,12 @@ async function generateWithClaude(
   }
 }
 
-function generateFromTemplate(
+async function generateFromTemplate(
   opportunity: EngagementOpportunity,
   capsuleProgress: CapsuleProgress[],
   scores: LeadScore | null,
   assessment: AssessmentSubmission | null,
-): GeneratedMessage | null {
+): Promise<GeneratedMessage | null> {
   const completedCount = capsuleProgress.filter((p) => p.status === "completed").length;
   const ctx_opportunity = opportunity.context as {
     pendingCapsuleNumber?: number;
@@ -370,6 +385,11 @@ function generateFromTemplate(
   };
 
   const templateKey = getTemplateKey(opportunity);
+
+  // Load footer from cache (with fallback to default)
+  const footer = await getOptOutFooter();
+  const TEMPLATES = buildTemplates(footer);
+
   const templateFn = TEMPLATES[templateKey];
   if (!templateFn) {
     logger.warn(
@@ -883,11 +903,14 @@ export async function generateMessage(
   const fullContext = `${userContext}${conversationContext}${factsContext}`;
 
   const journeyPrompt =
-    JOURNEY_PROMPTS[opportunity.journeyName] ?? "Genera un mensaje de seguimiento personalizado.";
+    JOURNEY_PROMPTS_DEFAULT[opportunity.journeyName] ?? "Genera un mensaje de seguimiento personalizado.";
+
+  // TODO: Fase 2 — load journeyPrompt from cache for dynamic editing
+  // const journeyPrompt = await getJourneyPrompt(opportunity.journeyName);
 
   // 1. Try Codex OAuth (ChatGPT Plus) first
   const codexText = await generateWithCodex(
-    SYSTEM_PROMPT,
+    SOFIA_SYSTEM_PROMPT_DEFAULT,
     `${journeyPrompt}\n\n${fullContext}\n\nGenera SOLO el texto del mensaje de WhatsApp, sin explicaciones ni prefijos.`,
   );
 
@@ -915,8 +938,8 @@ export async function generateMessage(
     }
   }
 
-  // 3. Fallback to templates (synchronous — no extra DB calls)
-  const templateMessage = generateFromTemplate(opportunity, capsuleProgress, scores, assessment);
+  // 3. Fallback to templates (loads footer from cache)
+  const templateMessage = await generateFromTemplate(opportunity, capsuleProgress, scores, assessment);
   logger.info(
     { userId: opportunity.userId, journey: opportunity.journeyName, mode: "template" },
     "Message generated from template",
