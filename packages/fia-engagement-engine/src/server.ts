@@ -347,10 +347,13 @@ async function handleTestMessage(
       text?: string;
     };
 
-    // Raw send (no AI generation)
+    // Raw send (no AI generation) — route through active provider, NOT hardcoded to Baileys
     if (body.phone && body.text) {
-      const result = await baileysManager.sendMessage(body.phone, body.text);
-      jsonResponse(res, result.success ? 200 : 500, result);
+      const provider = config.whatsapp.provider;
+      const result = provider === "evolution"
+        ? await evolutionManager.sendMessage(body.phone, body.text)
+        : await baileysManager.sendMessage(body.phone, body.text);
+      jsonResponse(res, result.success ? 200 : 500, { ...result, provider });
       return;
     }
 
