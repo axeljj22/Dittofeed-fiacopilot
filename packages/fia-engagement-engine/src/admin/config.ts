@@ -211,6 +211,7 @@ export function getConfigEditorHtml(_baseUrl: string): string {
 
     <div class="nav">
       <a href="/admin/engagement">← Dashboard</a>
+      <a href="/admin/design">✏️ Visual Designer</a>
       <a href="/admin/whatsapp">📱 WhatsApp</a>
       <a href="/admin/codex">🤖 Codex</a>
     </div>
