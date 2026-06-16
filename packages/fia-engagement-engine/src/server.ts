@@ -1429,6 +1429,14 @@ function showMsg(text, ok) {
     return;
   }
 
+  // GET /api/variables — list all available template variables with metadata (admin only)
+  if (url === "/api/variables" && method === "GET") {
+    if (!requireAdminAuth(req, res)) return;
+    const { ENGINE_VARIABLES } = await import("./config/engineVariables");
+    jsonResponse(res, 200, { data: ENGINE_VARIABLES });
+    return;
+  }
+
   // GET /admin/config — config editor UI (admin only via prompt for token)
   if (url === "/admin/config" && method === "GET") {
     try {

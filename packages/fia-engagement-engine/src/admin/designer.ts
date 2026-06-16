@@ -507,14 +507,17 @@ export function getVisualDesignerHtml(): string {
       <div class="preview-empty">Seleccioná un template para ver la preview</div>
     </div>
     <div class="preview-vars" id="preview-vars" style="display:none">
-      <div class="preview-vars-title">Variables disponibles (click para insertar)</div>
-      <span class="var-pill" onclick="insertVar('{{nombre}}')">{{nombre}}</span>
-      <span class="var-pill" onclick="insertVar('{{empresa}}')">{{empresa}}</span>
-      <span class="var-pill" onclick="insertVar('{{deepLink}}')">{{deepLink}}</span>
-      <span class="var-pill" onclick="insertVar('{{capsulaPendiente}}')">{{capsulaPendiente}}</span>
-      <span class="var-pill" onclick="insertVar('{{capsulaTitle}}')">{{capsulaTitle}}</span>
-      <span class="var-pill" onclick="insertVar('{{overallScore}}')">{{overallScore}}</span>
-      <span class="var-pill" onclick="insertVar('{{daysInactive}}')">{{daysInactive}}</span>
+      <div class="preview-vars-title">Variables disponibles <span style="color:#3d3e52">(click para insertar)</span></div>
+      <div id="vars-list">
+        <!-- Populated from GET /api/variables -->
+        <span class="var-pill" onclick="insertVar('{{nombre}}')">{{nombre}}</span>
+        <span class="var-pill" onclick="insertVar('{{empresa}}')">{{empresa}}</span>
+        <span class="var-pill" onclick="insertVar('{{deepLink}}')">{{deepLink}}</span>
+        <span class="var-pill" onclick="insertVar('{{capsulaPendiente}}')">{{capsulaPendiente}}</span>
+        <span class="var-pill" onclick="insertVar('{{capsulaTitle}}')">{{capsulaTitle}}</span>
+        <span class="var-pill" onclick="insertVar('{{overallScore}}')">{{overallScore}}</span>
+        <span class="var-pill" onclick="insertVar('{{daysInactive}}')">{{daysInactive}}</span>
+      </div>
     </div>
     <div class="preview-note" id="preview-note"></div>
   </aside>
@@ -531,13 +534,42 @@ export function getVisualDesignerHtml(): string {
     let originalValue = '';
     let isDirty = false;
 
+    let allVariables = [];
+
     // ── Init ──
     window.addEventListener('load', async () => {
       TOKEN = prompt('Admin token:') || '';
       if (!TOKEN) { document.getElementById('loading-overlay').querySelector('span').textContent = 'Token requerido — recargá la página.'; return; }
-      await loadAllConfig();
+      await Promise.all([loadAllConfig(), loadVariables()]);
       document.getElementById('loading-overlay').classList.add('hidden');
     });
+
+    async function loadVariables() {
+      try {
+        const resp = await fetch('/api/variables', {
+          headers: { 'Authorization': 'Bearer ' + TOKEN }
+        });
+        if (!resp.ok) return;
+        const { data } = await resp.json();
+        allVariables = data || [];
+        renderVarPills();
+      } catch (e) {
+        console.warn('Could not load variables from API, using defaults', e);
+      }
+    }
+
+    function renderVarPills() {
+      const container = document.getElementById('vars-list');
+      if (!allVariables.length || !container) return;
+
+      const catColors = { perfil: '#818cf8', capsula: '#34d399', score: '#fbbf24', contexto: '#f472b6' };
+      container.innerHTML = allVariables.map(v => {
+        const color = catColors[v.category] || '#818cf8';
+        return \`<span class="var-pill" onclick="insertVar('\${v.key}')"
+          title="\${v.description}\\nEjemplo: \${v.example}\\nFuente: \${v.source}"
+          style="border-color:\${color}33;color:\${color}">\${v.key}</span>\`;
+      }).join('');
+    }
 
     async function loadAllConfig() {
       try {
@@ -679,13 +711,23 @@ export function getVisualDesignerHtml(): string {
 
       const highlighted = highlightVarsAndLinks(escHtml(value));
       const timeStr = new Date().toLocaleTimeString('es-AR', { hour: '2-digit', minute: '2-digit' });
-      bg.innerHTML = \`<div class="wa-bubble">
-        \${highlighted}
-        <div class="wa-time">\${timeStr} ✓✓</div>
-      </div>\`;
+
+      // Build an example-value preview by substituting variables
+      let exampleText = value;
+      for (const v of allVariables) {
+        exampleText = exampleText.split(v.key).join(v.example);
+      }
+      const exampleHighlighted = highlightVarsAndLinks(escHtml(exampleText));
+
+      bg.innerHTML = \`
+        <div style="font-size:10px;color:#4d7a4d;margin-bottom:6px;padding:0 2px">Vista real (variables reemplazadas con ejemplos)</div>
+        <div class="wa-bubble" style="margin-bottom:16px">\${exampleHighlighted}<div class="wa-time">\${timeStr} ✓✓</div></div>
+        <div style="font-size:10px;color:#374151;margin-bottom:6px;padding:0 2px">Vista de código (variables resaltadas)</div>
+        <div class="wa-bubble" style="background:#1a1b26;border-color:#2a2b3d;color:#e4e4ef">\${highlighted}<div class="wa-time" style="color:#5d5e72">\${timeStr} ✓✓</div></div>
+      \`;
       note.textContent = item.type === 'reply'
-        ? 'Vista previa de respuesta a comando. Las variables {{...}} se reemplazan en runtime.'
-        : 'Vista previa como burbuja de WhatsApp.';
+        ? 'Las variables {{...}} se reemplazan con datos reales del usuario en runtime.'
+        : 'Vista previa como burbuja de WhatsApp con valores de ejemplo.';
     }
 
     function highlightVarsAndLinks(html) {
