@@ -1443,6 +1443,20 @@ function showMsg(text, ok) {
     return;
   }
 
+  // GET /admin/design — visual designer SPA (three-pane editor with WA preview)
+  if (url === "/admin/design" && method === "GET") {
+    try {
+      const { getVisualDesignerHtml } = await import("./admin/designer");
+      const html = getVisualDesignerHtml();
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(html);
+    } catch (error) {
+      logger.error({ error }, "Failed to serve visual designer");
+      jsonResponse(res, 500, { error: "Failed to load visual designer" });
+    }
+    return;
+  }
+
   // Click tracking: /r/:logId
   const clickMatch = url.match(/^\/r\/([a-f0-9-]+)$/);
   if (clickMatch && method === "GET") {
