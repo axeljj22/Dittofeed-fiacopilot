@@ -154,3 +154,25 @@ mnt/*
 .playwright-mcp/
 playwright-report/
 test-results/
+
+# ─── Local-only / sensitive — added 2026-06-16 after Vercel token leak ───
+
+# Claude Code local settings (contain command history with potential secrets in args)
+.claude/
+
+# Local SSH keys + credential dumps
+Claves para env/
+*.pem
+*.key
+
+# Internal analysis docs (may contain confidential data)
+de Claude para Axel/
+de Codex para Axel/
+Estado del arte/
+
+# Local env files (any path, any name)
+*.env
+*.env.local
+*.env.*.local
+!**/.env.example
+!**/.env.*.example
