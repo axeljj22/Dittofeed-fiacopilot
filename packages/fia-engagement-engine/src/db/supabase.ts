@@ -952,3 +952,136 @@ export async function setEngineConfig(
 
   logger.info({ key }, "Engine config updated");
 }
+
+// ─── Scheduled Messages ───
+
+export interface ScheduledMessage {
+  id: string;
+  name: string;
+  journey_name: string;
+  segment: string;
+  schedule_cron: string;
+  message_key: string | null;
+  active: boolean;
+  last_run_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export async function getActiveScheduledMessages(): Promise<ScheduledMessage[]> {
+  const { data, error } = await getSupabaseClient()
+    .from("engine_scheduled_messages")
+    .select("*")
+    .eq("active", true)
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    logger.warn({ error }, "Failed to fetch active scheduled messages");
+    return [];
+  }
+  return (data ?? []) as ScheduledMessage[];
+}
+
+export async function getAllScheduledMessages(): Promise<ScheduledMessage[]> {
+  const { data, error } = await getSupabaseClient()
+    .from("engine_scheduled_messages")
+    .select("*")
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    logger.warn({ error }, "Failed to fetch scheduled messages");
+    return [];
+  }
+  return (data ?? []) as ScheduledMessage[];
+}
+
+export async function createScheduledMessage(
+  params: Omit<ScheduledMessage, "id" | "last_run_at" | "created_at" | "updated_at">,
+): Promise<ScheduledMessage | null> {
+  const { data, error } = await getSupabaseClient()
+    .from("engine_scheduled_messages")
+    .insert(params)
+    .select("*")
+    .single();
+
+  if (error) {
+    logger.error({ error }, "Failed to create scheduled message");
+    return null;
+  }
+  return data as ScheduledMessage;
+}
+
+export async function updateScheduledMessage(
+  id: string,
+  updates: Partial<Omit<ScheduledMessage, "id" | "created_at" | "updated_at">>,
+): Promise<ScheduledMessage | null> {
+  const { data, error } = await getSupabaseClient()
+    .from("engine_scheduled_messages")
+    .update(updates)
+    .eq("id", id)
+    .select("*")
+    .single();
+
+  if (error) {
+    logger.error({ error, id }, "Failed to update scheduled message");
+    return null;
+  }
+  return data as ScheduledMessage;
+}
+
+export async function deleteScheduledMessage(id: string): Promise<boolean> {
+  const { error } = await getSupabaseClient()
+    .from("engine_scheduled_messages")
+    .delete()
+    .eq("id", id);
+
+  if (error) {
+    logger.error({ error, id }, "Failed to delete scheduled message");
+    return false;
+  }
+  return true;
+}
+
+export async function getUsersInSegment(segment: string): Promise<Array<{ id: string; phone: string; name: string | null; company_name: string | null }>> {
+  const sb = getSupabaseClient();
+
+  if (segment === "todos") {
+    const { data, error } = await sb
+      .from("profiles")
+      .select("id, phone, name, company_name")
+      .eq("whatsapp_opt_in", true)
+      .not("phone", "is", null);
+
+    if (error) { logger.warn({ error, segment }, "Failed to fetch segment users"); return []; }
+    return (data ?? []) as Array<{ id: string; phone: string; name: string | null; company_name: string | null }>;
+  }
+
+  // For specific segments, join with user_program_access
+  const programSlug = segment === "fia-ventas" ? "fia-ventas"
+    : segment === "fia-copilot-pro" ? "fia-copilot"
+    : segment === "fia-empresas" ? "fia-empresas"
+    : null;
+
+  if (!programSlug) {
+    logger.warn({ segment }, "Unknown segment — defaulting to empty");
+    return [];
+  }
+
+  const { data: accessRows, error: accessErr } = await sb
+    .from("user_program_access")
+    .select("user_id, profiles!inner(id, phone, name, company_name, whatsapp_opt_in)")
+    .ilike("program_slug", `%${programSlug}%`);
+
+  if (accessErr) { logger.warn({ accessErr, segment }, "Failed to fetch segment users via access"); return []; }
+
+  type AccessRow = { profiles: { id: string; phone: string | null; name: string | null; company_name: string | null; whatsapp_opt_in: boolean } | Array<{ id: string; phone: string | null; name: string | null; company_name: string | null; whatsapp_opt_in: boolean }> };
+
+  return (accessRows ?? [] as AccessRow[]).reduce<Array<{ id: string; phone: string; name: string | null; company_name: string | null }>>((acc, r) => {
+    const row = r as AccessRow;
+    const profile = Array.isArray(row.profiles) ? row.profiles[0] : row.profiles;
+    if (profile && profile.whatsapp_opt_in && profile.phone) {
+      acc.push({ id: profile.id, phone: profile.phone, name: profile.name, company_name: profile.company_name });
+    }
+    return acc;
+  }, []);
+}

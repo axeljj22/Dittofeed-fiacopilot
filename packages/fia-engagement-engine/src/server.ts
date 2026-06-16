@@ -1429,6 +1429,105 @@ function showMsg(text, ok) {
     return;
   }
 
+  // ─── Scheduled Messages API ───
+
+  // GET /api/schedule — list all scheduled messages (admin only)
+  if (url === "/api/schedule" && method === "GET") {
+    if (!requireAdminAuth(req, res)) return;
+    const { getAllScheduledMessages } = await import("./db/supabase");
+    const schedules = await getAllScheduledMessages();
+    jsonResponse(res, 200, { data: schedules });
+    return;
+  }
+
+  // POST /api/schedule — create a scheduled message (admin only)
+  if (url === "/api/schedule" && method === "POST") {
+    if (!requireAdminAuth(req, res)) return;
+    try {
+      const body = JSON.parse(await parseBody(req)) as {
+        name?: string;
+        journey_name?: string;
+        segment?: string;
+        schedule_cron?: string;
+        message_key?: string | null;
+      };
+      if (!body.name || !body.journey_name || !body.schedule_cron) {
+        jsonResponse(res, 400, { error: "Missing required fields: name, journey_name, schedule_cron" });
+        return;
+      }
+      const { createScheduledMessage } = await import("./db/supabase");
+      const created = await createScheduledMessage({
+        name: body.name,
+        journey_name: body.journey_name,
+        segment: body.segment ?? "todos",
+        schedule_cron: body.schedule_cron,
+        message_key: body.message_key ?? null,
+        active: true,
+      });
+      if (!created) { jsonResponse(res, 500, { error: "Failed to create scheduled message" }); return; }
+      const { reloadScheduledMessages } = await import("./scheduler/scheduledMessages");
+      void reloadScheduledMessages();
+      jsonResponse(res, 201, { data: created });
+    } catch (error) {
+      logger.error({ error }, "Failed to create scheduled message");
+      jsonResponse(res, 500, { error: "Internal error" });
+    }
+    return;
+  }
+
+  // PUT /api/schedule/:id — update a scheduled message (admin only)
+  const schedPutMatch = url.match(/^\/api\/schedule\/([a-f0-9-]+)$/);
+  if (schedPutMatch && method === "PUT") {
+    if (!requireAdminAuth(req, res)) return;
+    try {
+      const id = schedPutMatch[1] as string;
+      const body = JSON.parse(await parseBody(req)) as Record<string, unknown>;
+      const { updateScheduledMessage } = await import("./db/supabase");
+      const updated = await updateScheduledMessage(id, body);
+      if (!updated) { jsonResponse(res, 404, { error: "Schedule not found" }); return; }
+      const { reloadScheduledMessages } = await import("./scheduler/scheduledMessages");
+      void reloadScheduledMessages();
+      jsonResponse(res, 200, { data: updated });
+    } catch (error) {
+      logger.error({ error }, "Failed to update scheduled message");
+      jsonResponse(res, 500, { error: "Internal error" });
+    }
+    return;
+  }
+
+  // DELETE /api/schedule/:id — delete a scheduled message (admin only)
+  const schedDelMatch = url.match(/^\/api\/schedule\/([a-f0-9-]+)$/);
+  if (schedDelMatch && method === "DELETE") {
+    if (!requireAdminAuth(req, res)) return;
+    const { deleteScheduledMessage } = await import("./db/supabase");
+    const ok = await deleteScheduledMessage(schedDelMatch[1] as string);
+    if (!ok) { jsonResponse(res, 500, { error: "Failed to delete" }); return; }
+    const { reloadScheduledMessages } = await import("./scheduler/scheduledMessages");
+    void reloadScheduledMessages();
+    jsonResponse(res, 200, { status: "deleted" });
+    return;
+  }
+
+  // POST /api/schedule/:id/run — run a scheduled message immediately (admin only)
+  const schedRunMatch = url.match(/^\/api\/schedule\/([a-f0-9-]+)\/run$/);
+  if (schedRunMatch && method === "POST") {
+    if (!requireAdminAuth(req, res)) return;
+    try {
+      const id = schedRunMatch[1] as string;
+      const { getAllScheduledMessages } = await import("./db/supabase");
+      const all = await getAllScheduledMessages();
+      const schedule = all.find((s) => s.id === id);
+      if (!schedule) { jsonResponse(res, 404, { error: "Schedule not found" }); return; }
+      const { runScheduledBroadcast } = await import("./scheduler/scheduledMessages");
+      const sent = await runScheduledBroadcast(schedule);
+      jsonResponse(res, 200, { status: "executed", sent });
+    } catch (error) {
+      logger.error({ error }, "Failed to run scheduled message");
+      jsonResponse(res, 500, { error: "Internal error" });
+    }
+    return;
+  }
+
   // GET /api/variables — list all available template variables with metadata (admin only)
   if (url === "/api/variables" && method === "GET") {
     if (!requireAdminAuth(req, res)) return;
@@ -1447,6 +1546,19 @@ function showMsg(text, ok) {
     } catch (error) {
       logger.error({ error }, "Failed to serve config editor");
       jsonResponse(res, 500, { error: "Failed to load config editor" });
+    }
+    return;
+  }
+
+  // GET /admin/schedule — scheduled messages admin page
+  if (url === "/admin/schedule" && method === "GET") {
+    try {
+      const { getScheduleAdminHtml } = await import("./admin/schedule");
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(getScheduleAdminHtml());
+    } catch (error) {
+      logger.error({ error }, "Failed to serve schedule admin page");
+      jsonResponse(res, 500, { error: "Failed to load schedule admin" });
     }
     return;
   }
@@ -1488,6 +1600,10 @@ export function startServer(port: number = 3001): http.Server {
     logger.info({ port }, "FIA Engagement Engine HTTP server started");
     // Warm up config cache on startup (non-blocking)
     void warmCache();
+    // Load scheduled message cron jobs (non-blocking)
+    import("./scheduler/scheduledMessages").then(({ initScheduledMessages }) => {
+      void initScheduledMessages();
+    }).catch(() => { /* non-critical — fails gracefully if table not yet created */ });
   });
 
   // Auto-start Baileys if provider is configured
