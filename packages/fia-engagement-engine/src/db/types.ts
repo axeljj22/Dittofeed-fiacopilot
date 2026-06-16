@@ -121,6 +121,8 @@ export interface EngagementLogInsert {
     retry_count?: number; // # of attempts if status === 'failed_pending_retry'
     last_retry_at?: string; // ISO timestamp of last retry
     last_error?: string; // last error message
+    ab_test_name?: string; // A/B test name if variant was used
+    ab_variant?: "a" | "b"; // which variant was sent
   };
 }
 

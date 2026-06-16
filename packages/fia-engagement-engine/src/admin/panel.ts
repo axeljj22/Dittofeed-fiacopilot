@@ -165,6 +165,7 @@ tr:hover td{background:var(--bg3)}
     <div class="nav-item" onclick="window.open('/admin/design','_blank')"><span class="nav-icon">✏️</span><span>Visual Designer</span></div>
     <div class="nav-item" onclick="window.open('/admin/config','_blank')"><span class="nav-icon">⚙️</span><span>Config Editor</span></div>
     <div class="nav-item" onclick="window.open('/admin/schedule','_blank')"><span class="nav-icon">⏰</span><span>Programados</span></div>
+    <div class="nav-item" onclick="window.open('/admin/ab','_blank')"><span class="nav-icon">🧪</span><span>A/B Testing</span></div>
     <div class="nav-section">Conexiones</div>
     <div class="nav-item" onclick="window.open('/admin/whatsapp','_blank')"><span class="nav-icon">📱</span><span>WhatsApp QR</span></div>
     <div class="nav-item" onclick="window.open('/admin/codex','_blank')"><span class="nav-icon">🤖</span><span>Codex OAuth</span></div>

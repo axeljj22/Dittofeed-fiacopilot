@@ -1042,6 +1042,29 @@ export async function deleteScheduledMessage(id: string): Promise<boolean> {
   return true;
 }
 
+export async function getAbTestStats(testName: string): Promise<{
+  a: { impressions: number; responses: number };
+  b: { impressions: number; responses: number };
+}> {
+  const { data } = await getSupabaseClient()
+    .from("engagement_log")
+    .select("metadata")
+    .eq("status", "sent")
+    .not("metadata->>ab_test_name", "is", null);
+
+  const rows = (data ?? []) as Array<{ metadata: Record<string, unknown> }>;
+  const filtered = rows.filter((r) => r.metadata?.["ab_test_name"] === testName);
+
+  const result = { a: { impressions: 0, responses: 0 }, b: { impressions: 0, responses: 0 } };
+  for (const row of filtered) {
+    const v = row.metadata?.["ab_variant"] as "a" | "b" | undefined;
+    if (v !== "a" && v !== "b") continue;
+    result[v].impressions++;
+    if (row.metadata?.["responded"] === true) result[v].responses++;
+  }
+  return result;
+}
+
 export async function getUsersInSegment(segment: string): Promise<Array<{ id: string; phone: string; name: string | null; company_name: string | null }>> {
   const sb = getSupabaseClient();
 

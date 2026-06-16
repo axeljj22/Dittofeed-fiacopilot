@@ -194,6 +194,7 @@ export async function sendWhatsAppMessage(
       whatsapp_number: whatsappNumber,
       deep_link: message.deepLink,
       ...(opportunity.level !== undefined ? { level: opportunity.level } : {}),
+      ...(message.abTestName ? { ab_test_name: message.abTestName, ab_variant: message.abVariant } : {}),
     },
   });
 

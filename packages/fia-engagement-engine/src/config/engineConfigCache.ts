@@ -191,6 +191,74 @@ export async function getCommandReply(command: string): Promise<string | null> {
   return getCachedConfig(`cmd_reply.${command.toLowerCase()}`, "");
 }
 
+/**
+ * A/B test variant selection — deterministic per user (hash of userId).
+ * Returns { variant, text } if an active A/B test exists for the given journey,
+ * or null if no test is configured/active.
+ *
+ * Keys used in engine_config:
+ *   ab_test.{testName}.active  = "true"
+ *   ab_test.{testName}.journey = journey name this test applies to
+ *   ab_test.{testName}.a       = variant A text
+ *   ab_test.{testName}.b       = variant B text
+ */
+export async function getAbVariantForJourney(
+  journeyName: string,
+  userId: string,
+): Promise<{ testName: string; variant: "a" | "b"; text: string } | null> {
+  try {
+    const allConfig = await getAllEngineConfig();
+    const allConfigRecord: Record<string, string> = allConfig;
+    // Find any active A/B test that targets this journey
+    const testNames = Object.keys(allConfigRecord)
+      .filter((k) => k.startsWith("ab_test.") && k.endsWith(".active") && allConfigRecord[k] === "true")
+      .map((k) => k.replace("ab_test.", "").replace(".active", ""));
+
+    for (const testName of testNames) {
+      const testJourney = allConfigRecord[`ab_test.${testName}.journey`];
+      if (testJourney !== journeyName) continue;
+
+      // Select variant deterministically by userId
+      const variant: "a" | "b" = userId.split("").reduce((sum, c) => sum + c.charCodeAt(0), 0) % 2 === 0 ? "a" : "b";
+      const text = allConfigRecord[`ab_test.${testName}.${variant}`] ?? "";
+      if (!text) continue;
+
+      return { testName, variant, text };
+    }
+  } catch (error) {
+    logger.warn({ error }, "Failed to check A/B test variant");
+  }
+  return null;
+}
+
+/** Get all A/B test definitions (grouped by test name) from engine_config */
+export async function getAllAbTests(): Promise<Array<{
+  name: string;
+  active: boolean;
+  journey: string;
+  variantA: string;
+  variantB: string;
+}>> {
+  try {
+    const allConfig = await getAllEngineConfig() as Record<string, string>;
+    const testNames = new Set(
+      Object.keys(allConfig)
+        .filter((k) => k.startsWith("ab_test.") && k.split(".").length >= 3)
+        .map((k) => k.split(".")[1] as string),
+    );
+
+    return Array.from(testNames).map((name) => ({
+      name,
+      active: allConfig[`ab_test.${name}.active`] === "true",
+      journey: allConfig[`ab_test.${name}.journey`] ?? "",
+      variantA: allConfig[`ab_test.${name}.a`] ?? "",
+      variantB: allConfig[`ab_test.${name}.b`] ?? "",
+    }));
+  } catch {
+    return [];
+  }
+}
+
 export async function getPositiveShortResponses(): Promise<Set<string>> {
   try {
     const json = await getCachedConfig("positive_short_responses", "[]");
