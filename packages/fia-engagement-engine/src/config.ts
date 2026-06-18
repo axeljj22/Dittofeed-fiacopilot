@@ -68,30 +68,13 @@ export const config = {
 
   // Engine behavior
   engine: {
-    // Inactivity threshold in days
-    inactivityDays: parseInt(
-      optionalEnv("INACTIVITY_THRESHOLD_DAYS", "5"),
-      10,
-    ),
-    // Cold lead threshold in days
-    coldLeadDays: parseInt(optionalEnv("COLD_LEAD_THRESHOLD_DAYS", "15"), 10),
-    // Celebration delay in minutes
-    celebrationDelayMinutes: parseInt(
-      optionalEnv("CELEBRATION_DELAY_MINUTES", "30"),
-      10,
-    ),
-    // Post-diagnostic delay in minutes — must be > cron interval (15 min) to avoid gaps
-    postDiagnosticDelayMinutes: parseInt(
-      optionalEnv("POST_DIAGNOSTIC_DELAY_MINUTES", "20"),
-      10,
-    ),
     // Base URL for deep links
     appBaseUrl: optionalEnv("FIA_APP_BASE_URL", "https://fiacopilot.com"),
     // Engine's own base URL (for click tracking redirect links)
     engineBaseUrl: requireEnv("ENGINE_BASE_URL"),
-    // Max messages per user per day
+    // Max messages per user per day (weekly report is low-frequency; 1 is plenty)
     maxMessagesPerUserPerDay: parseInt(
-      optionalEnv("MAX_MESSAGES_PER_USER_PER_DAY", "2"),
+      optionalEnv("MAX_MESSAGES_PER_USER_PER_DAY", "1"),
       10,
     ),
     // Pilot mode — if set, only send messages to this phone number
@@ -110,15 +93,15 @@ export const config = {
 
   // Scheduler cron expressions
   cron: {
-    // Event detectors (capsule completions, diagnostics) — every 15 min, time-sensitive
-    detectors: optionalEnv("CRON_DETECTORS", "*/15 * * * *"),
-    // Segment detectors (inactivity, cold leads) — every 2 hours, not time-sensitive
-    segmentDetectors: optionalEnv("CRON_SEGMENT_DETECTORS", "0 */2 * * *"),
-    // Weekly sponsor report: Mondays at 9 AM
-    sponsorReport: optionalEnv("CRON_SPONSOR_REPORT", "0 9 * * 1"),
+    // Weekly report fallback default — the live value comes from engine_config (report_schedule),
+    // editable from the panel. Used only if the DB value can't be read at startup.
+    weeklyReport: optionalEnv("CRON_WEEKLY_REPORT", "0 17 * * 0"),
     // Retry failed messages — every 30 minutes (set to "0 0 31 2 *" to disable)
     retryFailed: optionalEnv("CRON_RETRY_FAILED", "*/30 * * * *"),
   },
+
+  // Classify inbound conversations (AI labeling for the observability dashboard) — daily 6 AM
+  classifyCron: optionalEnv("CRON_CLASSIFY", "0 6 * * *"),
 
   // Logging
   logLevel: optionalEnv("LOG_LEVEL", "info"),

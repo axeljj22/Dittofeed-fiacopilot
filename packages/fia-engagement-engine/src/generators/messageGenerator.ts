@@ -1,10 +1,11 @@
 /**
- * Generador de mensajes — Templates fijos + Claude API (opcional)
+ * Generador de mensajes — Reporte semanal (outbound) + respuestas inbound de Sofía.
  *
- * Modo template: mensajes predefinidos con variables del usuario.
- * Modo IA: Claude API genera mensajes personalizados con contexto de Bóveda.
+ * Outbound: un único journey (reporte_semanal). Contexto = recap de la semana + próxima acción
+ * del track (o Método de 25 pasos) + conocimiento de FIA desde la DB (anti-alucinación).
+ * Inbound: Sofía responde texto libre con memoria de conversación.
  *
- * Si ANTHROPIC_API_KEY no está configurada, usa templates.
+ * Cadena de generación: Codex (ChatGPT Plus) → Claude API → template de fallback.
  */
 import { config } from "../config";
 import { logger } from "../logger";
@@ -12,14 +13,12 @@ import {
   getSofiaSystemPrompt,
   getOptOutFooter,
   getJourneyPrompt,
-  getAbVariantForJourney,
 } from "../config/engineConfigCache";
 import {
   getProfileWithWhatsapp,
   getVaultOutputsForUser,
   getCapsuleProgressForUser,
   getCapsules,
-  getLearningPaths,
   getPathTotals,
   resolveUserPaths,
   getLeadScoreForUser,
@@ -28,131 +27,27 @@ import {
   appendConversationMessages,
   getConversationState,
   upsertConversationState,
+  getKnowledge,
 } from "../db/supabase";
-import type { UserSegment } from "../db/supabase";
-import type { EngagementOpportunity, VaultOutput, CapsuleProgress, LeadScore, AssessmentSubmission } from "../db/types";
+import type { UserSegment, KnowledgeEntry } from "../db/supabase";
+import type { EngagementOpportunity, VaultOutput, AssessmentSubmission } from "../db/types";
+import type { WeeklyReportContext } from "../detectors/weeklyReport";
 import { generateWithCodex, generateWithCodexConversation } from "./codexGenerator";
 
 export interface GeneratedMessage {
   text: string;
   journeyName: string;
   deepLink: string;
-  abTestName?: string;
-  abVariant?: "a" | "b";
+  /** Which path produced the text — surfaced to the conversation log for observability. */
+  source?: "codex" | "claude" | "template";
+  truncated?: boolean;
 }
 
-// ─── Template-based messages (no API key needed) ───
-
-interface TemplateContext {
-  nombre: string;
-  empresa: string;
-  objetivo: string;
-  capsulaPendiente: number;
-  capsulaTitle: string | null;  // capsule title from DB join
-  capsulasTotales: number;
-  deepLink: string;
-  fitScore: number;
-  intentScore: number;
-  overallScore: number;
-  daysInactive: number;
-  level: number;
-  painAreas: string[];          // from assessment_submissions
-  companySize: "emprendedor" | "empresa" | null; // derived from answers.m_size
-  // Path-aware fields
-  programa: string;             // name of the active learning path
-  capsulasDelPrograma: number;  // total capsules in that path
-  pathProgress: string;         // "X/N" for the active path
-}
-
-/**
- * Note: OPT_OUT_FOOTER and TEMPLATES are now loaded from cache at runtime.
- * FIRST_CONTACT_INTRO is still static since it doesn't have external config.
- */
 const FIRST_CONTACT_INTRO = (nombre: string) => `Hola ${nombre}, soy Sofía de FIA Copilot 👋`;
 
-/**
- * Build the templates object with dynamic footer loaded from cache.
- * Called in generateMessage() to ensure footer is up-to-date.
- */
-function buildTemplates(footer: string): Record<string, (ctx: TemplateContext) => string> {
-  return {
-    reactivacion_inactividad_1: (ctx) => {
-      const capsulaNombre = ctx.capsulaTitle ? `${ctx.capsulaPendiente}: ${ctx.capsulaTitle}` : `${ctx.capsulaPendiente}`;
-      return `${FIRST_CONTACT_INTRO(ctx.nombre)}. ` +
-        `Te escribo porque dejaste pendiente la cápsula ${capsulaNombre} en la plataforma. ` +
-        `Cuando puedas retomar: ${ctx.deepLink}` + footer;
-    },
+// ─── Shared helpers ───
 
-    reactivacion_inactividad_2: (ctx) => {
-      const capsulaNombre = ctx.capsulaTitle ? `${ctx.capsulaPendiente}: ${ctx.capsulaTitle}` : `${ctx.capsulaPendiente}`;
-      const empresaCtx = ctx.empresa !== "tu empresa" ? ` (${ctx.empresa})` : "";
-      return `${ctx.nombre}, soy Sofía de FIA Copilot. ` +
-        `Hace ${ctx.daysInactive} días no entrás${empresaCtx}. La cápsula ${capsulaNombre} sigue ahí cuando quieras: ${ctx.deepLink}` + footer;
-    },
-
-    reactivacion_inactividad_3: (ctx) =>
-      `${ctx.nombre}, soy Sofía de FIA Copilot — última vez que te escribo por esto. ` +
-      `Si querés retomar respondé SI. O entrá directo: ${ctx.deepLink}` + footer,
-
-    celebracion_capsula: (ctx) =>
-      `${ctx.nombre}, soy Sofía de FIA Copilot 🎉 ` +
-      `Completaste la cápsula ${ctx.capsulaPendiente - 1} (${ctx.pathProgress} en ${ctx.programa}). ` +
-      `Próxima: ${ctx.deepLink}` + footer,
-
-    celebracion_capsula_final: (ctx) =>
-      `${ctx.nombre}, soy Sofía de FIA Copilot. Completaste todas las cápsulas de ${ctx.programa} 🎉 ` +
-      `Todo lo que construiste está en tu Bóveda: ${ctx.deepLink}` + footer,
-
-    bienvenida_diagnostico: (ctx) => {
-      const painCtx = ctx.painAreas.length > 0
-        ? ` Detectamos oportunidades en ${ctx.painAreas.slice(0, 2).join(" y ")}.`
-        : "";
-      const capsulaNombre = ctx.capsulaTitle ? `${ctx.capsulaPendiente}: ${ctx.capsulaTitle}` : `${ctx.capsulaPendiente}`;
-      return `${FIRST_CONTACT_INTRO(ctx.nombre)}, tu Coach. ` +
-        `Tu diagnóstico está listo — score ${ctx.overallScore}/100.${painCtx} ` +
-        `Empezá por la cápsula ${capsulaNombre}: ${ctx.deepLink}` + footer;
-    },
-
-    recuperacion_lead_frio: (ctx) => {
-      const empresaCtx = ctx.companySize === "emprendedor"
-        ? "Tenés herramientas de IA para aplicar vos solo paso a paso"
-        : `Hay pasos concretos para ${ctx.empresa}`;
-      return `${FIRST_CONTACT_INTRO(ctx.nombre)}. ` +
-        `Hace un tiempo hiciste el diagnóstico (score ${ctx.overallScore}). ${empresaCtx}. Mirá el plan: ${ctx.deepLink}` + footer;
-    },
-
-    resumen_semanal_sponsor: (ctx) =>
-      `Hola, soy Sofía de FIA Copilot. Te paso el resumen semanal de ${ctx.empresa}: ${ctx.deepLink}` + footer,
-
-    campana_activa: (ctx) => {
-      const capsulaNombre = ctx.capsulaTitle
-        ? `${ctx.capsulaPendiente}: ${ctx.capsulaTitle}`
-        : `${ctx.capsulaPendiente}`;
-      return `${FIRST_CONTACT_INTRO(ctx.nombre)}. ` +
-        `Tenés acceso especial activo. Tu próxima cápsula es la ${capsulaNombre}: ${ctx.deepLink}` + footer;
-    },
-  };
-}
-
-function getTemplateKey(opportunity: EngagementOpportunity): string {
-  const { journeyName, level, context } = opportunity;
-
-  if (journeyName === "reactivacion_inactividad") {
-    return `reactivacion_inactividad_${level ?? 1}`;
-  }
-
-  if (journeyName === "celebracion_capsula") {
-    return (context as { isLastCapsule?: boolean }).isLastCapsule
-      ? "celebracion_capsula_final"
-      : "celebracion_capsula";
-  }
-
-  return journeyName;
-}
-
-// ─── Shared context builder ───
-
-/** Maps assessment answers.m_size to a simplified segment label. */
+/** Maps assessment answers.m_size to a simplified segment label (used by inbound context). */
 function resolveCompanySize(assessment: AssessmentSubmission | null): "emprendedor" | "empresa" | null {
   const mSize = assessment?.answers?.["m_size"] as string | undefined;
   if (!mSize) return null;
@@ -183,49 +78,55 @@ function buildVaultContext(outputs: VaultOutput[]): string {
   return sections.join("\n\n");
 }
 
-function buildUserContext(
+/** Formats knowledge-base entries for grounding (anti-hallucination). */
+function formatKnowledge(entries: KnowledgeEntry[]): string {
+  if (entries.length === 0) return "";
+  const top = entries
+    .slice(0, 6)
+    .map((e) => `• ${e.title}: ${e.body_md.slice(0, 400)}`)
+    .join("\n");
+  return `\n\nCONOCIMIENTO DE FIA (basate SOLO en esto para hablar del contenido — no inventes):\n${top}`;
+}
+
+// ─── Weekly report context ───
+
+function buildWeeklyReportContext(
   opportunity: EngagementOpportunity,
-  vaultOutputs: VaultOutput[],
-  capsuleProgress: CapsuleProgress[],
-  scores: LeadScore | null,
-  assessment: AssessmentSubmission | null,
+  knowledge: KnowledgeEntry[],
 ): string {
-  const vaultContext = buildVaultContext(vaultOutputs);
-  const completedCount = capsuleProgress.filter((p) => p.status === "completed").length;
-  const painAreas = (opportunity.context.painAreas as string[] | undefined) ?? assessment?.pain_areas ?? [];
-  const companySize = resolveCompanySize(assessment);
+  const c = opportunity.context as WeeklyReportContext;
+  const profile = opportunity.profile;
+
+  const completed = c.completedThisWeek ?? [];
+  const completedLine =
+    completed.length > 0
+      ? completed.map((x) => `Cápsula ${x.number}${x.title ? `: ${x.title}` : ""}`).join(", ")
+      : "ninguna esta semana";
+
+  const next =
+    c.nextCapsuleNumber != null
+      ? `Cápsula ${c.nextCapsuleNumber}${c.nextCapsuleTitle ? `: ${c.nextCapsuleTitle}` : ""}${c.nextMiniAction ? ` — acción: ${c.nextMiniAction}` : ""}`
+      : "no hay próxima acción pendiente (programa completo)";
 
   return `
 PERFIL DEL USUARIO:
-- Nombre: ${opportunity.profile.name}
-- Empresa: ${opportunity.profile.company_name}
-- Industria: ${opportunity.profile.industry}
-- Objetivo: ${opportunity.profile.objective}
-- Temperatura: ${opportunity.profile.temperature}
-- Tamaño de empresa: ${companySize ?? "desconocido"}
-- Cápsulas completadas: ${completedCount} en total
+- Nombre: ${profile.name ?? "ahí"}
+- Empresa: ${profile.company_name ?? "—"}
+- Programa: ${c.programName}${c.isTrack ? " (track formativo)" : " (Método de 25 pasos / premium)"}
+- Progreso: ${c.pathProgress}
 
-SCORES:
-- Fit Score: ${scores?.fit_score ?? "N/A"}
-- Intent Score: ${scores?.intent_score ?? "N/A"}
-- Overall: ${scores?.overall_score ?? "N/A"}
+RESUMEN DE LA SEMANA:
+- Cápsulas/pasos completados esta semana: ${completedLine}
+- Eventos de actividad en la semana: ${c.weekActivityCount}
 
-DIAGNÓSTICO:
-- Áreas de dolor: ${painAreas.length > 0 ? painAreas.join(", ") : "no disponible"}
+PRÓXIMA ACCIÓN SUGERIDA:
+- ${next}
 
-BÓVEDA:
-${vaultContext}
-
-DATOS DEL JOURNEY:
-- Journey: ${opportunity.journeyName}
-- Nivel: ${opportunity.level ?? "N/A"}
-- Deep link a incluir: ${opportunity.deepLink}
-- Contexto adicional: ${JSON.stringify(opportunity.context)}
+DEEP LINK A INCLUIR: ${opportunity.deepLink}${formatKnowledge(knowledge)}
 `.trim();
 }
 
 // ─── AI generation (Codex + Claude) ───
-
 
 async function generateWithClaude(
   opportunity: EngagementOpportunity,
@@ -261,6 +162,7 @@ async function generateWithClaude(
       text: textBlock.text.trim(),
       journeyName: opportunity.journeyName,
       deepLink: opportunity.deepLink,
+      source: "claude",
     };
   } catch (error) {
     logger.error(
@@ -271,80 +173,28 @@ async function generateWithClaude(
   }
 }
 
-async function generateFromTemplate(
+/** Deterministic fallback when both AI providers are unavailable. */
+async function generateWeeklyFallback(
   opportunity: EngagementOpportunity,
-  capsuleProgress: CapsuleProgress[],
-  scores: LeadScore | null,
-  assessment: AssessmentSubmission | null,
-): Promise<GeneratedMessage | null> {
-  const completedCount = capsuleProgress.filter((p) => p.status === "completed").length;
-  const ctx_opportunity = opportunity.context as {
-    pendingCapsuleNumber?: number;
-    nextCapsuleNumber?: number;
-    recommendedCapsule?: number;
-    daysSinceLastEvent?: number;
-    painAreas?: string[];
-    nextCapsuleTitle?: string | null;
-    programName?: string;
-  };
-
-  const capsulaPendiente =
-    ctx_opportunity.pendingCapsuleNumber ??
-    ctx_opportunity.nextCapsuleNumber ??
-    ctx_opportunity.recommendedCapsule ??
-    1;
-
-  // Find capsule title: prefer context-provided title, fallback to progress array lookup
-  const capsuleEntry = capsuleProgress.find((p) => p.capsule_number === capsulaPendiente);
-
-  // Resolve path-aware fields
-  const pathTotals = await getPathTotals();
-  const userPaths = resolveUserPaths(capsuleProgress, pathTotals);
-  const activePath = userPaths.find((p) => p.activePath) ?? userPaths[0];
-  const programaName = ctx_opportunity.programName ?? activePath?.name ?? "Método FIA";
-  const capsulasDelPrograma = activePath?.total ?? completedCount;
-  const pathProgressCompleted = activePath?.completed ?? completedCount;
-  const pathProgressStr = `${pathProgressCompleted}/${capsulasDelPrograma}`;
-
-  const ctx: TemplateContext = {
-    nombre: opportunity.profile.name || "ahí",
-    empresa: opportunity.profile.company_name || "tu empresa",
-    objetivo: opportunity.profile.objective || "",
-    capsulaPendiente,
-    capsulaTitle: ctx_opportunity.nextCapsuleTitle ?? capsuleEntry?.capsule_title ?? null,
-    capsulasTotales: completedCount,
-    deepLink: opportunity.deepLink,
-    fitScore: scores?.fit_score ?? 0,
-    intentScore: scores?.intent_score ?? 0,
-    overallScore: scores?.overall_score ?? 0,
-    daysInactive: ctx_opportunity.daysSinceLastEvent ?? 0,
-    level: opportunity.level ?? 1,
-    painAreas: ctx_opportunity.painAreas ?? assessment?.pain_areas ?? [],
-    companySize: resolveCompanySize(assessment),
-    programa: programaName,
-    capsulasDelPrograma,
-    pathProgress: pathProgressStr,
-  };
-
-  const templateKey = getTemplateKey(opportunity);
-
-  // Load footer from cache (with fallback to default)
+): Promise<GeneratedMessage> {
   const footer = await getOptOutFooter();
-  const TEMPLATES = buildTemplates(footer);
-
-  const templateFn = TEMPLATES[templateKey];
-  if (!templateFn) {
-    logger.warn(
-      { templateKey, journey: opportunity.journeyName },
-      "Template not found — message generation skipped",
-    );
-    return null;
-  }
-
+  const c = opportunity.context as WeeklyReportContext;
+  const nombre = opportunity.profile.name || "ahí";
+  const done = (c.completedThisWeek ?? []).length;
+  const recap =
+    done > 0
+      ? `Esta semana avanzaste ${done} ${done === 1 ? "cápsula" : "cápsulas"} 🙌`
+      : "Esta semana no registramos avances, pero podés retomar cuando quieras";
+  const next =
+    c.nextCapsuleNumber != null
+      ? ` Tu próximo paso: ${c.nextCapsuleNumber}${c.nextCapsuleTitle ? ` (${c.nextCapsuleTitle})` : ""}.`
+      : "";
+  const text = `${FIRST_CONTACT_INTRO(nombre)} ${recap}.${next} ${opportunity.deepLink}` + footer;
   return {
-    text: templateFn(ctx),
+    text,
     journeyName: opportunity.journeyName,
     deepLink: opportunity.deepLink,
+    source: "template",
   };
 }
 
@@ -354,13 +204,10 @@ const MAX_MESSAGE_CHARS = 320;
 
 /**
  * Sanitize an outbound message before sending:
- * 1. Replace any URL the model invented with the canonical deepLink (if model wrote a different one)
+ * 1. Replace any URL the model invented with the canonical deepLink
  * 2. Enforce length (preserves deepLink at the end, even if body has to be truncated)
- *
- * This is the LAST line of defense — must guarantee the message ends with a clean,
- * complete URL that matches the engagement_log's deep_link (so click tracking works).
  */
-function enforceLength(text: string, deepLink: string): string {
+function enforceLength(text: string, deepLink: string): { text: string; truncated: boolean } {
   let safe = text.trim();
 
   // Step 1: if the model wrote a fiacopilot.com URL that differs from deepLink, swap it
@@ -373,27 +220,31 @@ function enforceLength(text: string, deepLink: string): string {
   }
 
   // Step 2: ensure the deepLink is present at the end of the message
-  if (!safe.includes(deepLink)) {
+  if (deepLink && !safe.includes(deepLink)) {
     safe = `${safe} ${deepLink}`;
   }
 
-  if (safe.length <= MAX_MESSAGE_CHARS) return safe;
+  if (safe.length <= MAX_MESSAGE_CHARS) return { text: safe, truncated: false };
 
   // Truncation: keep the deepLink at the end, trim body to fit
   const linkIndex = safe.lastIndexOf(deepLink);
   const bodyBudget = MAX_MESSAGE_CHARS - deepLink.length - 1; // 1 for space
   if (bodyBudget < 40) {
-    // Edge: deepLink alone almost fills the budget — return link + minimal context
-    return deepLink;
+    return { text: deepLink, truncated: true };
   }
   let body = safe.slice(0, linkIndex).trim();
   if (body.length > bodyBudget) {
-    // Cut on the last sentence boundary inside the budget
     const cut = body.slice(0, bodyBudget);
     const lastBoundary = Math.max(cut.lastIndexOf("."), cut.lastIndexOf("!"), cut.lastIndexOf("?"), cut.lastIndexOf("\n"));
     body = lastBoundary > bodyBudget * 0.5 ? cut.slice(0, lastBoundary + 1) : cut.replace(/\s+\S*$/, "") + "…";
   }
-  return `${body.trim()} ${deepLink}`;
+  return { text: `${body.trim()} ${deepLink}`, truncated: true };
+}
+
+/** Applies enforceLength to a GeneratedMessage and carries the truncated flag. */
+function finalizeMessage(msg: GeneratedMessage): GeneratedMessage {
+  const { text, truncated } = enforceLength(msg.text, msg.deepLink);
+  return { ...msg, text, truncated };
 }
 
 // ─── Capsule cache (never changes — avoid fetching on every inbound message) ───
@@ -427,7 +278,6 @@ function nextFallback(userId: string): string {
 }
 
 // Cooldown per-user: si IA falla 3 veces en <5min para este user, devolver fallback directo
-// Map<userId, number[]> donde el array son timestamps de fallas recientes
 const _aiFailureByUser = new Map<string, number[]>();
 const COOLDOWN_WINDOW_MS = 5 * 60 * 1000;
 const COOLDOWN_THRESHOLD = 3;
@@ -436,7 +286,6 @@ function isInAiCooldown(userId: string): boolean {
   const now = Date.now();
   const failures = _aiFailureByUser.get(userId) ?? [];
   const recent = failures.filter((t) => now - t < COOLDOWN_WINDOW_MS);
-  // Keep map clean — overwrite with pruned list
   if (recent.length !== failures.length) _aiFailureByUser.set(userId, recent);
   return recent.length >= COOLDOWN_THRESHOLD;
 }
@@ -446,7 +295,6 @@ function recordAiFailure(userId: string): void {
   const failures = (_aiFailureByUser.get(userId) ?? []).filter((t) => now - t < COOLDOWN_WINDOW_MS);
   failures.push(now);
   _aiFailureByUser.set(userId, failures);
-  // Best-effort: cap total entries to prevent unbounded growth (older users get evicted)
   if (_aiFailureByUser.size > 1000) {
     const oldest = Array.from(_aiFailureByUser.entries())
       .sort(([, a], [, b]) => Math.max(...a) - Math.max(...b))[0];
@@ -455,36 +303,23 @@ function recordAiFailure(userId: string): void {
 }
 
 // ─── User fact extraction ───
-// Heurísticas simples — captura datos auto-revelados sin llamar al LLM otra vez
 const FACT_PATTERNS: Array<{ regex: RegExp; format: (m: RegExpMatchArray) => string }> = [
-  // "tengo una agencia de 8 personas" / "somos 12 en la empresa"
   { regex: /\b(?:tengo|tenemos|somos|son)\b[^.!?]{0,40}\b(\d{1,3})\s*(?:personas|empleados|colaboradores|gente)/i, format: (m) => `Tamaño de equipo: ${m[1]} personas` },
-  // "soy contador / abogado / dueño / fundador / CEO / freelance / consultor"
   { regex: /\bsoy\s+(contador|abogado|dueñ[oa]|fundador[a]?|ceo|director[a]?|gerente|freelance|consultor[a]?|emprendedor[a]?|coach|m[ée]dico|arquitect[oa]|ingenier[oa]|diseñador[a]?|programador[a]?|developer)\b/i, format: (m) => `Profesión: ${m[1]}` },
-  // "tengo una agencia / empresa / pyme / startup / consultora / estudio"
   { regex: /\b(?:tengo|manejo|dirijo|fundé|fund[ée])\s+(?:una?\s+)?(agencia|empresa|pyme|startup|consultora|estudio|negocio|comercio|tienda|fábrica|inmobiliaria|clínica|gimnasio|escuela)\b/i, format: (m) => `Tipo de negocio: ${m[1]}` },
-  // "facturamos X / facturo X"
   { regex: /\bfactur[oa]?(?:mos)?\s+(?:unos?\s+)?\$?\s*([\d.,kKmM]+)/i, format: (m) => `Facturación mencionada: ${m[1]}` },
-  // "estoy atascado / trabado / no puedo con la cápsula X"
   { regex: /\b(?:atascad[oa]|trabad[oa]|no\s+puedo|cuesta)\b[^.!?]{0,30}\bc[áa]psula\s+(\d+)/i, format: (m) => `Atascado en cápsula ${m[1]}` },
-  // "uso ChatGPT / Claude / Gemini"
   { regex: /\b(?:uso|trabajo\s+con|conozco)\s+(chatgpt|claude|gemini|copilot|midjourney|dall[\s-]?e)/i, format: (m) => `Usa: ${m[1]}` },
-  // "no tengo tiempo / estoy ocupado / a fin de mes / la próxima semana"
   { regex: /\b(no\s+tengo\s+tiempo|estoy\s+ocupad[oa]|a\s+fin\s+de\s+mes|la\s+pr[oó]xima\s+semana|el\s+pr[oó]ximo\s+mes)\b/i, format: (m) => `Disponibilidad: ${m[1].toLowerCase()}` },
 ];
 
-// Max length per fact in the rotating memory (defends against memory bloat).
 const FACT_MAX_LEN = 120;
 
-/** Sanitize a fact: strip newlines, collapse whitespace, cap length, drop suspicious patterns. */
 function sanitizeFact(fact: string): string | null {
-  // Collapse newlines and whitespace
   let s = fact.replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();
   if (s.length === 0) return null;
-  // Drop facts that look like prompt-injection attempts
   const suspicious = /\b(ignore|disregard|forget|olvidate|olvidá|sistema|system\s*prompt|admin|password|api[_\s]?key|bearer|sudo)\b/i;
   if (suspicious.test(s)) return null;
-  // Cap length
   if (s.length > FACT_MAX_LEN) s = s.slice(0, FACT_MAX_LEN - 1) + "…";
   return s;
 }
@@ -501,13 +336,10 @@ function extractFacts(text: string): string[] {
   return found;
 }
 
-/** Merge new facts with existing, keep last 8 unique (LRU style). */
 function mergeFacts(existing: string[], incoming: string[]): string[] {
   const seen = new Set<string>();
   const merged: string[] = [];
-  // New facts first (most relevant)
   for (const f of [...incoming, ...existing]) {
-    // Re-sanitize existing facts on read (defensive — handles old data without sanitization)
     const cleaned = sanitizeFact(f);
     if (!cleaned) continue;
     const key = cleaned.toLowerCase();
@@ -531,11 +363,11 @@ const BUSY_PATTERNS = [
 /** Returns pause duration in hours, or 0 if user didn't signal busy. */
 export function detectBusySignal(text: string): number {
   const lower = text.toLowerCase();
-  if (/\bma[ñn]ana\b/i.test(lower)) return 18; // hablamos mañana → 18h
+  if (/\bma[ñn]ana\b/i.test(lower)) return 18;
   if (/\bla\s+pr[oó]xima\s+semana\b/i.test(lower)) return 7 * 24;
   if (/\bel\s+pr[oó]ximo\s+mes|fin\s+de\s+mes\b/i.test(lower)) return 14 * 24;
   if (/\b(estoy\s+ocupad[oa]|no\s+tengo\s+tiempo|reuni[oó]n)\b/i.test(lower)) return 24;
-  for (const p of BUSY_PATTERNS) if (p.test(lower)) return 8; // default: 8h
+  for (const p of BUSY_PATTERNS) if (p.test(lower)) return 8;
   return 0;
 }
 
@@ -545,12 +377,6 @@ const useClaudeAI =
   config.anthropic.apiKey !== "placeholder" &&
   config.anthropic.apiKey !== "";
 
-/**
- * Genera una respuesta AI a un mensaje libre entrante de WhatsApp.
- * Intenta Codex (ChatGPT Plus) primero, luego Claude como fallback.
- * Guarda el intercambio en wa_conversation_history para memoria de conversación.
- * Retorna null si ambos fallan (el caller usa el texto fijo).
- */
 function resolveSegmentInfo(segment: UserSegment): { name: string; objective: string } {
   if (segment.isFiaEmpresas) {
     if (segment.orgRole === "sponsor") {
@@ -570,7 +396,7 @@ function resolveSegmentInfo(segment: UserSegment): { name: string; objective: st
     return {
       name: "FIA Ventas - Alumno",
       objective:
-        "El usuario es alumno de FIA Ventas. Tu objetivo: ayudarlo a avanzar en las 10 semanas. Conocé bien el contenido de cada semana. Si pregunta sobre contenido, explicalo con las herramientas del programa (ChatGPT, ManyChat, Waalaxy, etc.). Si está atascado en una semana específica, ayudalo a desbloquear.",
+        "El usuario es alumno de FIA Ventas. Tu objetivo: ayudarlo a avanzar en las 10 semanas. Conocé bien el contenido de cada semana. Si pregunta sobre contenido, explicalo con las herramientas del programa. Si está atascado en una semana específica, ayudalo a desbloquear.",
     };
   }
   if (segment.isPaid) {
@@ -596,24 +422,19 @@ export async function generateInboundReply(
   segment: UserSegment,
 ): Promise<string | null> {
   try {
-    // Load Sofia's system prompt from cache (DB-editable, with hardcoded fallback)
     const sofiaPrompt = await getSofiaSystemPrompt();
 
-    // Load history + state first to decide whether this is a new or ongoing conversation
     const [history, state] = await Promise.all([
       getConversationHistory(userId, 10),
       getConversationState(userId),
     ]);
 
-    // ── Cold start vs continuation ──
-    // First turn (no history) → load full context (perfil + cápsulas + bóveda + scores)
-    // Subsequent turns → only load minimal context (perfil + cápsula en progreso + facts)
-    // Esto reduce ~70% los tokens en conversaciones largas → respuestas más rápidas y enfocadas.
     const isColdStart = history.length === 0;
 
     let userContext: string;
     if (isColdStart) {
-      const [profile, vaultOutputs, capsuleProgress, capsules, scores, assessment] =
+      const programSlug = segment.enrolledPrograms[0]?.slug ?? null;
+      const [profile, vaultOutputs, capsuleProgress, capsules, scores, assessment, knowledge] =
         await Promise.all([
           getProfileWithWhatsapp(userId),
           getVaultOutputsForUser(userId),
@@ -621,6 +442,7 @@ export async function generateInboundReply(
           getCapsulesCached(),
           getLeadScoreForUser(userId),
           getAssessmentForUser(userId),
+          getKnowledge(programSlug),
         ]);
 
       const completedCount = capsuleProgress.filter((p) => p.status === "completed").length;
@@ -640,7 +462,6 @@ export async function generateInboundReply(
 
       const { name: segmentName, objective: segmentObjective } = resolveSegmentInfo(segment);
 
-      // Resolve path info for inbound context
       const pathTotalsInbound = await getPathTotals();
       const userPathsInbound = resolveUserPaths(capsuleProgress, pathTotalsInbound);
       const activePathInbound = userPathsInbound.find((p) => p.activePath) ?? userPathsInbound[0];
@@ -673,9 +494,8 @@ DIAGNÓSTICO:
 - Áreas de dolor: ${painAreas.length > 0 ? painAreas.join(", ") : "no disponible"}
 
 BÓVEDA:
-${vaultContext}${profile?.preferences?.['sofia_notes'] ? `\n\nCONTEXTO ESPECIAL DE ESTA CONVERSACIÓN:\n${profile.preferences['sofia_notes'] as string}` : ""}`.trim();
+${vaultContext}${formatKnowledge(knowledge)}${profile?.preferences?.['sofia_notes'] ? `\n\nCONTEXTO ESPECIAL DE ESTA CONVERSACIÓN:\n${profile.preferences['sofia_notes'] as string}` : ""}`.trim();
     } else {
-      // Continuation: minimal context — el historial ya contiene el resto
       const [profile, capsuleProgress, capsules] = await Promise.all([
         getProfileWithWhatsapp(userId),
         getCapsuleProgressForUser(userId),
@@ -728,7 +548,6 @@ ${vaultContext}${profile?.preferences?.['sofia_notes'] ? `\n\nCONTEXTO ESPECIAL 
 
     let reply: string | null = null;
 
-    // ── Cooldown: si IA falló mucho recientemente para este usuario, ir directo a fallback ──
     if (isInAiCooldown(userId)) {
       logger.warn({ userId }, "AI in cooldown for this user — using fallback without calling provider");
     } else {
@@ -772,16 +591,13 @@ ${vaultContext}${profile?.preferences?.['sofia_notes'] ? `\n\nCONTEXTO ESPECIAL 
       if (!reply) recordAiFailure(userId);
     }
 
-    // Si ambos proveedores IA fallaron, usar fallback rotativo + avisar a Axel
     if (!reply) {
       const fallback = nextFallback(userId);
       logger.error({ userId, incomingText: incomingText.slice(0, 100) }, "AI unavailable — both Codex and Claude failed (or cooldown)");
       await appendConversationMessages(userId, [{ role: "assistant", content: fallback }]);
-      // Persist facts even if reply failed
       if (updatedFacts.length > 0) {
         await upsertConversationState(userId, { userFacts: updatedFacts });
       }
-      // Avisar a Axel — IA caída es crítico, Sofía suena robótica
       try {
         const { evolutionManager } = await import("../senders/whatsappEvolution");
         await evolutionManager.notifyAdmin(`🚨 IA caída — ambos providers fallaron.\nUsuario: ${userId}\nMsg: "${incomingText.slice(0, 150)}"`);
@@ -789,10 +605,8 @@ ${vaultContext}${profile?.preferences?.['sofia_notes'] ? `\n\nCONTEXTO ESPECIAL 
       return fallback;
     }
 
-    // Smart trim: cortar en último punto/coma antes de 300 en lugar de slice brutal
     const finalReply = smartTrim(reply, MAX_MESSAGE_CHARS);
 
-    // Save Sofía's reply to history + persist state (facts + reply timestamp)
     await appendConversationMessages(userId, [{ role: "assistant", content: finalReply }]);
     const newTimestamps = [...recentReplies, new Date().toISOString()].slice(-20);
     await upsertConversationState(userId, {
@@ -813,7 +627,6 @@ ${vaultContext}${profile?.preferences?.['sofia_notes'] ? `\n\nCONTEXTO ESPECIAL 
 function smartTrim(text: string, maxChars: number): string {
   if (text.length <= maxChars) return text;
   const slice = text.slice(0, maxChars);
-  // Buscar último '.', '!', '?' o '\n' (en ese orden de preferencia)
   const lastSentence = Math.max(
     slice.lastIndexOf("."),
     slice.lastIndexOf("!"),
@@ -823,12 +636,10 @@ function smartTrim(text: string, maxChars: number): string {
   if (lastSentence > maxChars * 0.5) {
     return slice.slice(0, lastSentence + 1).trim();
   }
-  // Si no hay buen punto de corte, intentar coma
   const lastComma = slice.lastIndexOf(",");
   if (lastComma > maxChars * 0.6) {
     return slice.slice(0, lastComma).trim() + "…";
   }
-  // Último recurso: cortar en último espacio
   const lastSpace = slice.lastIndexOf(" ");
   if (lastSpace > maxChars * 0.7) {
     return slice.slice(0, lastSpace).trim() + "…";
@@ -836,54 +647,33 @@ function smartTrim(text: string, maxChars: number): string {
   return slice.trim() + "…";
 }
 
+/**
+ * Generate the outbound weekly report message for an opportunity.
+ * Chain: Codex → Claude → deterministic template fallback.
+ */
 export async function generateMessage(
   opportunity: EngagementOpportunity,
 ): Promise<GeneratedMessage | null> {
-  // Fetch all user data once — shared across all generation paths
-  // Also fetch last 5 messages of conversation so outbound respects what user said
-  const [vaultOutputs, capsuleProgress, scores, assessment, recentHistory, state] = await Promise.all([
-    getVaultOutputsForUser(opportunity.userId),
-    getCapsuleProgressForUser(opportunity.userId),
-    getLeadScoreForUser(opportunity.userId),
-    getAssessmentForUser(opportunity.userId),
+  const c = opportunity.context as WeeklyReportContext;
+
+  // Recent conversation + facts so the report respects what the user last said
+  const [recentHistory, state, knowledge] = await Promise.all([
     getConversationHistory(opportunity.userId, 5),
     getConversationState(opportunity.userId),
+    getKnowledge(c.programSlug ?? null),
   ]);
 
-  const userContext = buildUserContext(opportunity, vaultOutputs, capsuleProgress, scores, assessment);
+  const reportContext = buildWeeklyReportContext(opportunity, knowledge);
 
-  // Inject últimos mensajes de conversación si existen (para no insistir si dijo "no")
   const conversationContext = recentHistory.length > 0
-    ? `\n\nÚLTIMOS MENSAJES DE LA CONVERSACIÓN POR WHATSAPP (chronological):\n${recentHistory.map((m) => `${m.role === "user" ? "Usuario" : "Sofía"}: ${m.content.slice(0, 200)}`).join("\n")}\n\nIMPORTANTE: si el usuario expresó que está ocupado, no quiere ahora, o ya respondió a este journey, NO insistas — saltea o postergá.`
+    ? `\n\nÚLTIMOS MENSAJES DE LA CONVERSACIÓN POR WHATSAPP (chronological):\n${recentHistory.map((m) => `${m.role === "user" ? "Usuario" : "Sofía"}: ${m.content.slice(0, 200)}`).join("\n")}\n\nIMPORTANTE: si el usuario pidió no recibir mensajes o dijo que está ocupado, sé breve y no insistas.`
     : "";
 
-  // Inject hechos del usuario para personalización
   const factsContext = state.userFacts.length > 0
     ? `\n\nHECHOS DEL USUARIO (datos que mencionó en conversaciones previas):\n${state.userFacts.map((f) => `- ${f}`).join("\n")}`
     : "";
 
-  const fullContext = `${userContext}${conversationContext}${factsContext}`;
-
-  // ── A/B Test check — if an active test targets this journey, use the variant ──
-  const abResult = await getAbVariantForJourney(opportunity.journeyName, opportunity.userId);
-  if (abResult) {
-    const profile = opportunity.profile;
-    let text = abResult.text
-      .replace(/\{\{nombre\}\}/g, profile.name ?? "ahí")
-      .replace(/\{\{empresa\}\}/g, profile.company_name ?? "tu empresa")
-      .replace(/\{\{deepLink\}\}/g, opportunity.deepLink);
-    logger.info(
-      { userId: opportunity.userId, journey: opportunity.journeyName, ab: abResult.testName, variant: abResult.variant },
-      "A/B variant used instead of AI generation",
-    );
-    return {
-      text: enforceLength(text, opportunity.deepLink),
-      journeyName: opportunity.journeyName,
-      deepLink: opportunity.deepLink,
-      abTestName: abResult.testName,
-      abVariant: abResult.variant,
-    };
-  }
+  const fullContext = `${reportContext}${conversationContext}${factsContext}`;
 
   const [journeyPrompt, sofiaPrompt] = await Promise.all([
     getJourneyPrompt(opportunity.journeyName),
@@ -897,37 +687,25 @@ export async function generateMessage(
   );
 
   if (codexText) {
-    logger.info(
-      { userId: opportunity.userId, journey: opportunity.journeyName, mode: "codex" },
-      "Message generated with Codex",
-    );
-    return {
-      text: enforceLength(codexText, opportunity.deepLink),
+    logger.info({ userId: opportunity.userId, journey: opportunity.journeyName, mode: "codex" }, "Message generated with Codex");
+    return finalizeMessage({
+      text: codexText,
       journeyName: opportunity.journeyName,
       deepLink: opportunity.deepLink,
-    };
+      source: "codex",
+    });
   }
 
   // 2. Try Claude API if Codex unavailable
   if (useClaudeAI) {
     const aiMessage = await generateWithClaude(opportunity, fullContext, journeyPrompt);
     if (aiMessage) {
-      logger.info(
-        { userId: opportunity.userId, journey: opportunity.journeyName, mode: "claude" },
-        "Message generated with Claude",
-      );
-      return { ...aiMessage, text: enforceLength(aiMessage.text, aiMessage.deepLink) };
+      logger.info({ userId: opportunity.userId, journey: opportunity.journeyName, mode: "claude" }, "Message generated with Claude");
+      return finalizeMessage(aiMessage);
     }
   }
 
-  // 3. Fallback to templates (loads footer from cache)
-  const templateMessage = await generateFromTemplate(opportunity, capsuleProgress, scores, assessment);
-  logger.info(
-    { userId: opportunity.userId, journey: opportunity.journeyName, mode: "template" },
-    "Message generated from template",
-  );
-  if (templateMessage) {
-    return { ...templateMessage, text: enforceLength(templateMessage.text, templateMessage.deepLink) };
-  }
-  return null;
+  // 3. Deterministic fallback
+  logger.info({ userId: opportunity.userId, journey: opportunity.journeyName, mode: "template" }, "Message generated from template");
+  return finalizeMessage(await generateWeeklyFallback(opportunity));
 }

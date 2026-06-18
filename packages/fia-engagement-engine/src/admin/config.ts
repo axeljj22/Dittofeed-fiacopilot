@@ -147,16 +147,38 @@ export function getConfigEditorHtml(_baseUrl: string): string {
     <h1>⚙️ Configuración del Engine</h1>
     <p class="subtitle">Edita prompts, templates y respuestas sin deploy</p>
 
-    <!-- Sistema Prompt de Sofía -->
+    <!-- Sistema Prompt de Sofía (modular: personalidad / catálogo / grounding) -->
     <div class="section">
-      <div class="section-title">
-        <span>Sistema Prompt — Sofía</span>
-        <span class="updated-at" id="ts-sofia">—</span>
-      </div>
-      <textarea id="config-sofia_system_prompt" placeholder="Sistema prompt..."></textarea>
-      <div class="char-count"><span id="count-sofia">0</span>/10000</div>
-      <button class="btn" onclick="saveConfig('sofia_system_prompt')">Guardar</button>
-      <div class="status" id="status-sofia_system_prompt"></div>
+      <div class="section-title"><span>Sofía — Personalidad y tono</span></div>
+      <p style="font-size:12px;color:#9394a5;margin-bottom:12px">Quién es, cómo escribe, emojis, reglas de outbound y opt-out.</p>
+      <textarea id="config-sofia_personality" placeholder="Personalidad de Sofía..." style="min-height:200px"></textarea>
+      <button class="btn" onclick="saveConfig('sofia_personality')">Guardar</button>
+      <div class="status" id="status-sofia_personality"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-title"><span>Sofía — Catálogo de programas</span></div>
+      <p style="font-size:12px;color:#9394a5;margin-bottom:12px">Lista breve de programas que Sofía puede enumerar. El detalle de cápsulas/pasos lo lee de la base de datos.</p>
+      <textarea id="config-sofia_programs_catalog" placeholder="Catálogo de programas..." style="min-height:180px"></textarea>
+      <button class="btn" onclick="saveConfig('sofia_programs_catalog')">Guardar</button>
+      <div class="status" id="status-sofia_programs_catalog"></div>
+    </div>
+
+    <div class="section">
+      <div class="section-title"><span>Sofía — Reglas anti-alucinación</span></div>
+      <p style="font-size:12px;color:#9394a5;margin-bottom:12px">Cómo debe responder cuando no tiene la info en el contexto.</p>
+      <textarea id="config-sofia_grounding_rules" placeholder="Reglas de grounding..." style="min-height:120px"></textarea>
+      <button class="btn" onclick="saveConfig('sofia_grounding_rules')">Guardar</button>
+      <div class="status" id="status-sofia_grounding_rules"></div>
+    </div>
+
+    <!-- Mensaje de activación -->
+    <div class="section">
+      <div class="section-title"><span>Mensaje de activación de Sofía</span></div>
+      <p style="font-size:12px;color:#9394a5;margin-bottom:12px">Se envía cuando el usuario activa Sofía desde el front. Variable: <code>{{nombre}}</code>.</p>
+      <textarea id="config-activation_welcome_message" placeholder="Hola {{nombre}}, soy Sofía..."></textarea>
+      <button class="btn" onclick="saveConfig('activation_welcome_message')">Guardar</button>
+      <div class="status" id="status-activation_welcome_message"></div>
     </div>
 
     <!-- Journey Prompts -->
@@ -210,53 +232,12 @@ export function getConfigEditorHtml(_baseUrl: string): string {
       <div class="status" id="status-positive_short_responses"></div>
     </div>
 
-    <!-- Seguimiento por Segmento (paid vs free) -->
-    <div class="section">
-      <div class="section-title">
-        <span>Cadencia de Seguimiento por Segmento</span>
-        <span class="updated-at" id="ts-segment_followup_config">—</span>
-      </div>
-      <p style="font-size: 12px; color: #9394a5; margin-bottom: 12px;">
-        JSON con umbrales de inactividad y cooldown por segmento.
-        <code style="background:#1e1f2e;padding:2px 6px;border-radius:4px">paid</code> = alumnos pagos,
-        <code style="background:#1e1f2e;padding:2px 6px;border-radius:4px">free</code> = método libre.
-        <br>Campos: <code>inactivityDays</code>, <code>levels</code> (array), <code>campaignCooldownDays</code>.
-      </p>
-      <textarea id="config-segment_followup_config" style="min-height:160px" placeholder='{
-  "paid":  { "inactivityDays": 3, "levels": [3, 7, 14], "campaignCooldownDays": 4 },
-  "free":  { "inactivityDays": 5, "levels": [5, 10, 20], "campaignCooldownDays": 7 }
-}'></textarea>
-      <button class="btn" onclick="saveConfig('segment_followup_config')">Guardar</button>
-      <div class="status" id="status-segment_followup_config"></div>
-    </div>
-
-    <!-- Mapa Slug → Path (fallback pre-migración) -->
-    <div class="section">
-      <div class="section-title">
-        <span>Mapa Programa Slug → Path (fallback)</span>
-        <span class="updated-at" id="ts-program_slug_path_map">—</span>
-      </div>
-      <p style="font-size: 12px; color: #9394a5; margin-bottom: 12px;">
-        Puente provisional entre <code style="background:#1e1f2e;padding:2px 6px;border-radius:4px">program_slug</code> y el
-        <code style="background:#1e1f2e;padding:2px 6px;border-radius:4px">path_id</code> de cada programa en
-        <code>learning_paths</code>. Solo se usa si la migración de BD aún no agrega
-        <code>program_slug</code> e <code>is_paid</code> a esa tabla.
-        Clave = UUID del path, valor = <code>&#123; slug, isPaid &#125;</code>.
-      </p>
-      <textarea id="config-program_slug_path_map" style="min-height:160px" placeholder='{
-  "b2c3d4e5-f6a7-8901-bcde-f12345678901": { "slug": "fia-ventas",   "isPaid": true },
-  "c3d4e5f6-a7b8-9012-cdef-123456789012": { "slug": "fia-empresas", "isPaid": true },
-  "d4e5f6a7-b8c9-0123-defa-234567890123": { "slug": "fia-agentica", "isPaid": true }
-}'></textarea>
-      <button class="btn" onclick="saveConfig('program_slug_path_map')">Guardar</button>
-      <div class="status" id="status-program_slug_path_map"></div>
-    </div>
-
     <div class="nav">
       ${ADMIN_LOGOUT_LINK}
       <a href="/admin/engagement">← Dashboard</a>
+      <a href="/admin/observability">📊 Observabilidad</a>
+      <a href="/admin/schedule">⏰ Cadencia</a>
       <a href="/admin/design">✏️ Visual Designer</a>
-      <a href="/admin/whatsapp">📱 WhatsApp</a>
       <a href="/admin/codex">🤖 Codex</a>
     </div>
   </div>

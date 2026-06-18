@@ -14,6 +14,7 @@ export interface Profile {
   org_role: string | null;      // program role: 'sponsor' | 'implementador' | 'referente'
   phone: string | null;         // used as WhatsApp number
   whatsapp_opt_in: boolean;     // true = user accepts WA messages
+  sofia_activated_at: string | null; // set when user confirms Sofía activation; null = not active / deactivated
   temperature: string | null;   // CRM label: 'frio' | 'tibio' | 'caliente'
   country: string | null;
   is_admin: boolean;
@@ -133,18 +134,19 @@ export interface EngagementLogInsert {
   status: "sent" | "failed" | "opted_out" | "skipped_paused" | "failed_pending_retry";
   message: string;
   channel: string; // 'whatsapp'
-  trigger_type: string; // 'campaign' | 'scheduled' | 'manual' | 'activation'
+  trigger_type: string; // 'weekly_report' | 'inbound_reply' | 'manual' | 'activation'
   metadata: {
     journey_name: string;
     whatsapp_number: string;
     deep_link: string;
-    level?: number; // journey level for multi-step journeys (e.g. inactivity 1/2/3)
     paused_until?: string; // ISO timestamp if status === 'skipped_paused'
     retry_count?: number; // # of attempts if status === 'failed_pending_retry'
     last_retry_at?: string; // ISO timestamp of last retry
     last_error?: string; // last error message
-    ab_test_name?: string; // A/B test name if variant was used
-    ab_variant?: "a" | "b"; // which variant was sent
+    responded?: boolean; // user replied to this message
+    response_text?: string; // text of the user's reply
+    recovered?: boolean; // a failed message succeeded on retry
+    [key: string]: unknown; // forward-compatible extra fields
   };
 }
 
@@ -155,21 +157,14 @@ export interface EngagementLog extends EngagementLogInsert {
 
 // ─── Detector output ───
 
-export type JourneyName =
-  | "reactivacion_inactividad"
-  | "celebracion_capsula"
-  | "bienvenida_diagnostico"
-  | "recuperacion_lead_frio"
-  | "resumen_semanal_sponsor"
-  | "campana_activa";
+/** Only one journey remains: the personalized weekly report. */
+export type JourneyName = "reporte_semanal";
 
 export interface EngagementOpportunity {
   userId: string;
   journeyName: JourneyName;
   profile: Profile;
-  /** Context data specific to each journey type */
+  /** Context data for the weekly report (recap + next action, see weeklyReport detector) */
   context: Record<string, unknown>;
   deepLink: string;
-  /** Level for multi-step journeys (e.g., inactivity 1/2/3) */
-  level?: number;
 }

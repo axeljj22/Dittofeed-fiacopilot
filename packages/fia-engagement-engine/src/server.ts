@@ -10,13 +10,14 @@ import http from "http";
 import { config } from "./config";
 import { logger } from "./logger";
 import { processIncomingResponse } from "./senders/responses";
-import { sendWhatsAppMessage, sendCampaignMessage } from "./senders/whatsapp";
+import { sendWhatsAppMessage } from "./senders/whatsapp";
 import { evolutionManager } from "./senders/whatsappEvolution";
-import { getSupabaseClient, upsertCampaignLead, getPathTotals, resolveUserPaths } from "./db/supabase";
-import { runAllDetectors, runSponsorReports } from "./orchestrator";
+import { getSupabaseClient, getPathTotals, resolveUserPaths } from "./db/supabase";
+import { runWeeklyReport } from "./orchestrator";
 import { getAdminPanelHtml } from "./admin/panel";
 import { isCodexAvailable, invalidateCodexAuthCache } from "./generators/codexGenerator";
-import { warmCache, setCachedConfig } from "./config/engineConfigCache";
+import { warmCache, setCachedConfig, getReportSchedule } from "./config/engineConfigCache";
+import { rescheduleWeeklyReport } from "./reportScheduler";
 import fs from "fs";
 
 function parseBody(req: http.IncomingMessage): Promise<string> {
@@ -244,73 +245,7 @@ async function handleWebhookEvolution(
 }
 
 /**
- * POST /api/campaign/send — send a pre-written message to a specific phone number.
- * Used for manual outreach campaigns. Logs to engagement_log.
- * Body: { phone: string, message: string, journeyName?: string }
- */
-async function handleCampaignSend(
-  req: http.IncomingMessage,
-  res: http.ServerResponse,
-): Promise<void> {
-  if (!requireAdminAuth(req, res)) return;
-
-  let body: { phone?: string; message?: string; journeyName?: string; name?: string };
-  try {
-    body = JSON.parse(await parseBody(req));
-  } catch {
-    jsonResponse(res, 400, { error: "Invalid JSON" });
-    return;
-  }
-
-  if (!body.phone || !body.message) {
-    jsonResponse(res, 400, { error: "phone and message are required" });
-    return;
-  }
-
-  const journeyName = body.journeyName ?? "waitlist_outreach";
-  const normalizedPhone = body.phone.replace(/\D/g, "");
-
-  // Defensive rate limit: max 4 campaign sends per hour
-  const oneHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-  const { count: recentCount } = await getSupabaseClient()
-    .from("engagement_log")
-    .select("id", { count: "exact", head: true })
-    .contains("metadata", { journey_name: journeyName })
-    .gte("created_at", oneHourAgo);
-
-  if ((recentCount ?? 0) >= 4) {
-    jsonResponse(res, 429, { error: "Rate limit: max 4 campaign sends per hour" });
-    return;
-  }
-
-  // Look up userId by phone — auto-create profile if not found
-  const { data: profileRow } = await getSupabaseClient()
-    .from("profiles")
-    .select("id")
-    .eq("phone", normalizedPhone)
-    .single();
-
-  let userId = (profileRow as { id: string } | null)?.id ?? null;
-  if (!userId) {
-    userId = await upsertCampaignLead(normalizedPhone, body.name ?? "");
-  }
-
-  try {
-    const success = await sendCampaignMessage(body.phone, userId, body.message, journeyName);
-    jsonResponse(res, success ? 200 : 500, {
-      success,
-      phone: normalizedPhone,
-      userId,
-      sentAt: new Date().toISOString(),
-    });
-  } catch (error) {
-    logger.error({ error, phone: normalizedPhone }, "Campaign send failed");
-    jsonResponse(res, 500, { error: "Send failed" });
-  }
-}
-
-/**
- * POST /api/trigger — manually run detectors (admin only)
+ * POST /api/trigger — manually run the weekly report (admin only)
  */
 async function handleManualTrigger(
   req: http.IncomingMessage,
@@ -319,16 +254,8 @@ async function handleManualTrigger(
   if (!requireAdminAuth(req, res)) return;
 
   try {
-    const body = JSON.parse(await parseBody(req));
-    const detector = body.detector ?? "all";
-
-    if (detector === "sponsor") {
-      await runSponsorReports();
-    } else {
-      await runAllDetectors();
-    }
-
-    jsonResponse(res, 200, { status: "triggered", detector });
+    await runWeeklyReport();
+    jsonResponse(res, 200, { status: "triggered", job: "weekly_report" });
   } catch (error) {
     logger.error({ error }, "Manual trigger failed");
     jsonResponse(res, 500, { error: "Trigger failed" });
@@ -336,8 +263,8 @@ async function handleManualTrigger(
 }
 
 /**
- * POST /api/test/message — send a test message through the full Sofía pipeline (admin only)
- * Body: { userId: "uuid", journey?: "bienvenida_diagnostico" | "reactivacion_inactividad" | ... }
+ * POST /api/test/message — send a test weekly report through the full Sofía pipeline (admin only)
+ * Body: { userId: "uuid" }                              (builds the real weekly-report context)
  * Or:   { phone: "5491125120212", text: "hardcoded text" }  (raw send, no AI)
  */
 async function handleTestMessage(
@@ -349,7 +276,6 @@ async function handleTestMessage(
   try {
     const body = JSON.parse(await parseBody(req)) as {
       userId?: string;
-      journey?: string;
       phone?: string;
       text?: string;
     };
@@ -362,7 +288,7 @@ async function handleTestMessage(
       return;
     }
 
-    // Full pipeline: fetch profile → generate with Sofía → send
+    // Full pipeline: fetch profile → build weekly report context → generate → send
     if (!body.userId) {
       jsonResponse(res, 400, { error: "userId or phone+text required" });
       return;
@@ -371,6 +297,7 @@ async function handleTestMessage(
     const { getProfileWithWhatsapp } = await import("./db/supabase");
     const { generateMessage } = await import("./generators/messageGenerator");
     const { sendWhatsAppMessage } = await import("./senders/whatsapp");
+    const { buildWeeklyReportOpportunity } = await import("./detectors/weeklyReport");
 
     const profile = await getProfileWithWhatsapp(body.userId);
     if (!profile) {
@@ -378,15 +305,7 @@ async function handleTestMessage(
       return;
     }
 
-    const journeyName = (body.journey ?? "bienvenida_diagnostico") as import("./db/types").JourneyName;
-    const opportunity: import("./db/types").EngagementOpportunity = {
-      userId: body.userId,
-      journeyName,
-      profile,
-      context: {},
-      deepLink: `${config.engine.appBaseUrl}/capsulas/1`,
-    };
-
+    const opportunity = await buildWeeklyReportOpportunity(profile);
     const message = await generateMessage(opportunity);
     if (!message) {
       jsonResponse(res, 500, { error: "Message generation failed" });
@@ -394,7 +313,7 @@ async function handleTestMessage(
     }
 
     await sendWhatsAppMessage(opportunity, message);
-    jsonResponse(res, 200, { success: true, text: message.text, journey: journeyName });
+    jsonResponse(res, 200, { success: true, text: message.text, journey: opportunity.journeyName, source: message.source });
   } catch (error) {
     logger.error({ error }, "Test message failed");
     jsonResponse(res, 500, { error: "Failed to send test message" });
@@ -1098,10 +1017,6 @@ async function router(
     return handleWebhookEvolution(req, res);
   }
 
-  if (url === "/api/campaign/send" && method === "POST") {
-    return handleCampaignSend(req, res);
-  }
-
   if (url === "/api/trigger" && method === "POST") {
     return handleManualTrigger(req, res);
   }
@@ -1378,101 +1293,88 @@ function showMsg(text, ok) {
     return;
   }
 
-  // ─── Scheduled Messages API ───
+  // ─── Weekly report cadence (replaces the old broadcast scheduler) ───
 
-  // GET /api/schedule — list all scheduled messages (admin only)
+  // GET /api/schedule — current weekly-report cron expression (admin only)
   if (url === "/api/schedule" && method === "GET") {
     if (!requireAdminAuth(req, res)) return;
-    const { getAllScheduledMessages } = await import("./db/supabase");
-    const schedules = await getAllScheduledMessages();
-    jsonResponse(res, 200, { data: schedules });
+    const schedule = await getReportSchedule();
+    jsonResponse(res, 200, { data: { schedule } });
     return;
   }
 
-  // POST /api/schedule — create a scheduled message (admin only)
-  if (url === "/api/schedule" && method === "POST") {
+  // PUT /api/schedule — set the weekly-report cron + reschedule live (admin only)
+  if (url === "/api/schedule" && method === "PUT") {
     if (!requireAdminAuth(req, res)) return;
     try {
-      const body = JSON.parse(await parseBody(req)) as {
-        name?: string;
-        journey_name?: string;
-        segment?: string;
-        schedule_cron?: string;
-        message_key?: string | null;
-      };
-      if (!body.name || !body.journey_name || !body.schedule_cron) {
-        jsonResponse(res, 400, { error: "Missing required fields: name, journey_name, schedule_cron" });
+      const body = JSON.parse(await parseBody(req)) as { schedule?: string };
+      const cronMod = await import("node-cron");
+      if (!body.schedule || !cronMod.default.validate(body.schedule)) {
+        jsonResponse(res, 400, { error: "Invalid cron expression" });
         return;
       }
-      const { createScheduledMessage } = await import("./db/supabase");
-      const created = await createScheduledMessage({
-        name: body.name,
-        journey_name: body.journey_name,
-        segment: body.segment ?? "todos",
-        schedule_cron: body.schedule_cron,
-        message_key: body.message_key ?? null,
-        active: true,
-      });
-      if (!created) { jsonResponse(res, 500, { error: "Failed to create scheduled message" }); return; }
-      const { reloadScheduledMessages } = await import("./scheduler/scheduledMessages");
-      void reloadScheduledMessages();
-      jsonResponse(res, 201, { data: created });
+      await setCachedConfig("report_schedule", body.schedule);
+      const applied = await rescheduleWeeklyReport();
+      jsonResponse(res, 200, { status: "updated", schedule: applied });
     } catch (error) {
-      logger.error({ error }, "Failed to create scheduled message");
+      logger.error({ error }, "Failed to update report schedule");
       jsonResponse(res, 500, { error: "Internal error" });
     }
     return;
   }
 
-  // PUT /api/schedule/:id — update a scheduled message (admin only)
-  const schedPutMatch = url.match(/^\/api\/schedule\/([a-f0-9-]+)$/);
-  if (schedPutMatch && method === "PUT") {
+  // ─── Observability API (Sofía conversation quality) ───
+
+  // GET /api/observability/stats?days=30
+  if (url === "/api/observability/stats" && method === "GET") {
     if (!requireAdminAuth(req, res)) return;
-    try {
-      const id = schedPutMatch[1] as string;
-      const body = JSON.parse(await parseBody(req)) as Record<string, unknown>;
-      const { updateScheduledMessage } = await import("./db/supabase");
-      const updated = await updateScheduledMessage(id, body);
-      if (!updated) { jsonResponse(res, 404, { error: "Schedule not found" }); return; }
-      const { reloadScheduledMessages } = await import("./scheduler/scheduledMessages");
-      void reloadScheduledMessages();
-      jsonResponse(res, 200, { data: updated });
-    } catch (error) {
-      logger.error({ error }, "Failed to update scheduled message");
-      jsonResponse(res, 500, { error: "Internal error" });
-    }
+    const days = parseInt(new URL(req.url ?? "", "http://x").searchParams.get("days") ?? "30", 10);
+    const { getObservabilityStats } = await import("./db/supabase");
+    const stats = await getObservabilityStats(Number.isFinite(days) ? days : 30);
+    jsonResponse(res, 200, { data: stats });
     return;
   }
 
-  // DELETE /api/schedule/:id — delete a scheduled message (admin only)
-  const schedDelMatch = url.match(/^\/api\/schedule\/([a-f0-9-]+)$/);
-  if (schedDelMatch && method === "DELETE") {
+  // GET /api/observability/threads?days=30&limit=100
+  if (url === "/api/observability/threads" && method === "GET") {
     if (!requireAdminAuth(req, res)) return;
-    const { deleteScheduledMessage } = await import("./db/supabase");
-    const ok = await deleteScheduledMessage(schedDelMatch[1] as string);
-    if (!ok) { jsonResponse(res, 500, { error: "Failed to delete" }); return; }
-    const { reloadScheduledMessages } = await import("./scheduler/scheduledMessages");
-    void reloadScheduledMessages();
-    jsonResponse(res, 200, { status: "deleted" });
+    const params = new URL(req.url ?? "", "http://x").searchParams;
+    const days = parseInt(params.get("days") ?? "30", 10);
+    const limit = parseInt(params.get("limit") ?? "100", 10);
+    const { getConversationThreads } = await import("./db/supabase");
+    const threads = await getConversationThreads(Number.isFinite(days) ? days : 30, Number.isFinite(limit) ? limit : 100);
+    jsonResponse(res, 200, { data: threads });
     return;
   }
 
-  // POST /api/schedule/:id/run — run a scheduled message immediately (admin only)
-  const schedRunMatch = url.match(/^\/api\/schedule\/([a-f0-9-]+)\/run$/);
-  if (schedRunMatch && method === "POST") {
+  // GET /api/observability/thread/:conversationId
+  const threadMatch = url.match(/^\/api\/observability\/thread\/([a-f0-9-]+)$/);
+  if (threadMatch && method === "GET") {
     if (!requireAdminAuth(req, res)) return;
+    const { getThread } = await import("./db/supabase");
+    const messages = await getThread(threadMatch[1] as string);
+    jsonResponse(res, 200, { data: messages });
+    return;
+  }
+
+  // POST /api/observability/classify — run the classification job now (admin only)
+  if (url === "/api/observability/classify" && method === "POST") {
+    if (!requireAdminAuth(req, res)) return;
+    const { classifyRecentConversations } = await import("./jobs/classifyConversations");
+    const result = await classifyRecentConversations();
+    jsonResponse(res, 200, { status: "ok", ...result });
+    return;
+  }
+
+  // GET /admin/observability — conversation observability dashboard
+  if (url === "/admin/observability" && method === "GET") {
     try {
-      const id = schedRunMatch[1] as string;
-      const { getAllScheduledMessages } = await import("./db/supabase");
-      const all = await getAllScheduledMessages();
-      const schedule = all.find((s) => s.id === id);
-      if (!schedule) { jsonResponse(res, 404, { error: "Schedule not found" }); return; }
-      const { runScheduledBroadcast } = await import("./scheduler/scheduledMessages");
-      const sent = await runScheduledBroadcast(schedule);
-      jsonResponse(res, 200, { status: "executed", sent });
+      const { getObservabilityHtml } = await import("./admin/observability");
+      res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+      res.end(getObservabilityHtml());
     } catch (error) {
-      logger.error({ error }, "Failed to run scheduled message");
-      jsonResponse(res, 500, { error: "Internal error" });
+      logger.error({ error }, "Failed to serve observability dashboard");
+      jsonResponse(res, 500, { error: "Failed to load observability dashboard" });
     }
     return;
   }
@@ -1482,93 +1384,6 @@ function showMsg(text, ok) {
     if (!requireAdminAuth(req, res)) return;
     const { ENGINE_VARIABLES } = await import("./config/engineVariables");
     jsonResponse(res, 200, { data: ENGINE_VARIABLES });
-    return;
-  }
-
-  // ─── A/B Testing API ───
-
-  // GET /api/ab-tests — list all A/B tests (admin only)
-  if (url === "/api/ab-tests" && method === "GET") {
-    if (!requireAdminAuth(req, res)) return;
-    const { getAllAbTests } = await import("./config/engineConfigCache");
-    const tests = await getAllAbTests();
-    jsonResponse(res, 200, { data: tests });
-    return;
-  }
-
-  // POST /api/ab-tests — create a new A/B test (admin only)
-  if (url === "/api/ab-tests" && method === "POST") {
-    if (!requireAdminAuth(req, res)) return;
-    try {
-      const body = JSON.parse(await parseBody(req)) as { name?: string; journey?: string; variantA?: string; variantB?: string };
-      if (!body.name || !body.journey || !body.variantA || !body.variantB) {
-        jsonResponse(res, 400, { error: "Missing required: name, journey, variantA, variantB" });
-        return;
-      }
-      const safeName = body.name.replace(/[^a-z0-9_]/gi, "_");
-      await Promise.all([
-        setCachedConfig(`ab_test.${safeName}.active`, "true"),
-        setCachedConfig(`ab_test.${safeName}.journey`, body.journey),
-        setCachedConfig(`ab_test.${safeName}.a`, body.variantA),
-        setCachedConfig(`ab_test.${safeName}.b`, body.variantB),
-      ]);
-      jsonResponse(res, 201, { status: "created", name: safeName });
-    } catch (error) {
-      logger.error({ error }, "Failed to create A/B test");
-      jsonResponse(res, 500, { error: "Internal error" });
-    }
-    return;
-  }
-
-  // PUT /api/ab-tests/:name — update a test (toggle active, etc.) (admin only)
-  const abPutMatch = url.match(/^\/api\/ab-tests\/([a-zA-Z0-9_-]+)$/);
-  if (abPutMatch && method === "PUT") {
-    if (!requireAdminAuth(req, res)) return;
-    try {
-      const name = abPutMatch[1] as string;
-      const body = JSON.parse(await parseBody(req)) as { active?: boolean };
-      if (body.active !== undefined) {
-        await setCachedConfig(`ab_test.${name}.active`, body.active ? "true" : "false");
-      }
-      jsonResponse(res, 200, { status: "updated" });
-    } catch (error) {
-      logger.error({ error }, "Failed to update A/B test");
-      jsonResponse(res, 500, { error: "Internal error" });
-    }
-    return;
-  }
-
-  // DELETE /api/ab-tests/:name — delete all keys for a test (admin only)
-  const abDelMatch = url.match(/^\/api\/ab-tests\/([a-zA-Z0-9_-]+)$/);
-  if (abDelMatch && method === "DELETE") {
-    if (!requireAdminAuth(req, res)) return;
-    const name = abDelMatch[1] as string;
-    const { deleteEngineConfig } = await import("./db/supabase");
-    await Promise.all([
-      deleteEngineConfig(`ab_test.${name}.active`),
-      deleteEngineConfig(`ab_test.${name}.journey`),
-      deleteEngineConfig(`ab_test.${name}.a`),
-      deleteEngineConfig(`ab_test.${name}.b`),
-    ]);
-    jsonResponse(res, 200, { status: "deleted" });
-    return;
-  }
-
-  // GET /api/ab-stats/:name — get impression/response stats for a test (admin only)
-  const abStatsMatch = url.match(/^\/api\/ab-stats\/([a-zA-Z0-9_-]+)$/);
-  if (abStatsMatch && method === "GET") {
-    if (!requireAdminAuth(req, res)) return;
-    const { getAbTestStats } = await import("./db/supabase");
-    const stats = await getAbTestStats(abStatsMatch[1] as string);
-    jsonResponse(res, 200, { data: stats });
-    return;
-  }
-
-  // GET /admin/ab — A/B testing admin page
-  if (url === "/admin/ab" && method === "GET") {
-    const { getAbTestingHtml } = await import("./admin/abTesting");
-    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-    res.end(getAbTestingHtml());
     return;
   }
 
@@ -1724,10 +1539,6 @@ export function startServer(port: number = 3001): http.Server {
     logger.info({ port }, "FIA Engagement Engine HTTP server started");
     // Warm up config cache on startup (non-blocking)
     void warmCache();
-    // Load scheduled message cron jobs (non-blocking)
-    import("./scheduler/scheduledMessages").then(({ initScheduledMessages }) => {
-      void initScheduledMessages();
-    }).catch(() => { /* non-critical — fails gracefully if table not yet created */ });
   });
 
   return server;

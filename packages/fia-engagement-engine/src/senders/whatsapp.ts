@@ -7,7 +7,7 @@
 import axios from "axios";
 import { config } from "../config";
 import { logger } from "../logger";
-import { insertEngagementLog, getConversationState } from "../db/supabase";
+import { insertEngagementLog, getConversationState, logConversation } from "../db/supabase";
 import type { EngagementOpportunity } from "../db/types";
 import type { GeneratedMessage } from "../generators/messageGenerator";
 import { evolutionManager } from "./whatsappEvolution";
@@ -148,7 +148,7 @@ export async function sendWhatsAppMessage(
       status: "skipped_paused",
       message: message.text,
       channel: "whatsapp",
-      trigger_type: "scheduled",
+      trigger_type: "weekly_report",
       metadata: {
         journey_name: message.journeyName,
         whatsapp_number: whatsappNumber,
@@ -166,7 +166,7 @@ export async function sendWhatsAppMessage(
       status: "opted_out",
       message: message.text,
       channel: "whatsapp",
-      trigger_type: "scheduled",
+      trigger_type: "weekly_report",
       metadata: {
         journey_name: message.journeyName,
         whatsapp_number: whatsappNumber,
@@ -186,13 +186,11 @@ export async function sendWhatsAppMessage(
     status: "sent",
     message: message.text,
     channel: "whatsapp",
-    trigger_type: "scheduled",
+    trigger_type: "weekly_report",
     metadata: {
       journey_name: message.journeyName,
       whatsapp_number: whatsappNumber,
       deep_link: message.deepLink,
-      ...(opportunity.level !== undefined ? { level: opportunity.level } : {}),
-      ...(message.abTestName ? { ab_test_name: message.abTestName, ab_variant: message.abVariant } : {}),
     },
   });
 
@@ -252,6 +250,19 @@ export async function sendWhatsAppMessage(
       "WhatsApp message failed",
     );
   }
+
+  // Unified conversation log (outbound)
+  await logConversation({
+    user_id: opportunity.userId,
+    direction: "out",
+    kind: message.journeyName,
+    body: message.text,
+    status: result.success ? "sent" : "failed",
+    truncated: message.truncated ?? false,
+    generation_source: message.source ?? null,
+    error_reason: result.success ? null : result.error ?? "unknown",
+    metadata: { journey_name: message.journeyName, deep_link: message.deepLink },
+  });
 
   return result.success;
 }
@@ -330,6 +341,17 @@ export async function sendCampaignMessage(
   } else {
     logger.error({ phone: normalizedPhone, journey: journeyName, error: result.error }, "Campaign message failed");
   }
+
+  // Unified conversation log (outbound — activation / manual)
+  await logConversation({
+    user_id: userId,
+    direction: "out",
+    kind: journeyName === "activacion_sofia" ? "activation" : "command",
+    body: messageText,
+    status: result.success ? "sent" : "failed",
+    error_reason: result.success ? null : result.error ?? "unknown",
+    metadata: { journey_name: journeyName },
+  });
 
   return result.success;
 }

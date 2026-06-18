@@ -1,6 +1,2 @@
-export { detectInactiveUsers } from "./inactivity";
-export { detectCompletedCapsules } from "./celebration";
-export { detectPostDiagnostic } from "./postDiagnostic";
-export { detectColdLeads } from "./coldLeads";
-export { detectSponsorReports } from "./sponsorReport";
-export { detectContentUnlocked } from "./contentUnlocked";
+export { detectWeeklyReportRecipients } from "./weeklyReport";
+export type { WeeklyReportContext } from "./weeklyReport";

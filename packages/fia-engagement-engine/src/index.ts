@@ -1,71 +1,46 @@
 /**
  * FIA Engagement Engine
  *
- * Sidecar independiente que lee Supabase, detecta oportunidades
- * de engagement, genera mensajes con Claude, y entrega por WhatsApp.
+ * Sidecar independiente que lee Supabase, arma el reporte semanal de Sofía,
+ * lo entrega por WhatsApp, y atiende mensajes entrantes.
  *
- * No modifica FIA Copilot. Solo lee la DB y escribe en engagement_log.
+ * No modifica FIA Copilot salvo opt-out. Lee la DB y escribe en engagement_log + sofia_conversations.
  *
  * Modes:
  *   (default)  Start scheduler + HTTP server
- *   --once     Run all detectors once and exit
+ *   --once     Run the weekly report once and exit
  *   --server   Start HTTP server only (no scheduler)
  */
 import cron from "node-cron";
 import { config } from "./config";
 import { logger } from "./logger";
 import { startServer } from "./server";
-import {
-  runEventDetectors,
-  runSegmentDetectors,
-  runSponsorReports,
-  runAllDetectors,
-} from "./orchestrator";
+import { runWeeklyReport } from "./orchestrator";
 import { retryFailedMessages } from "./senders/whatsapp";
+import { rescheduleWeeklyReport } from "./reportScheduler";
+import { classifyRecentConversations } from "./jobs/classifyConversations";
 
-function startScheduler(): void {
-  logger.info(
-    {
-      detectorsCron: config.cron.detectors,
-      sponsorCron: config.cron.sponsorReport,
-    },
-    "Starting FIA Engagement Engine scheduler",
-  );
+async function startScheduler(): Promise<void> {
+  logger.info("Starting FIA Engagement Engine scheduler");
 
-  // Event detectors: time-sensitive (capsule completions, diagnostics) — every 15 min
-  cron.schedule(config.cron.detectors, async () => {
-    try {
-      await runEventDetectors();
-    } catch (error) {
-      logger.error({ error }, "Event detector cycle failed");
-    }
-  });
+  // Weekly report — single configurable cron (Domingo 17:00 by default)
+  await rescheduleWeeklyReport();
 
-  // Segment detectors: inactivity, cold leads, content unlocked — every 2 hours
-  // These are not time-sensitive; running less often reduces DB load significantly
-  cron.schedule(config.cron.segmentDetectors, async () => {
-    try {
-      await runSegmentDetectors();
-    } catch (error) {
-      logger.error({ error }, "Segment detector cycle failed");
-    }
-  });
-
-  // Sponsor weekly report: Mondays 9 AM
-  cron.schedule(config.cron.sponsorReport, async () => {
-    try {
-      await runSponsorReports();
-    } catch (error) {
-      logger.error({ error }, "Sponsor report cycle failed");
-    }
-  });
-
-  // Retry failed messages — schedule via CRON_RETRY_FAILED (set to never-fire to disable)
+  // Retry failed messages — every 30 minutes (set CRON_RETRY_FAILED to never-fire to disable)
   cron.schedule(config.cron.retryFailed, async () => {
     try {
       await retryFailedMessages();
     } catch (error) {
       logger.error({ error }, "Failed message retry cycle failed");
+    }
+  });
+
+  // Classify inbound conversations for the observability dashboard
+  cron.schedule(config.classifyCron, async () => {
+    try {
+      await classifyRecentConversations();
+    } catch (error) {
+      logger.error({ error }, "Conversation classification cycle failed");
     }
   });
 
@@ -78,8 +53,8 @@ const args = process.argv.slice(2);
 const port = parseInt(process.env["ENGINE_PORT"] ?? "3001", 10);
 
 if (args.includes("--once")) {
-  logger.info("Running all detectors once (--once mode)");
-  runAllDetectors()
+  logger.info("Running weekly report once (--once mode)");
+  runWeeklyReport()
     .then(() => {
       logger.info("Single run completed");
       process.exit(0);
@@ -92,6 +67,6 @@ if (args.includes("--once")) {
   startServer(port);
 } else {
   // Default: both scheduler + server
-  startScheduler();
+  void startScheduler();
   startServer(port);
 }

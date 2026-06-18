@@ -164,8 +164,8 @@ tr:hover td{background:var(--bg3)}
     <div class="nav-section">Configuración</div>
     <div class="nav-item" onclick="window.open('/admin/design','_blank')"><span class="nav-icon">✏️</span><span>Visual Designer</span></div>
     <div class="nav-item" onclick="window.open('/admin/config','_blank')"><span class="nav-icon">⚙️</span><span>Config Editor</span></div>
-    <div class="nav-item" onclick="window.open('/admin/schedule','_blank')"><span class="nav-icon">⏰</span><span>Programados</span></div>
-    <div class="nav-item" onclick="window.open('/admin/ab','_blank')"><span class="nav-icon">🧪</span><span>A/B Testing</span></div>
+    <div class="nav-item" onclick="window.open('/admin/schedule','_blank')"><span class="nav-icon">⏰</span><span>Cadencia</span></div>
+    <div class="nav-item" onclick="window.open('/admin/observability','_blank')"><span class="nav-icon">📊</span><span>Observabilidad</span></div>
     <div class="nav-section">Conexiones</div>
     <div class="nav-item" onclick="window.open('/admin/whatsapp','_blank')"><span class="nav-icon">📱</span><span>WhatsApp QR</span></div>
     <div class="nav-item" onclick="window.open('/admin/codex','_blank')"><span class="nav-icon">🤖</span><span>Codex OAuth</span></div>
@@ -265,7 +265,7 @@ tr:hover td{background:var(--bg3)}
       <div class="kpi-grid" id="kpi-eng"></div>
       <div class="panel"><div class="panel-title">Mensajes enviados (30d)</div><div class="spark" id="spark-eng"></div></div>
       <div class="grid-2">
-        <div class="panel"><div class="panel-title">Rendimiento por journey</div><div id="journey-table-wrap"></div></div>
+        <div class="panel"><div class="panel-title">Rendimiento del reporte semanal</div><div id="journey-table-wrap"></div></div>
         <div class="panel"><div class="panel-title">Tipos de evento (30d)</div><div class="hbar" id="event-types-chart"></div></div>
       </div>
     </div>

@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { config } from "../config";
 import { logger } from "../logger";
@@ -59,19 +60,40 @@ export async function getActiveUsersWithWhatsapp(): Promise<Profile[]> {
   return (data ?? []) as Profile[];
 }
 
-export async function getSponsors(): Promise<Profile[]> {
+/**
+ * Recipients of the weekly report: users who have Sofía active.
+ * Sofía is a paid feature → activation requires phone + opt-in + a confirmed activation.
+ */
+export async function getSofiaActiveUsers(): Promise<Profile[]> {
   const { data, error } = await getSupabaseClient()
     .from("profiles")
     .select("*")
-    .eq("org_role", "sponsor")
     .not("phone", "is", null)
-    .eq("whatsapp_opt_in", true);
+    .eq("whatsapp_opt_in", true)
+    .not("sofia_activated_at", "is", null);
 
   if (error) {
-    logger.error({ error }, "Failed to fetch sponsors");
+    logger.error({ error }, "Failed to fetch Sofía-active users");
     return [];
   }
   return (data ?? []) as Profile[];
+}
+
+/**
+ * Deactivate Sofía for a user (on STOP / opt-out).
+ * Clears whatsapp_opt_in AND sofia_activated_at so the front renders "desactivada"
+ * and the weekly report excludes them. Re-activation re-runs the wa.me flow.
+ */
+export async function deactivateSofia(userId: string): Promise<void> {
+  const { error } = await getSupabaseClient()
+    .from("profiles")
+    .update({ whatsapp_opt_in: false, sofia_activated_at: null })
+    .eq("id", userId);
+  if (error) {
+    logger.error({ error, userId }, "Failed to deactivate Sofía");
+  } else {
+    logger.info({ userId }, "Sofía deactivated (opt-out)");
+  }
 }
 
 /**
@@ -834,13 +856,72 @@ export async function getProfilesForUsers(
 
 // ─── Conversation history (Sofía inbound memory) ───
 
+// ─── Unified conversation log (sofia_conversations) ───
+
+export interface SofiaConversationInsert {
+  user_id: string;
+  direction: "in" | "out";
+  kind: string; // 'weekly_report' | 'inbound_reply' | 'command' | 'activation'
+  body: string;
+  status?: string; // 'sent' | 'failed' | 'received'
+  truncated?: boolean;
+  generation_source?: string | null;
+  error_reason?: string | null;
+  metadata?: Record<string, unknown>;
+}
+
+/**
+ * Reuses the most recent thread within a 72h window for this user, else starts a new one.
+ * Keeps related back-and-forth grouped under one conversation_id for the dashboard.
+ */
+async function resolveConversationId(userId: string): Promise<string> {
+  const since = new Date(Date.now() - 72 * 60 * 60 * 1000).toISOString();
+  const { data } = await getSupabaseClient()
+    .from("sofia_conversations")
+    .select("conversation_id")
+    .eq("user_id", userId)
+    .gte("created_at", since)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  return (data?.conversation_id as string | undefined) ?? randomUUID();
+}
+
+/** Logs one message (inbound or outbound) to the unified conversation table. Best-effort. */
+export async function logConversation(entry: SofiaConversationInsert): Promise<void> {
+  try {
+    const conversation_id = await resolveConversationId(entry.user_id);
+    const { error } = await getSupabaseClient()
+      .from("sofia_conversations")
+      .insert({
+        user_id: entry.user_id,
+        conversation_id,
+        direction: entry.direction,
+        kind: entry.kind,
+        body: entry.body.slice(0, 4000),
+        status: entry.status ?? (entry.direction === "in" ? "received" : "sent"),
+        truncated: entry.truncated ?? false,
+        generation_source: entry.generation_source ?? null,
+        error_reason: entry.error_reason ?? null,
+        metadata: entry.metadata ?? {},
+      });
+    if (error) logger.warn({ error, userId: entry.user_id }, "Failed to log sofia_conversation");
+  } catch (error) {
+    logger.warn({ error, userId: entry.user_id }, "logConversation threw");
+  }
+}
+
+/**
+ * Conversation history for inbound AI memory — reads from the unified table.
+ * Maps direction → role so callers keep the same shape.
+ */
 export async function getConversationHistory(
   userId: string,
   limit = 10,
 ): Promise<Array<{ role: string; content: string }>> {
   const { data, error } = await getSupabaseClient()
-    .from("wa_conversation_history")
-    .select("role, content")
+    .from("sofia_conversations")
+    .select("direction, body")
     .eq("user_id", userId)
     .order("created_at", { ascending: false })
     .limit(limit);
@@ -850,25 +931,68 @@ export async function getConversationHistory(
     return [];
   }
 
-  // Reverse to chronological order
-  return ((data ?? []) as Array<{ role: string; content: string }>).reverse();
+  // Reverse to chronological order and map to role/content
+  return ((data ?? []) as Array<{ direction: string; body: string }>)
+    .reverse()
+    .map((r) => ({ role: r.direction === "in" ? "user" : "assistant", content: r.body }));
 }
 
+/**
+ * Append inbound-conversation messages (user/assistant) to the unified log.
+ * Kept signature-compatible with the previous wa_conversation_history writer.
+ */
 export async function appendConversationMessages(
   userId: string,
   messages: Array<{ role: string; content: string }>,
 ): Promise<void> {
-  if (messages.length === 0) return;
-
-  const rows = messages.map((m) => ({ user_id: userId, role: m.role, content: m.content }));
-
-  const { error } = await getSupabaseClient()
-    .from("wa_conversation_history")
-    .insert(rows);
-
-  if (error) {
-    logger.error({ error, userId }, "Failed to save conversation messages");
+  for (const m of messages) {
+    await logConversation({
+      user_id: userId,
+      direction: m.role === "user" ? "in" : "out",
+      kind: "inbound_reply",
+      body: m.content,
+    });
   }
+}
+
+// ─── Sofía knowledge base (read-only; lives in FIA Copilot DB, seeded by their team) ───
+
+export interface KnowledgeEntry {
+  topic: string;
+  program_slug: string | null;
+  title: string;
+  body_md: string;
+}
+
+let _knowledgeCache: KnowledgeEntry[] | null = null;
+let _knowledgeCacheExpiry = 0;
+
+/**
+ * Returns active knowledge-base entries (methodology, frameworks, landing, per-program).
+ * Reads the sofia_knowledge table; returns [] gracefully if it doesn't exist yet.
+ * Cached 5 min. Filter by programSlug to fetch entries relevant to a user's track.
+ */
+export async function getKnowledge(programSlug?: string | null): Promise<KnowledgeEntry[]> {
+  if (!_knowledgeCache || Date.now() >= _knowledgeCacheExpiry) {
+    try {
+      const { data, error } = await getSupabaseClient()
+        .from("sofia_knowledge")
+        .select("topic, program_slug, title, body_md")
+        .eq("is_active", true);
+      if (error) {
+        // Table may not exist yet (pre hand-off) — degrade gracefully
+        _knowledgeCache = [];
+      } else {
+        _knowledgeCache = (data ?? []) as KnowledgeEntry[];
+      }
+    } catch {
+      _knowledgeCache = [];
+    }
+    _knowledgeCacheExpiry = Date.now() + 5 * 60 * 1000;
+  }
+  if (!programSlug) return _knowledgeCache;
+  // Program-specific entries + global ones (program_slug null)
+  return _knowledgeCache.filter((k) => k.program_slug === programSlug || k.program_slug == null);
 }
 
 /** Shared transform for capsule_progress rows joined with capsules */
@@ -1169,185 +1293,206 @@ export async function deleteEngineConfig(key: string): Promise<void> {
   logger.info({ key }, "Engine config key deleted");
 }
 
-// ─── Scheduled Messages ───
+// ─── Observability (dashboard aggregations over sofia_conversations) ───
 
-export interface ScheduledMessage {
-  id: string;
-  name: string;
-  journey_name: string;
-  segment: string;
-  schedule_cron: string;
-  message_key: string | null;
-  active: boolean;
-  last_run_at: string | null;
+interface ConvRow {
+  user_id: string;
+  conversation_id: string;
+  direction: "in" | "out";
+  kind: string;
+  body: string;
+  status: string;
+  truncated: boolean;
+  generation_source: string | null;
+  metadata: Record<string, unknown> | null;
   created_at: string;
-  updated_at: string;
 }
 
-export async function getActiveScheduledMessages(): Promise<ScheduledMessage[]> {
-  const { data, error } = await getSupabaseClient()
-    .from("engine_scheduled_messages")
-    .select("*")
-    .eq("active", true)
-    .order("created_at", { ascending: true });
+export interface ObservabilityStats {
+  windowDays: number;
+  totalMessages: number;
+  inbound: number;
+  outbound: number;
+  threads: number;
+  byKind: Record<string, number>;
+  failed: number; // status='failed' → delivery/generation bugs
+  templateFallbacks: number; // generation_source='template' → AI fell back
+  truncated: number;
+  weeklyReports: number;
+  weeklyReportsResponded: number;
+  responseRate: number; // 0..1
+  truncatedThreads: number; // threads whose last message is inbound (unanswered)
+  byLabel: Record<string, number>; // AI classification labels (metadata.label)
+  byDay: Array<{ day: string; inbound: number; outbound: number }>;
+}
 
+async function fetchConvRows(windowDays: number): Promise<ConvRow[]> {
+  const since = new Date(Date.now() - windowDays * 86400000).toISOString();
+  const { data, error } = await getSupabaseClient()
+    .from("sofia_conversations")
+    .select("user_id, conversation_id, direction, kind, body, status, truncated, generation_source, metadata, created_at")
+    .gte("created_at", since)
+    .order("created_at", { ascending: true });
   if (error) {
-    logger.warn({ error }, "Failed to fetch active scheduled messages");
+    logger.warn({ error }, "Failed to fetch sofia_conversations for observability");
     return [];
   }
-  return (data ?? []) as ScheduledMessage[];
+  return (data ?? []) as ConvRow[];
 }
 
-export async function getAllScheduledMessages(): Promise<ScheduledMessage[]> {
-  const { data, error } = await getSupabaseClient()
-    .from("engine_scheduled_messages")
-    .select("*")
-    .order("created_at", { ascending: true });
+export async function getObservabilityStats(windowDays = 30): Promise<ObservabilityStats> {
+  const rows = await fetchConvRows(windowDays);
 
+  const byKind: Record<string, number> = {};
+  const byLabel: Record<string, number> = {};
+  const byDayMap = new Map<string, { inbound: number; outbound: number }>();
+  const threadsSet = new Set<string>();
+  let inbound = 0, outbound = 0, failed = 0, templateFallbacks = 0, truncated = 0;
+
+  // Per-thread tracking for response-rate and unanswered detection
+  const reportThreads = new Set<string>(); // threads containing a weekly_report
+  const inboundAfterReport = new Set<string>(); // threads with inbound after the report
+  const reportTimeByThread = new Map<string, string>();
+  const lastDirByThread = new Map<string, "in" | "out">();
+
+  for (const r of rows) {
+    threadsSet.add(r.conversation_id);
+    byKind[r.kind] = (byKind[r.kind] ?? 0) + 1;
+    if (r.direction === "in") inbound++; else outbound++;
+    if (r.status === "failed") failed++;
+    if (r.generation_source === "template") templateFallbacks++;
+    if (r.truncated) truncated++;
+
+    const label = (r.metadata?.["label"] as string | undefined) ?? null;
+    if (label) byLabel[label] = (byLabel[label] ?? 0) + 1;
+
+    const day = r.created_at.slice(0, 10);
+    const d = byDayMap.get(day) ?? { inbound: 0, outbound: 0 };
+    if (r.direction === "in") d.inbound++; else d.outbound++;
+    byDayMap.set(day, d);
+
+    lastDirByThread.set(r.conversation_id, r.direction);
+
+    if (r.kind === "weekly_report" && r.direction === "out") {
+      reportThreads.add(r.conversation_id);
+      if (!reportTimeByThread.has(r.conversation_id)) reportTimeByThread.set(r.conversation_id, r.created_at);
+    }
+    if (r.direction === "in") {
+      const reportTime = reportTimeByThread.get(r.conversation_id);
+      if (reportTime && r.created_at > reportTime) inboundAfterReport.add(r.conversation_id);
+    }
+  }
+
+  const weeklyReports = reportThreads.size;
+  const weeklyReportsResponded = inboundAfterReport.size;
+  const truncatedThreads = Array.from(lastDirByThread.entries()).filter(([, dir]) => dir === "in").length;
+
+  const byDay = Array.from(byDayMap.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([day, v]) => ({ day, inbound: v.inbound, outbound: v.outbound }));
+
+  return {
+    windowDays,
+    totalMessages: rows.length,
+    inbound,
+    outbound,
+    threads: threadsSet.size,
+    byKind,
+    failed,
+    templateFallbacks,
+    truncated,
+    weeklyReports,
+    weeklyReportsResponded,
+    responseRate: weeklyReports > 0 ? weeklyReportsResponded / weeklyReports : 0,
+    truncatedThreads,
+    byLabel,
+    byDay,
+  };
+}
+
+export interface ThreadSummary {
+  conversationId: string;
+  userId: string;
+  messageCount: number;
+  lastDirection: "in" | "out";
+  lastKind: string;
+  lastBody: string;
+  lastAt: string;
+  hasFailure: boolean;
+  label: string | null;
+}
+
+/** Recent conversation threads, newest activity first, for the observability list. */
+export async function getConversationThreads(windowDays = 30, limit = 100): Promise<ThreadSummary[]> {
+  const rows = await fetchConvRows(windowDays);
+  const byThread = new Map<string, ConvRow[]>();
+  for (const r of rows) {
+    const arr = byThread.get(r.conversation_id) ?? [];
+    arr.push(r);
+    byThread.set(r.conversation_id, arr);
+  }
+
+  const summaries: ThreadSummary[] = [];
+  for (const [conversationId, msgs] of byThread) {
+    const last = msgs[msgs.length - 1] as ConvRow;
+    const label = msgs.map((m) => m.metadata?.["label"] as string | undefined).find(Boolean) ?? null;
+    summaries.push({
+      conversationId,
+      userId: last.user_id,
+      messageCount: msgs.length,
+      lastDirection: last.direction,
+      lastKind: last.kind,
+      lastBody: (last.body ?? "").slice(0, 140),
+      lastAt: last.created_at,
+      hasFailure: msgs.some((m) => m.status === "failed"),
+      label,
+    });
+  }
+  summaries.sort((a, b) => b.lastAt.localeCompare(a.lastAt));
+  return summaries.slice(0, limit);
+}
+
+/** Full message list of a single thread, chronological. */
+export async function getThread(conversationId: string): Promise<Array<{ direction: string; kind: string; body: string; status: string; created_at: string }>> {
+  const { data, error } = await getSupabaseClient()
+    .from("sofia_conversations")
+    .select("direction, kind, body, status, created_at")
+    .eq("conversation_id", conversationId)
+    .order("created_at", { ascending: true });
   if (error) {
-    logger.warn({ error }, "Failed to fetch scheduled messages");
+    logger.warn({ error, conversationId }, "Failed to fetch thread");
     return [];
   }
-  return (data ?? []) as ScheduledMessage[];
+  return (data ?? []) as Array<{ direction: string; kind: string; body: string; status: string; created_at: string }>;
 }
 
-export async function createScheduledMessage(
-  params: Omit<ScheduledMessage, "id" | "last_run_at" | "created_at" | "updated_at">,
-): Promise<ScheduledMessage | null> {
+/** Recent conversations not yet classified (for the AI labeling job). */
+export async function getUnlabeledConversations(limit = 50): Promise<Array<{ id: string; body: string; direction: string }>> {
   const { data, error } = await getSupabaseClient()
-    .from("engine_scheduled_messages")
-    .insert(params)
-    .select("*")
-    .single();
-
+    .from("sofia_conversations")
+    .select("id, body, direction, metadata")
+    .eq("direction", "in")
+    .order("created_at", { ascending: false })
+    .limit(limit * 3);
   if (error) {
-    logger.error({ error }, "Failed to create scheduled message");
-    return null;
+    logger.warn({ error }, "Failed to fetch unlabeled conversations");
+    return [];
   }
-  return data as ScheduledMessage;
+  const rows = (data ?? []) as Array<{ id: string; body: string; direction: string; metadata: Record<string, unknown> | null }>;
+  return rows
+    .filter((r) => !(r.metadata && typeof r.metadata["label"] === "string"))
+    .slice(0, limit)
+    .map((r) => ({ id: r.id, body: r.body, direction: r.direction }));
 }
 
-export async function updateScheduledMessage(
-  id: string,
-  updates: Partial<Omit<ScheduledMessage, "id" | "created_at" | "updated_at">>,
-): Promise<ScheduledMessage | null> {
-  const { data, error } = await getSupabaseClient()
-    .from("engine_scheduled_messages")
-    .update(updates)
-    .eq("id", id)
-    .select("*")
-    .single();
-
-  if (error) {
-    logger.error({ error, id }, "Failed to update scheduled message");
-    return null;
-  }
-  return data as ScheduledMessage;
-}
-
-export async function deleteScheduledMessage(id: string): Promise<boolean> {
-  const { error } = await getSupabaseClient()
-    .from("engine_scheduled_messages")
-    .delete()
-    .eq("id", id);
-
-  if (error) {
-    logger.error({ error, id }, "Failed to delete scheduled message");
-    return false;
-  }
-  return true;
-}
-
-export async function getAbTestStats(testName: string): Promise<{
-  a: { impressions: number; responses: number };
-  b: { impressions: number; responses: number };
-}> {
+/** Persist a classification label onto a conversation row (merges into metadata). */
+export async function setConversationLabel(id: string, label: string): Promise<void> {
   const { data } = await getSupabaseClient()
-    .from("engagement_log")
+    .from("sofia_conversations")
     .select("metadata")
-    .eq("status", "sent")
-    .not("metadata->>ab_test_name", "is", null);
-
-  const rows = (data ?? []) as Array<{ metadata: Record<string, unknown> }>;
-  const filtered = rows.filter((r) => r.metadata?.["ab_test_name"] === testName);
-
-  const result = { a: { impressions: 0, responses: 0 }, b: { impressions: 0, responses: 0 } };
-  for (const row of filtered) {
-    const v = row.metadata?.["ab_variant"] as "a" | "b" | undefined;
-    if (v !== "a" && v !== "b") continue;
-    result[v].impressions++;
-    if (row.metadata?.["responded"] === true) result[v].responses++;
-  }
-  return result;
-}
-
-export async function getUsersInSegment(segment: string): Promise<Array<{ id: string; phone: string; name: string | null; company_name: string | null }>> {
-  const sb = getSupabaseClient();
-
-  type ProfileRow = { id: string; phone: string | null; name: string | null; company_name: string | null; whatsapp_opt_in: boolean };
-  type AccessRow = { profiles: ProfileRow | ProfileRow[] };
-
-  const filterProfiles = (rows: unknown[]): Array<{ id: string; phone: string; name: string | null; company_name: string | null }> =>
-    (rows as AccessRow[]).reduce<Array<{ id: string; phone: string; name: string | null; company_name: string | null }>>((acc, r) => {
-      const profile = Array.isArray(r.profiles) ? r.profiles[0] : r.profiles;
-      if (profile?.whatsapp_opt_in && profile.phone) {
-        acc.push({ id: profile.id, phone: profile.phone, name: profile.name, company_name: profile.company_name });
-      }
-      return acc;
-    }, []);
-
-  // ── Static segments ──────────────────────────────────────────────────────
-  if (segment === "todos") {
-    const { data, error } = await sb
-      .from("profiles")
-      .select("id, phone, name, company_name")
-      .eq("whatsapp_opt_in", true)
-      .not("phone", "is", null);
-    if (error) { logger.warn({ error, segment }, "Failed to fetch segment users"); return []; }
-    return (data ?? []) as Array<{ id: string; phone: string; name: string | null; company_name: string | null }>;
-  }
-
-  if (segment === "leads") {
-    // Users with no active plan and no program access
-    const { data: allUsers } = await sb.from("profiles").select("id, phone, name, company_name").eq("whatsapp_opt_in", true).not("phone", "is", null);
-    const { data: paidIds } = await sb.from("subscriptions").select("user_id").eq("status", "active");
-    const { data: accessIds } = await sb.from("user_program_access").select("user_id").eq("status", "active");
-    const paid = new Set([...(paidIds ?? []).map((r: { user_id: string }) => r.user_id), ...(accessIds ?? []).map((r: { user_id: string }) => r.user_id)]);
-    return ((allUsers ?? []) as Array<{ id: string; phone: string; name: string | null; company_name: string | null }>).filter((u) => !paid.has(u.id));
-  }
-
-  if (segment === "paid") {
-    // Any user with an active subscription OR active program access
-    const { data: accessRows, error: accessErr } = await sb
-      .from("user_program_access")
-      .select("user_id, profiles!inner(id, phone, name, company_name, whatsapp_opt_in)")
-      .eq("status", "active");
-    if (accessErr) { logger.warn({ accessErr, segment }, "Failed to fetch paid segment"); return []; }
-    return filterProfiles(accessRows ?? []);
-  }
-
-  if (segment === "fia-copilot-pro") {
-    const { data: subRows, error: subErr } = await sb
-      .from("subscriptions")
-      .select("user_id, profiles!inner(id, phone, name, company_name, whatsapp_opt_in)")
-      .eq("status", "active");
-    if (subErr) { logger.warn({ subErr, segment }, "Failed to fetch pro segment"); return []; }
-    return filterProfiles(subRows ?? []);
-  }
-
-  // ── Data-driven: check if segment matches a program_slug in learning_paths ──
-  const paths = await getLearningPaths();
-  const matchedPath = paths.find((p) => p.program_slug === segment);
-  if (matchedPath) {
-    const { data: accessRows, error: accessErr } = await sb
-      .from("user_program_access")
-      .select("user_id, profiles!inner(id, phone, name, company_name, whatsapp_opt_in)")
-      .eq("program_slug", segment)
-      .eq("status", "active");
-    if (accessErr) { logger.warn({ accessErr, segment }, "Failed to fetch segment users via access"); return []; }
-    return filterProfiles(accessRows ?? []);
-  }
-
-  logger.warn({ segment }, "Unknown segment — returning empty");
-  return [];
+    .eq("id", id)
+    .maybeSingle();
+  const meta = ((data?.metadata as Record<string, unknown> | null) ?? {});
+  meta["label"] = label;
+  await getSupabaseClient().from("sofia_conversations").update({ metadata: meta }).eq("id", id);
 }

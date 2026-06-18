@@ -54,14 +54,7 @@ const COUNTRY_TIMEZONES: Record<string, string> = {
 function getTimezoneForUser(countryCode?: string | null): string {
   return COUNTRY_TIMEZONES[countryCode?.toUpperCase() ?? ""] ?? config.engine.defaultTimezone;
 }
-import {
-  detectInactiveUsers,
-  detectCompletedCapsules,
-  detectPostDiagnostic,
-  detectColdLeads,
-  detectSponsorReports,
-  detectContentUnlocked,
-} from "./detectors";
+import { detectWeeklyReportRecipients } from "./detectors";
 import { generateMessage } from "./generators/messageGenerator";
 import { sendWhatsAppMessage } from "./senders/whatsapp";
 import type { EngagementOpportunity } from "./db/types";
@@ -155,78 +148,15 @@ async function processAll(opportunities: EngagementOpportunity[]): Promise<void>
 }
 
 /**
- * Run all event-based detectors (completion, post-diagnostic).
- * These check for recent events and should run frequently.
+ * Run the weekly report — the only journey.
+ * Builds one personalized report opportunity per Sofía-active user and sends it.
  */
-export async function runEventDetectors(): Promise<void> {
-  logger.info("Running event-based detectors");
+export async function runWeeklyReport(): Promise<void> {
+  logger.info("Running weekly report");
 
-  const [completions, diagnostics] = await Promise.all([
-    detectCompletedCapsules(),
-    detectPostDiagnostic(),
-  ]);
+  const opportunities = await detectWeeklyReportRecipients();
 
-  const allOpportunities = [...completions, ...diagnostics];
+  logger.info({ count: opportunities.length }, "Weekly report opportunities to send");
 
-  logger.info(
-    {
-      completions: completions.length,
-      diagnostics: diagnostics.length,
-      total: allOpportunities.length,
-    },
-    "Event detectors found opportunities",
-  );
-
-  await processAll(allOpportunities);
-}
-
-/**
- * Run all segment-based detectors (inactivity, cold leads).
- * These scan user segments and can run less frequently.
- */
-export async function runSegmentDetectors(): Promise<void> {
-  logger.info("Running segment-based detectors");
-
-  const [inactive, coldLeads, contentUnlocked] = await Promise.all([
-    detectInactiveUsers(),
-    detectColdLeads(),
-    detectContentUnlocked(),
-  ]);
-
-  const allOpportunities = [...inactive, ...coldLeads, ...contentUnlocked];
-
-  logger.info(
-    {
-      inactive: inactive.length,
-      coldLeads: coldLeads.length,
-      contentUnlocked: contentUnlocked.length,
-      total: allOpportunities.length,
-    },
-    "Segment detectors found opportunities",
-  );
-
-  await processAll(allOpportunities);
-}
-
-/**
- * Run the weekly sponsor report detector.
- */
-export async function runSponsorReports(): Promise<void> {
-  logger.info("Running sponsor report detector");
-
-  const reports = await detectSponsorReports();
-
-  logger.info({ count: reports.length }, "Sponsor reports to send");
-
-  await processAll(reports);
-}
-
-/**
- * Run all detectors at once (for manual trigger / testing).
- */
-export async function runAllDetectors(): Promise<void> {
-  await Promise.all([
-    runEventDetectors(),
-    runSegmentDetectors(),
-  ]);
+  await processAll(opportunities);
 }

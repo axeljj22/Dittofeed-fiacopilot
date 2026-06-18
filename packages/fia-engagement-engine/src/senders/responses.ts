@@ -20,6 +20,8 @@ import {
   getUserSegment,
   getConversationState,
   upsertConversationState,
+  deactivateSofia,
+  logConversation,
 } from "../db/supabase";
 import { getCommandReply } from "../config/engineConfigCache";
 import { generateInboundReply } from "../generators/messageGenerator";
@@ -225,8 +227,12 @@ export async function processIncomingResponse(
       }
     }
 
-    // Update profile if needed (opt-out)
-    if (action.updateProfile) {
+    // Update profile if needed.
+    if (action.type === "opt_out") {
+      // STOP → fully deactivate Sofía (clears whatsapp_opt_in AND sofia_activated_at)
+      await deactivateSofia(userId);
+      logger.info({ userId }, "Sofía deactivated via STOP");
+    } else if (action.updateProfile) {
       await getSupabaseClient()
         .from("profiles")
         .update(action.updateProfile)
@@ -246,6 +252,12 @@ export async function processIncomingResponse(
     // Wrap link in command replies for click tracking too
     if (action.replyText && action.replyText.includes("http")) {
       action = { ...action, replyText: await wrapLinksWithTracking(action.replyText, userId, normalizedFrom) };
+    }
+
+    // Unified conversation log (inbound command + outbound reply)
+    await logConversation({ user_id: userId, direction: "in", kind: "command", body: message.body });
+    if (action.replyText) {
+      await logConversation({ user_id: userId, direction: "out", kind: "command", body: action.replyText });
     }
 
     logger.info({ userId, type: action.type, from: message.from }, "Command response processed");

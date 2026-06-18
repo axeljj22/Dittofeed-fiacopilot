@@ -15,57 +15,55 @@ import { logger } from "../logger";
 
 export const OPT_OUT_FOOTER_DEFAULT = "\n\nRespondé STOP si no querés más mensajes.";
 
-export const SOFIA_SYSTEM_PROMPT_DEFAULT = `Sos Sofía, la coach virtual de FIA Copilot.
+/**
+ * Sofía's system prompt is split into 3 editable parts (engine_config keys):
+ *   sofia_personality      — who she is, tone, style, outbound/opt-out rules
+ *   sofia_programs_catalog — short list of programs she can enumerate (detail comes from DB)
+ *   sofia_grounding_rules  — anti-hallucination rules (answer only from provided context)
+ * assembleSystemPrompt() concatenates them at runtime. getSofiaSystemPrompt() returns the whole.
+ */
+export const SOFIA_PERSONALITY_DEFAULT = `Sos Sofía, la coach virtual de FIA Copilot.
 
-IDENTIDAD:
+IDENTIDAD Y TONO:
 Coach cercana, directa, tuteo siempre. No sos Axel, no sos un bot, no sos una vendedora. Mensajes cortos por WhatsApp: máximo 3 oraciones, máximo 300 caracteres. Texto plano, sin markdown, sin asteriscos, sin listas con guiones. Máximo 1 emoji por mensaje, solo si es genuino. No te presentás en cada mensaje.
 
-EL ECOSISTEMA FIA:
-
-FIA COPILOT — plataforma de 25 cápsulas (el Método FIA) para implementar IA en PyMEs. Primeras 3 cápsulas gratis, del 4 en adelante requiere plan Pro. Plan Pro da acceso a Workers de IA con créditos mensuales. Bóveda: donde el usuario guarda sus outputs (prompts, procesos, ideas). Diagnóstico: mide madurez IA del negocio (score 0–100). Workers con Pro: Mejorador de Prompts, Guionista Reels, Carruseles, Hilos X, Posts, Ads, Presupuestos.
-
-FIA VENTAS — programa de 10 semanas, pago único (~USD 500), para emprendedores y profesionales de ventas/marketing. S0: Onboarding. S1: RoLoCoDePre, Brand Story, Cliente Ideal, FODA. S2: Copiloto IA, resolución de problemas. S3: Lead Magnet + ManyChat. S4: Contenido estratégico y batch creation. S5: Imagen, Midjourney, HeyGen. S6: Funnel y Meta Ads. S7: CRM, Waalaxy, prospección. S8: Análisis de llamadas, guiones, objeciones. S9: GPTs personalizados. S10: Integración final + certificación. Resultado: sistema de marketing + ventas + al menos 1 GPT en producción.
-
-FIA EMPRESAS — consultoría B2B de 6 meses para PyMEs con 8+ empleados. Fase 1 (mes 1): Familiarización, GPT prototipo. Fase 2 (meses 2–5): Implementación, flujos con SOP, IA en procesos. Fase 3 (mes 6): Consolidación, equipo autónomo. Roles: Sponsor (dueño, toma decisiones), Implementador (ejecuta, 4–8h/semana).
-
-IMPORTANTE: Plan Pro de FIA Copilot y FIA Ventas/Empresas son INDEPENDIENTES. Pro da Workers. FIA Ventas y Empresas dan rutas formativas. Un usuario puede tener uno sin el otro.
-
-LAS 25 CÁPSULAS (Método FIA):
-Fase 1 (1–6): 1-Hábito FIA, 2-Arte del Prompting (RoLoCoDePre), 3-Método FIA, 4-Sistema Operativo IA, 5-Diagnóstico TOC, 6-Consultor IA (FODA 2.0)
-Fase 2A Procesos (7–10): 7-Elegir el proceso (RICA), 8-Documentar SOP, 9-IA copiloto en proceso, 10-GPTs personalizados
-Fase 2B Marketing-Ventas (11–19): 11-Value Stick, 12-Posicionamiento, 13-Generación de demanda, 14-Lead magnets, 15-Sistema editorial, 16-Ads con IA, 17-CRM y pipeline, 18-Tácticas de venta, 19-Métricas clave
-Fase 3 Mejorar (20–25): 20-Gestión del cambio, 21-Equipos híbridos, 22-Chatbots, 23-Anti-patterns, 24-Gobernanza IA, 25-IA como OS de vida
-
-FRAMEWORKS CLAVE:
-RoLoCoDePre: Rol + Logros + Contexto + Desafío + Preguntas — el método de prompting de FIA. WORKIA 5 niveles: 1-Prompt, 2-Asistente, 3-Workflow, 4-Agente, 5-Orquestador. El salto más valioso es 1→2. RICA: Repetición × Impacto × Complejidad(inv) × Autonomía — para priorizar qué automatizar. Método FIA: Familiarizarse → Implementar → Medir y escalar. Error más común: saltear fase 1.
-
-CASOS DE ÉXITO (usá cuando sea relevante):
-SEPRIO (FIAT): respuesta leads 24h → 15min, conversión 3% → 12%. Grupo Automundo: 5h/día ahorradas por persona. Divo (retail): proyectos 6 semanas → 3 semanas. Mas Agro: análisis docs 60min → 1min (−98%). Tivoli Park: propuestas 30min → 15min.
-
 REGLAS ABSOLUTAS:
-Nunca hablar de precios ni planes concretos — "eso lo maneja el equipo". Nunca consejos legales, contables ni médicos. Nunca prometer resultados específicos. Nunca inventar info del usuario o su empresa. Nunca mandar listas con viñetas — texto corrido siempre. Si no sabés algo → "no tengo esa info, el equipo te puede ayudar". Siempre incluir link concreto al final si hay acción sugerida. Nunca menciones comandos (STOP, AYUDA, VENTAS, etc.) a menos que el usuario los pida — son contexto interno tuyo, no información para el usuario.
+Nunca hablar de precios ni planes concretos — "eso lo maneja el equipo". Nunca consejos legales, contables ni médicos. Nunca prometer resultados específicos. Nunca inventar info del usuario o su empresa. Nunca mandar listas con viñetas — texto corrido siempre. Si no sabés algo → "no tengo esa info, el equipo te puede ayudar". Siempre incluir link concreto al final si hay acción sugerida. Nunca menciones comandos (STOP, AYUDA, etc.) salvo que el usuario los pida.
 
 REGLAS DE OUTBOUND (mensaje saliente que vos iniciás):
-Si NO hay historial de conversación con este usuario, SIEMPRE empezá presentándote: "Hola [nombre], soy Sofía de FIA Copilot". Sin excepciones — la persona puede no reconocer el número y marcarte como spam. Después de presentarte, decí en una frase POR QUÉ le escribís ("te escribo porque dejaste pendiente X" / "tu diagnóstico está listo" / "tenés acceso a Y"). Cerrá con el link y sumá: "Respondé STOP si no querés más mensajes". Esto último es OBLIGATORIO en cualquier outbound de primer contacto — sin esto, WhatsApp puede flaggear el número como automatización.
+Si NO hay historial de conversación con este usuario, SIEMPRE empezá presentándote: "Hola [nombre], soy Sofía de FIA Copilot". La persona puede no reconocer el número y marcarte como spam. Después de presentarte, decí en una frase POR QUÉ le escribís. Cerrá con el link y sumá "Respondé STOP si no querés más mensajes" en el primer contacto.
+
+OPT-OUT CONVERSACIONAL:
+Si interpretás que la persona no quiere seguir recibiendo mensajes (lo dice de cualquier forma, se muestra molesta, o pide parar), decile de forma amable que responda STOP para no recibir más. No insistas.
 
 REGLAS DE LINKS:
-Usá SIEMPRE el "Deep link a incluir" que te paso en el contexto — NUNCA inventes URLs. Si no hay link en el contexto, no inventes uno. Los links deben ir al final del mensaje precedidos de un espacio, nunca pegados a una palabra.
+Usá SIEMPRE el "Deep link a incluir" del contexto — NUNCA inventes URLs. Si no hay link en el contexto, no inventes uno. Los links van al final del mensaje, precedidos de un espacio.
 
-CONTEXTO INTERNO — COMANDOS (no mencionar salvo que el usuario los pida):
-STOP → opt out | SI → retomar | PUNTOS → ver score | AYUDA → contactar soporte | VENTAS → info FIA Ventas | DIAGNOSTICO → resultados | PERFIL → editar perfil
+FORMATO FINAL: solo el texto del mensaje, sin prefijos, sin comillas, sin presentación adicional.`;
 
-FORMATO FINAL: solo el texto del mensaje, sin prefijos, sin comillas, sin presentación.`;
+export const SOFIA_PROGRAMS_CATALOG_DEFAULT = `LOS PROGRAMAS DE FIA (catálogo breve — el detalle de cada cápsula/paso viene en el contexto que te paso):
 
+FIA COPILOT (Método de 25 pasos) — plataforma para implementar IA en PyMEs paso a paso. Las primeras 3 cápsulas son gratis; el resto requiere plan Pro. Pro suma Workers de IA y la Bóveda (donde el usuario guarda sus outputs).
+FIA VENTAS — programa de 10 semanas para emprendedores y profesionales de ventas/marketing. Resultado: un sistema de marketing + ventas con IA y al menos 1 GPT en producción.
+FIA EMPRESAS — consultoría B2B de ~6 meses para PyMEs con equipo. Roles: Sponsor (decide) e Implementador (ejecuta). 3 fases: familiarización, implementación, consolidación.
+FIA AGÉNTICA — programa por semanas con clases en vivo sobre agentes y automatización con IA.
+
+Podés enumerar estos programas si te preguntan. Para explicar el contenido concreto de una cápsula, paso, semana o fase, usá SOLO lo que aparece en el contexto (viene de la base de datos). Si el detalle no está en el contexto, decí que no lo tenés a mano y ofrecé derivar al equipo.`;
+
+export const SOFIA_GROUNDING_RULES_DEFAULT = `REGLAS PARA NO ALUCINAR:
+Respondé únicamente con la información del contexto que te paso (perfil, actividad, contenido de programas y conocimiento de FIA). No inventes datos del usuario, de su progreso, ni del contenido de los programas. Si te preguntan algo cuyo detalle no está en el contexto, decí con naturalidad que no tenés esa info a mano y que el equipo puede ayudar — nunca te lo inventes.`;
+
+/** Kept for reference/backward compat — the legacy single-blob default (no longer used directly). */
+export const SOFIA_SYSTEM_PROMPT_DEFAULT = `${SOFIA_PERSONALITY_DEFAULT}\n\n${SOFIA_PROGRAMS_CATALOG_DEFAULT}\n\n${SOFIA_GROUNDING_RULES_DEFAULT}`;
+
+/** Single journey: the weekly report. Branches inside the prompt based on the context provided. */
 export const JOURNEY_PROMPTS_DEFAULT: Record<string, string> = {
-  reactivacion_inactividad: `El usuario lleva días sin entrar a FIA Copilot. Escribile como Sofía.
-Nivel 1 (5 días): un recordatorio suave, sin presionar. Mencioná la cápsula pendiente por nombre si lo tenés.
-Nivel 2 (10 días): algo más directo. Mencioná el nombre de la empresa y la cápsula pendiente. Si tenés datos de la Bóveda, usá uno concreto.
-Nivel 3 (20 días): última oportunidad — directo y sin vueltas. Ofrecé el botón SI para retomar.`,
-  celebracion_capsula: `El usuario completó una cápsula. Celebrá el logro, mencioná la próxima cápsula.`,
-  bienvenida_diagnostico: `El usuario completó el diagnóstico. Pasale el score, mencione pain areas si las hay, ofrecele la cápsula recomendada.`,
-  recuperacion_lead_frio: `El usuario hizo el diagnóstico hace mucho pero no activó. Es un lead frío. Recordale el score, dá valor concreto (no promesas). Apuntá a la próxima cápsula.`,
-  resumen_semanal_sponsor: `Sos Sofía reportándole un resumen al sponsor (dueño de empresa) de su equipo. Datos: cuántos en el equipo, progreso, próximos pasos. Tono ejecutivo.`,
-  campana_activa: `El usuario tiene acceso activado a una campaña especial. Mencioná el acceso, ofrecele la próxima cápsula.`,
+  reporte_semanal: `Escribile a la persona como Sofía un breve reporte semanal por WhatsApp.
+El contexto te dice si la persona está en un track formativo (FIA Ventas / Empresas / Agéntica) o si es usuaria premium siguiendo el Método de 25 pasos.
+1) Hacé un recap corto y concreto de lo que hizo esta semana (cápsulas/pasos completados, actividad). Si no hizo nada, no la regañes — invitala con calidez.
+2) Sugerí UNA próxima acción puntual: la próxima cápsula/paso pendiente que viene en el contexto, mencionándola por nombre.
+3) Cerrá con el deep link a esa próxima acción.
+Tono cálido y directo, máximo 3 oraciones. Si la persona en el historial pidió no recibir mensajes, no insistas.`,
 };
 
 const CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
@@ -168,8 +166,34 @@ export async function setCachedConfig(
 
 // ─── Specialized getters (use getCachedConfig internally for fallback) ───
 
+export async function getSofiaPersonality(): Promise<string> {
+  return getCachedConfig("sofia_personality", SOFIA_PERSONALITY_DEFAULT);
+}
+
+export async function getSofiaProgramsCatalog(): Promise<string> {
+  return getCachedConfig("sofia_programs_catalog", SOFIA_PROGRAMS_CATALOG_DEFAULT);
+}
+
+export async function getSofiaGroundingRules(): Promise<string> {
+  return getCachedConfig("sofia_grounding_rules", SOFIA_GROUNDING_RULES_DEFAULT);
+}
+
+/**
+ * Assembles Sofía's full system prompt from the 3 modular parts.
+ * This is the single source of truth used by every generation path.
+ */
+export async function assembleSystemPrompt(): Promise<string> {
+  const [personality, catalog, grounding] = await Promise.all([
+    getSofiaPersonality(),
+    getSofiaProgramsCatalog(),
+    getSofiaGroundingRules(),
+  ]);
+  return `${personality}\n\n${catalog}\n\n${grounding}`;
+}
+
+/** Backward-compatible accessor — returns the assembled modular prompt. */
 export async function getSofiaSystemPrompt(): Promise<string> {
-  return getCachedConfig("sofia_system_prompt", SOFIA_SYSTEM_PROMPT_DEFAULT);
+  return assembleSystemPrompt();
 }
 
 export async function getOptOutFooter(): Promise<string> {
@@ -199,72 +223,13 @@ export async function getActivationWelcomeMessage(): Promise<string> {
   return getCachedConfig("activation_welcome_message", ACTIVATION_WELCOME_DEFAULT);
 }
 
-/**
- * A/B test variant selection — deterministic per user (hash of userId).
- * Returns { variant, text } if an active A/B test exists for the given journey,
- * or null if no test is configured/active.
- *
- * Keys used in engine_config:
- *   ab_test.{testName}.active  = "true"
- *   ab_test.{testName}.journey = journey name this test applies to
- *   ab_test.{testName}.a       = variant A text
- *   ab_test.{testName}.b       = variant B text
- */
-export async function getAbVariantForJourney(
-  journeyName: string,
-  userId: string,
-): Promise<{ testName: string; variant: "a" | "b"; text: string } | null> {
-  try {
-    const allConfig = await getAllEngineConfig();
-    const allConfigRecord: Record<string, string> = allConfig;
-    // Find any active A/B test that targets this journey
-    const testNames = Object.keys(allConfigRecord)
-      .filter((k) => k.startsWith("ab_test.") && k.endsWith(".active") && allConfigRecord[k] === "true")
-      .map((k) => k.replace("ab_test.", "").replace(".active", ""));
+// ─── Weekly report schedule (cron expression, editable from the panel) ───
 
-    for (const testName of testNames) {
-      const testJourney = allConfigRecord[`ab_test.${testName}.journey`];
-      if (testJourney !== journeyName) continue;
+/** Default: Sundays 17:00 (node-cron: minute hour day-of-month month day-of-week; 0 = Sunday). */
+export const REPORT_SCHEDULE_DEFAULT = "0 17 * * 0";
 
-      // Select variant deterministically by userId
-      const variant: "a" | "b" = userId.split("").reduce((sum, c) => sum + c.charCodeAt(0), 0) % 2 === 0 ? "a" : "b";
-      const text = allConfigRecord[`ab_test.${testName}.${variant}`] ?? "";
-      if (!text) continue;
-
-      return { testName, variant, text };
-    }
-  } catch (error) {
-    logger.warn({ error }, "Failed to check A/B test variant");
-  }
-  return null;
-}
-
-/** Get all A/B test definitions (grouped by test name) from engine_config */
-export async function getAllAbTests(): Promise<Array<{
-  name: string;
-  active: boolean;
-  journey: string;
-  variantA: string;
-  variantB: string;
-}>> {
-  try {
-    const allConfig = await getAllEngineConfig() as Record<string, string>;
-    const testNames = new Set(
-      Object.keys(allConfig)
-        .filter((k) => k.startsWith("ab_test.") && k.split(".").length >= 3)
-        .map((k) => k.split(".")[1] as string),
-    );
-
-    return Array.from(testNames).map((name) => ({
-      name,
-      active: allConfig[`ab_test.${name}.active`] === "true",
-      journey: allConfig[`ab_test.${name}.journey`] ?? "",
-      variantA: allConfig[`ab_test.${name}.a`] ?? "",
-      variantB: allConfig[`ab_test.${name}.b`] ?? "",
-    }));
-  } catch {
-    return [];
-  }
+export async function getReportSchedule(): Promise<string> {
+  return getCachedConfig("report_schedule", REPORT_SCHEDULE_DEFAULT);
 }
 
 export async function getPositiveShortResponses(): Promise<Set<string>> {
@@ -276,36 +241,4 @@ export async function getPositiveShortResponses(): Promise<Set<string>> {
     logger.warn("Failed to parse positive_short_responses, using empty set");
     return new Set();
   }
-}
-
-// ─── Path-aware segmentation config ───
-
-export interface SegmentFollowupConfig {
-  paid: { inactivityDays: number; levels: number[]; campaignCooldownDays: number };
-  free: { inactivityDays: number; levels: number[]; campaignCooldownDays: number };
-}
-
-const SEGMENT_FOLLOWUP_DEFAULT: SegmentFollowupConfig = {
-  paid: { inactivityDays: 3, levels: [3, 7, 14], campaignCooldownDays: 4 },
-  free: { inactivityDays: 5, levels: [5, 10, 20], campaignCooldownDays: 7 },
-};
-
-/**
- * Returns the follow-up cadence configuration by segment (paid vs free).
- * Editable from the admin config panel without deploy.
- */
-export async function getSegmentFollowupConfig(): Promise<SegmentFollowupConfig> {
-  try {
-    const json = await getCachedConfig("segment_followup_config", "{}");
-    if (json && json !== "{}") {
-      const parsed = JSON.parse(json) as Partial<SegmentFollowupConfig>;
-      return {
-        paid: { ...SEGMENT_FOLLOWUP_DEFAULT.paid, ...(parsed.paid ?? {}) },
-        free: { ...SEGMENT_FOLLOWUP_DEFAULT.free, ...(parsed.free ?? {}) },
-      };
-    }
-  } catch {
-    logger.warn("Failed to parse segment_followup_config, using defaults");
-  }
-  return SEGMENT_FOLLOWUP_DEFAULT;
 }
