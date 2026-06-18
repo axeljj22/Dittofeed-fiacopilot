@@ -11,7 +11,7 @@ export interface EngineVariable {
   label: string;      // Human-readable label for the UI
   source: string;     // Where the value comes from (DB table / computed)
   example: string;    // Example value for preview rendering
-  category: "perfil" | "capsula" | "score" | "contexto";
+  category: "perfil" | "capsula" | "score" | "contexto" | "programa";
   description: string;
 }
 
@@ -90,6 +90,31 @@ export const ENGINE_VARIABLES: EngineVariable[] = [
     example: "65",
     category: "score",
     description: "Intención de compra o avance del usuario (0–100).",
+  },
+  // ── Programa formativo ──
+  {
+    key: "{{programa}}",
+    label: "Programa activo",
+    source: "learning_paths.name (calculado por path_id activo)",
+    example: "FIA Ventas",
+    category: "programa",
+    description: "Nombre del programa formativo en el que está activo el usuario (FIA Ventas, FIA Empresas, FIA Agéntica, o Método FIA).",
+  },
+  {
+    key: "{{capsulasDelPrograma}}",
+    label: "Total cápsulas del programa",
+    source: "capsules filtradas por path_id",
+    example: "14",
+    category: "programa",
+    description: "Cantidad total de cápsulas en el programa del usuario (no el global de 25).",
+  },
+  {
+    key: "{{pathProgress}}",
+    label: "Progreso en el programa",
+    source: "capsule_progress + capsules por path_id",
+    example: "3/14",
+    category: "programa",
+    description: "Progreso del usuario dentro de su programa activo: completadas / total de esa ruta.",
   },
   // ── Contexto del journey ──
   {

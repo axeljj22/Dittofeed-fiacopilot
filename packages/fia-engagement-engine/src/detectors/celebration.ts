@@ -11,6 +11,8 @@ import {
   getProfilesForUsers,
   getCapsuleProgressForUsers,
   getContactedUserIdsForJourney,
+  getPathTotals,
+  resolveUserPaths,
 } from "../db/supabase";
 import type { EngagementOpportunity } from "../db/types";
 
@@ -41,11 +43,12 @@ export async function detectCompletedCapsules(): Promise<
 
   const userIds = [...latestByUser.keys()];
 
-  // Batch: contacted check, profiles, and capsule progress
-  const [contactedIds, profilesMap, progressMap] = await Promise.all([
+  // Batch: contacted check, profiles, capsule progress, and path totals
+  const [contactedIds, profilesMap, progressMap, pathTotals] = await Promise.all([
     getContactedUserIdsForJourney(userIds, "celebracion_capsula", 48),
     getProfilesForUsers(userIds),
     getCapsuleProgressForUsers(userIds),
+    getPathTotals(),
   ]);
 
   for (const [userId, event] of latestByUser) {
@@ -54,7 +57,7 @@ export async function detectCompletedCapsules(): Promise<
     const profile = profilesMap.get(userId);
     if (!profile?.phone || !profile.whatsapp_opt_in) continue;
 
-    const meta = event.metadata as { capsule_number?: number; capsule_numero?: number } | null;
+    const meta = event.metadata as { capsule_number?: number; capsule_numero?: number; path_id?: string } | null;
     const capsuleNumero = meta?.capsule_number ?? meta?.capsule_numero ?? 0;
 
     if (capsuleNumero < 1) {
@@ -62,14 +65,28 @@ export async function detectCompletedCapsules(): Promise<
       continue;
     }
 
-    const nextCapsule = capsuleNumero + 1;
-    const isLastCapsule = capsuleNumero >= config.engine.totalCapsules;
+    const userProgress = progressMap.get(userId) ?? [];
+    const userPaths = resolveUserPaths(userProgress, pathTotals);
+
+    // Find the path that this capsule belongs to
+    const completedProgress = userProgress.find((p) => p.capsule_number === capsuleNumero && p.status === "completed");
+    const capsulePath = completedProgress?.path_id
+      ? userPaths.find((p) => p.pathId === completedProgress.path_id)
+      : userPaths.find((p) => p.activePath) ?? userPaths[0];
+
+    const totalInPath = capsulePath?.total ?? config.engine.totalCapsules;
+    const isLastCapsule = capsulePath
+      ? capsulePath.completed >= capsulePath.total
+      : capsuleNumero >= config.engine.totalCapsules;
+
+    // Next capsule is the one the path says, not arithmetic +1
+    const nextCapsuleNumber = isLastCapsule ? null : (capsulePath?.nextCapsuleNumber ?? capsuleNumero + 1);
+    const nextCapsuleTitle = capsulePath?.nextCapsuleTitle ?? null;
 
     const deepLink = isLastCapsule
       ? `${config.engine.appBaseUrl}/boveda`
-      : `${config.engine.appBaseUrl}/capsulas/${nextCapsule}`;
+      : `${config.engine.appBaseUrl}/capsulas/${nextCapsuleNumber}`;
 
-    const userProgress = progressMap.get(userId) ?? [];
     const totalCompleted = userProgress.filter((p) => p.status === "completed").length;
 
     opportunities.push({
@@ -79,9 +96,13 @@ export async function detectCompletedCapsules(): Promise<
       deepLink,
       context: {
         completedCapsuleNumber: capsuleNumero,
-        nextCapsuleNumber: isLastCapsule ? null : nextCapsule,
+        nextCapsuleNumber,
+        nextCapsuleTitle,
         isLastCapsule,
         totalCompleted,
+        programName: capsulePath?.name ?? null,
+        pathProgress: capsulePath ? `${capsulePath.completed}/${totalInPath}` : null,
+        isPaidProgram: capsulePath?.isPaid ?? false,
       },
     });
   }

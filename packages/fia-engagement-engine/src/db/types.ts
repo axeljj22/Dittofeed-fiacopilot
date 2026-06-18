@@ -104,6 +104,28 @@ export interface UserProgramAccess {
   created_at: string;
 }
 
+export interface LearningPath {
+  id: string;
+  name: string;
+  program_slug: string | null;  // null = free method (Método FIA); matches user_program_access.program_slug
+  is_paid: boolean;
+  display_order: number;
+  is_active: boolean;
+}
+
+export interface UserPathStatus {
+  pathId: string;
+  name: string;
+  programSlug: string | null;
+  isPaid: boolean;
+  completed: number;
+  total: number;
+  nextCapsuleNumber: number | null;
+  nextCapsuleTitle: string | null;
+  isFinished: boolean;
+  activePath: boolean;
+}
+
 // ─── Write-only table ───
 
 export interface EngagementLogInsert {

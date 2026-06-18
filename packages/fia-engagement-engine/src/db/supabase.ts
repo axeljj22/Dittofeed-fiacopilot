@@ -5,6 +5,8 @@ import type {
   Profile,
   Capsule,
   CapsuleProgress,
+  LearningPath,
+  UserPathStatus,
   VaultOutput,
   LeadScore,
   UserEvent,
@@ -106,6 +108,181 @@ export async function getCapsules(): Promise<Capsule[]> {
     return [];
   }
   return (data ?? []) as Capsule[];
+}
+
+// ─── READ: Learning Paths ───
+
+let _pathsCache: LearningPath[] | null = null;
+let _pathsCacheExpiry = 0;
+
+/**
+ * Returns all active learning paths ordered by display_order.
+ * Cached for 1h. Falls back to a program_slug_path_map stored in engine_config
+ * when the DB columns program_slug/is_paid are not yet migrated (zero-downtime).
+ */
+export async function getLearningPaths(): Promise<LearningPath[]> {
+  if (_pathsCache && Date.now() < _pathsCacheExpiry) return _pathsCache;
+
+  try {
+    const { data, error } = await getSupabaseClient()
+      .from("learning_paths")
+      .select("id, name, program_slug, is_paid, display_order, is_active")
+      .eq("is_active", true)
+      .order("display_order", { ascending: true });
+
+    if (!error && data && data.length > 0) {
+      // Check if program_slug column exists (migrated) by inspecting first row
+      const firstRow = data[0] as Record<string, unknown>;
+      if ("program_slug" in firstRow) {
+        _pathsCache = (data as LearningPath[]);
+        _pathsCacheExpiry = Date.now() + 60 * 60 * 1000;
+        return _pathsCache;
+      }
+    }
+  } catch {
+    // Columns may not exist yet — fall through to fallback
+  }
+
+  // Fallback: read from engine_config key "program_slug_path_map"
+  // This allows path resolution before the DB migration is applied.
+  _pathsCache = await _buildPathsFromFallbackConfig();
+  _pathsCacheExpiry = Date.now() + 5 * 60 * 1000; // shorter TTL for fallback
+  return _pathsCache;
+}
+
+async function _buildPathsFromFallbackConfig(): Promise<LearningPath[]> {
+  try {
+    const { data } = await getSupabaseClient()
+      .from("engine_config")
+      .select("value")
+      .eq("key", "program_slug_path_map")
+      .single();
+
+    if (data?.value) {
+      const map = JSON.parse(data.value) as Record<string, { slug: string; isPaid: boolean; name?: string; displayOrder?: number }>;
+      return Object.entries(map).map(([pathId, info], idx) => ({
+        id: pathId,
+        name: info.name ?? info.slug,
+        program_slug: info.slug,
+        is_paid: info.isPaid,
+        display_order: info.displayOrder ?? idx + 2,
+        is_active: true,
+      }));
+    }
+  } catch {
+    logger.warn("Could not load program_slug_path_map from engine_config");
+  }
+  return [];
+}
+
+/** Invalidates the in-memory paths cache (call after config changes). */
+export function invalidatePathsCache(): void {
+  _pathsCache = null;
+  _pathsCacheExpiry = 0;
+}
+
+/**
+ * Builds a map from path_id → { name, total, isPaid, programSlug }
+ * by joining all capsules with the paths list.
+ */
+export async function getPathTotals(): Promise<Map<string, { name: string; total: number; isPaid: boolean; programSlug: string | null }>> {
+  const [capsules, paths] = await Promise.all([getCapsules(), getLearningPaths()]);
+
+  const pathMap = new Map(paths.map((p) => [p.id, p]));
+  const totals = new Map<string, { name: string; total: number; isPaid: boolean; programSlug: string | null }>();
+
+  for (const capsule of capsules) {
+    const pid = capsule.path_id ?? "__core__";
+    const existing = totals.get(pid);
+    if (existing) {
+      existing.total++;
+    } else {
+      const path = pathMap.get(pid);
+      totals.set(pid, {
+        name: path?.name ?? "Método FIA",
+        total: 1,
+        isPaid: path?.is_paid ?? false,
+        programSlug: path?.program_slug ?? null,
+      });
+    }
+  }
+  return totals;
+}
+
+/**
+ * Resolves the status of each learning path for a given user's capsule progress.
+ * Returns one entry per path that the user has any progress on, plus a flag
+ * indicating which path is the "active" one (most recent engagement, preferring paid).
+ */
+export function resolveUserPaths(
+  capsuleProgress: CapsuleProgress[],
+  pathTotals: Map<string, { name: string; total: number; isPaid: boolean; programSlug: string | null }>,
+): UserPathStatus[] {
+  // Group progress by path_id
+  const byPath = new Map<string, CapsuleProgress[]>();
+  for (const p of capsuleProgress) {
+    const pid = p.path_id ?? "__core__";
+    const arr = byPath.get(pid) ?? [];
+    arr.push(p);
+    byPath.set(pid, arr);
+  }
+
+  if (byPath.size === 0) return [];
+
+  const results: (UserPathStatus & { lastActivity: string | null })[] = [];
+
+  for (const [pid, progress] of byPath) {
+    const info = pathTotals.get(pid);
+    const completed = progress.filter((p) => p.status === "completed").length;
+    const total = info?.total ?? progress.length;
+
+    // Next capsule within THIS path: lowest capsule number not yet completed
+    const completedNumbers = new Set(
+      progress.filter((p) => p.status === "completed").map((p) => p.capsule_number),
+    );
+    const pending = progress
+      .filter((p) => p.status !== "completed" && p.capsule_number > 0)
+      .sort((a, b) => a.capsule_number - b.capsule_number)[0];
+
+    const nextUncompleted = progress
+      .filter((p) => !completedNumbers.has(p.capsule_number) && p.capsule_number > 0)
+      .sort((a, b) => a.capsule_number - b.capsule_number)[0];
+
+    const next = pending ?? nextUncompleted;
+
+    const lastActivity = progress
+      .map((p) => p.started_at ?? p.completed_at)
+      .filter(Boolean)
+      .sort()
+      .at(-1) ?? null;
+
+    results.push({
+      pathId: pid,
+      name: info?.name ?? "Método FIA",
+      programSlug: info?.programSlug ?? null,
+      isPaid: info?.isPaid ?? false,
+      completed,
+      total,
+      nextCapsuleNumber: next?.capsule_number ?? null,
+      nextCapsuleTitle: next?.capsule_title ?? null,
+      isFinished: completed >= total && total > 0,
+      activePath: false, // set below
+      lastActivity,
+    });
+  }
+
+  // Pick active path: paid with recent activity first, then free
+  const paidWithProgress = results.filter((r) => r.isPaid && !r.isFinished);
+  const activeCandidate =
+    (paidWithProgress.sort((a, b) => (b.lastActivity ?? "").localeCompare(a.lastActivity ?? ""))[0]) ??
+    (results.sort((a, b) => (b.lastActivity ?? "").localeCompare(a.lastActivity ?? ""))[0]);
+
+  for (const r of results) {
+    r.activePath = r.pathId === activeCandidate?.pathId;
+  }
+
+  // Strip internal lastActivity before returning
+  return results.map(({ lastActivity: _la, ...rest }) => rest);
 }
 
 // ─── READ: Capsule Progress ───
@@ -750,14 +927,17 @@ export interface UserSegment {
   orgRole: string | null;
   planId: string | null;
   trialOfferExpiresAt: string | null;
+  /** Data-driven list of programs the user is enrolled in (from user_program_access + learning_paths). */
+  enrolledPrograms: Array<{ slug: string; name: string; pathId: string; isPaid: boolean }>;
 }
 
 /**
  * Returns the user's segment for inbound AI personalization.
  * Priority: FIA Empresas > FIA Ventas > Pro > Lead frío
+ * Also hydrates enrolledPrograms from learning_paths (data-driven, no hardcoded slugs).
  */
 export async function getUserSegment(userId: string): Promise<UserSegment> {
-  const [programAccess, subscription, profile] = await Promise.all([
+  const [programAccess, subscription, profile, paths] = await Promise.all([
     getSupabaseClient()
       .from("user_program_access")
       .select("program_slug")
@@ -776,19 +956,41 @@ export async function getUserSegment(userId: string): Promise<UserSegment> {
       .select("org_role, trial_offer_expires_at")
       .eq("id", userId)
       .single(),
+    getLearningPaths(),
   ]);
 
   const slugs = (programAccess.data ?? []).map((r) => (r as { program_slug: string }).program_slug);
   const sub = subscription.data as { plan_id: string; status: string } | null;
   const prof = profile.data as { org_role: string | null; trial_offer_expires_at: string | null } | null;
 
+  // org-level FIA Empresas access (sponsor/implementador roles get automatic access)
+  const hasOrgEmpresasAccess = prof?.org_role === "sponsor" || prof?.org_role === "implementador";
+
+  // Build enrolledPrograms by crossing slugs with learning_paths (data-driven)
+  const enrolledPrograms: Array<{ slug: string; name: string; pathId: string; isPaid: boolean }> = [];
+  for (const path of paths) {
+    if (!path.program_slug) continue; // skip free method (no slug needed)
+    const hasAccess = slugs.includes(path.program_slug) ||
+      (path.program_slug === "fia-empresas" && hasOrgEmpresasAccess);
+    if (hasAccess) {
+      enrolledPrograms.push({
+        slug: path.program_slug,
+        name: path.name,
+        pathId: path.id,
+        isPaid: path.is_paid,
+      });
+    }
+  }
+
   return {
     isPaid: !!sub || slugs.length > 0,
-    isFiaVentas: slugs.includes("fia-ventas"),
-    isFiaEmpresas: slugs.includes("fia-empresas") || prof?.org_role === "sponsor" || prof?.org_role === "implementador",
+    // Backward-compat booleans derived from the data-driven list
+    isFiaVentas: enrolledPrograms.some((p) => p.slug === "fia-ventas"),
+    isFiaEmpresas: enrolledPrograms.some((p) => p.slug === "fia-empresas") || hasOrgEmpresasAccess,
     orgRole: prof?.org_role ?? null,
     planId: sub?.plan_id ?? null,
     trialOfferExpiresAt: prof?.trial_offer_expires_at ?? null,
+    enrolledPrograms,
   };
 }
 
@@ -1068,43 +1270,70 @@ export async function getAbTestStats(testName: string): Promise<{
 export async function getUsersInSegment(segment: string): Promise<Array<{ id: string; phone: string; name: string | null; company_name: string | null }>> {
   const sb = getSupabaseClient();
 
+  type ProfileRow = { id: string; phone: string | null; name: string | null; company_name: string | null; whatsapp_opt_in: boolean };
+  type AccessRow = { profiles: ProfileRow | ProfileRow[] };
+
+  const filterProfiles = (rows: unknown[]): Array<{ id: string; phone: string; name: string | null; company_name: string | null }> =>
+    (rows as AccessRow[]).reduce<Array<{ id: string; phone: string; name: string | null; company_name: string | null }>>((acc, r) => {
+      const profile = Array.isArray(r.profiles) ? r.profiles[0] : r.profiles;
+      if (profile?.whatsapp_opt_in && profile.phone) {
+        acc.push({ id: profile.id, phone: profile.phone, name: profile.name, company_name: profile.company_name });
+      }
+      return acc;
+    }, []);
+
+  // ── Static segments ──────────────────────────────────────────────────────
   if (segment === "todos") {
     const { data, error } = await sb
       .from("profiles")
       .select("id, phone, name, company_name")
       .eq("whatsapp_opt_in", true)
       .not("phone", "is", null);
-
     if (error) { logger.warn({ error, segment }, "Failed to fetch segment users"); return []; }
     return (data ?? []) as Array<{ id: string; phone: string; name: string | null; company_name: string | null }>;
   }
 
-  // For specific segments, join with user_program_access
-  const programSlug = segment === "fia-ventas" ? "fia-ventas"
-    : segment === "fia-copilot-pro" ? "fia-copilot"
-    : segment === "fia-empresas" ? "fia-empresas"
-    : null;
-
-  if (!programSlug) {
-    logger.warn({ segment }, "Unknown segment — defaulting to empty");
-    return [];
+  if (segment === "leads") {
+    // Users with no active plan and no program access
+    const { data: allUsers } = await sb.from("profiles").select("id, phone, name, company_name").eq("whatsapp_opt_in", true).not("phone", "is", null);
+    const { data: paidIds } = await sb.from("subscriptions").select("user_id").eq("status", "active");
+    const { data: accessIds } = await sb.from("user_program_access").select("user_id").eq("status", "active");
+    const paid = new Set([...(paidIds ?? []).map((r: { user_id: string }) => r.user_id), ...(accessIds ?? []).map((r: { user_id: string }) => r.user_id)]);
+    return ((allUsers ?? []) as Array<{ id: string; phone: string; name: string | null; company_name: string | null }>).filter((u) => !paid.has(u.id));
   }
 
-  const { data: accessRows, error: accessErr } = await sb
-    .from("user_program_access")
-    .select("user_id, profiles!inner(id, phone, name, company_name, whatsapp_opt_in)")
-    .ilike("program_slug", `%${programSlug}%`);
+  if (segment === "paid") {
+    // Any user with an active subscription OR active program access
+    const { data: accessRows, error: accessErr } = await sb
+      .from("user_program_access")
+      .select("user_id, profiles!inner(id, phone, name, company_name, whatsapp_opt_in)")
+      .eq("status", "active");
+    if (accessErr) { logger.warn({ accessErr, segment }, "Failed to fetch paid segment"); return []; }
+    return filterProfiles(accessRows ?? []);
+  }
 
-  if (accessErr) { logger.warn({ accessErr, segment }, "Failed to fetch segment users via access"); return []; }
+  if (segment === "fia-copilot-pro") {
+    const { data: subRows, error: subErr } = await sb
+      .from("subscriptions")
+      .select("user_id, profiles!inner(id, phone, name, company_name, whatsapp_opt_in)")
+      .eq("status", "active");
+    if (subErr) { logger.warn({ subErr, segment }, "Failed to fetch pro segment"); return []; }
+    return filterProfiles(subRows ?? []);
+  }
 
-  type AccessRow = { profiles: { id: string; phone: string | null; name: string | null; company_name: string | null; whatsapp_opt_in: boolean } | Array<{ id: string; phone: string | null; name: string | null; company_name: string | null; whatsapp_opt_in: boolean }> };
+  // ── Data-driven: check if segment matches a program_slug in learning_paths ──
+  const paths = await getLearningPaths();
+  const matchedPath = paths.find((p) => p.program_slug === segment);
+  if (matchedPath) {
+    const { data: accessRows, error: accessErr } = await sb
+      .from("user_program_access")
+      .select("user_id, profiles!inner(id, phone, name, company_name, whatsapp_opt_in)")
+      .eq("program_slug", segment)
+      .eq("status", "active");
+    if (accessErr) { logger.warn({ accessErr, segment }, "Failed to fetch segment users via access"); return []; }
+    return filterProfiles(accessRows ?? []);
+  }
 
-  return (accessRows ?? [] as AccessRow[]).reduce<Array<{ id: string; phone: string; name: string | null; company_name: string | null }>>((acc, r) => {
-    const row = r as AccessRow;
-    const profile = Array.isArray(row.profiles) ? row.profiles[0] : row.profiles;
-    if (profile && profile.whatsapp_opt_in && profile.phone) {
-      acc.push({ id: profile.id, phone: profile.phone, name: profile.name, company_name: profile.company_name });
-    }
-    return acc;
-  }, []);
+  logger.warn({ segment }, "Unknown segment — returning empty");
+  return [];
 }

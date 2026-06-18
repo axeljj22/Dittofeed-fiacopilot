@@ -14,30 +14,11 @@ import {
   getLastEventsForUsers,
   getContactedUserIdsForJourney,
   getCapsuleProgressForUsers,
+  getPathTotals,
+  resolveUserPaths,
 } from "../db/supabase";
-import type { EngagementOpportunity, CapsuleProgress } from "../db/types";
-
-const COOLDOWN_HOURS = 7 * 24; // 7 days between contacts
-
-function findNextCapsule(progress: CapsuleProgress[]): CapsuleProgress | undefined {
-  // First pending (viewed/in_progress), then first not_started
-  const pending = progress
-    .filter((p) => p.status === "viewed" || p.status === "in_progress")
-    .sort((a, b) => a.capsule_number - b.capsule_number)[0];
-
-  if (pending) return pending;
-
-  const completedNumbers = new Set(
-    progress.filter((p) => p.status === "completed").map((p) => p.capsule_number),
-  );
-
-  // Find the lowest capsule not yet completed
-  const notStarted = progress
-    .filter((p) => !completedNumbers.has(p.capsule_number) && p.status === "not_started")
-    .sort((a, b) => a.capsule_number - b.capsule_number)[0];
-
-  return notStarted;
-}
+import { getSegmentFollowupConfig } from "../config/engineConfigCache";
+import type { EngagementOpportunity, CapsuleProgress, UserPathStatus } from "../db/types";
 
 export async function detectContentUnlocked(): Promise<EngagementOpportunity[]> {
   const opportunities: EngagementOpportunity[] = [];
@@ -53,10 +34,12 @@ export async function detectContentUnlocked(): Promise<EngagementOpportunity[]> 
 
   const userIds = users.map((u) => u.id);
 
-  const [contactedIds, lastEventsMap, progressMap] = await Promise.all([
-    getContactedUserIdsForJourney(userIds, "campana_activa", COOLDOWN_HOURS),
+  const [contactedIds, lastEventsMap, progressMap, pathTotals, followupConfig] = await Promise.all([
+    getContactedUserIdsForJourney(userIds, "campana_activa", 7 * 24),
     getLastEventsForUsers(userIds),
     getCapsuleProgressForUsers(userIds),
+    getPathTotals(),
+    getSegmentFollowupConfig(),
   ]);
 
   for (const user of users) {
@@ -67,14 +50,20 @@ export async function detectContentUnlocked(): Promise<EngagementOpportunity[]> 
       ? differenceInDays(new Date(), new Date(lastEvent.created_at))
       : Infinity;
 
-    if (daysSince < config.engine.inactivityDays) continue; // still active
-
     const userProgress = progressMap.get(user.id) ?? [];
-    const totalCompleted = userProgress.filter((p) => p.status === "completed").length;
-    const nextCapsule = findNextCapsule(userProgress);
+    const userPaths = resolveUserPaths(userProgress, pathTotals);
+    const isPaid = userPaths.some((p) => p.isPaid);
+    const cadence = isPaid ? followupConfig.paid : followupConfig.free;
 
-    const deepLink = nextCapsule
-      ? `${config.engine.appBaseUrl}/capsulas/${nextCapsule.capsule_number}`
+    if (daysSince < cadence.campaignCooldownDays) continue; // still active by cadence
+
+    const activePath = userPaths.find((p) => p.activePath) ?? userPaths[0];
+    const nextCapsuleNumber = activePath?.nextCapsuleNumber ?? null;
+    const nextCapsuleTitle = activePath?.nextCapsuleTitle ?? null;
+    const totalCompleted = userProgress.filter((p) => p.status === "completed").length;
+
+    const deepLink = nextCapsuleNumber
+      ? `${config.engine.appBaseUrl}/capsulas/${nextCapsuleNumber}`
       : `${config.engine.appBaseUrl}/capsulas`;
 
     opportunities.push({
@@ -84,9 +73,12 @@ export async function detectContentUnlocked(): Promise<EngagementOpportunity[]> 
       deepLink,
       context: {
         daysSinceLastEvent: isFinite(daysSince) ? daysSince : null,
-        nextCapsuleNumber: nextCapsule?.capsule_number ?? null,
-        nextCapsuleTitle: nextCapsule?.capsule_title ?? null,
+        nextCapsuleNumber,
+        nextCapsuleTitle,
         totalCompleted,
+        programName: activePath?.name ?? null,
+        pathProgress: activePath ? `${activePath.completed}/${activePath.total}` : null,
+        isPaidProgram: isPaid,
       },
     });
   }

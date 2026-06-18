@@ -13,7 +13,7 @@ import { processIncomingResponse } from "./senders/responses";
 import { sendWhatsAppMessage, sendCampaignMessage } from "./senders/whatsapp";
 import { baileysManager } from "./senders/whatsappBaileys";
 import { evolutionManager } from "./senders/whatsappEvolution";
-import { getSupabaseClient, upsertCampaignLead } from "./db/supabase";
+import { getSupabaseClient, upsertCampaignLead, getPathTotals, resolveUserPaths } from "./db/supabase";
 import { runAllDetectors, runSponsorReports } from "./orchestrator";
 import { getAdminPanelHtml } from "./admin/panel";
 import { isCodexAvailable, invalidateCodexAuthCache } from "./generators/codexGenerator";
@@ -514,6 +514,7 @@ async function handleDashboard(
       assessmentsRes,
       engagementAllRes,
       engagementRecentRes,
+      pathTotals,
     ] = await Promise.all([
       supabase.from("profiles").select("*"),
       supabase.from("capsules").select("*").order("number", { ascending: true }),
@@ -525,6 +526,7 @@ async function handleDashboard(
       supabase.from("assessment_submissions").select("*").order("created_at", { ascending: false }),
       supabase.from("engagement_log").select("*").order("created_at", { ascending: false }),
       supabase.from("engagement_log").select("*").gte("created_at", weekAgo).order("created_at", { ascending: false }),
+      getPathTotals(),
     ]);
 
     const profiles = profilesRes.data ?? [];
@@ -596,8 +598,11 @@ async function handleDashboard(
       const hasAssessment = assessmentByUser.has(p.id);
       const userEngagement = engagementByUser.get(p.id) ?? [];
 
+      const userPaths = resolveUserPaths(userProg, pathTotals);
+      const activePath = userPaths.find((path) => path.activePath) ?? userPaths[0] ?? null;
+
       let status = "registrado";
-      if (completedCaps >= config.engine.totalCapsules) status = "graduado";
+      if (activePath?.isFinished) status = "graduado";
       else if (completedCaps > 0 || inProgressCaps.length > 0) status = "activo";
       else if (hasAssessment) status = "diagnosticado";
 
@@ -619,6 +624,8 @@ async function handleDashboard(
         capsules_completed: completedCaps,
         capsules_in_progress: inProgressCaps.length,
         current_capsule: capsuleNumberById.get((inProgressCaps[0] as { capsule_id?: string } | undefined)?.capsule_id ?? "") ?? (completedCaps + 1),
+        path_total: activePath?.total ?? config.engine.totalCapsules,
+        program_name: activePath?.name ?? "Método FIA",
         days_since_last_event: daysSinceLastEvent,
         last_event_type: lastEvent?.event_type ?? null,
         overall_score: score?.overall_score ?? null,
@@ -658,21 +665,21 @@ async function handleDashboard(
       graduated,
     };
 
-    // ─── 4. PER-CAPSULE ANALYTICS (all 25) ───
+    // ─── 4. PER-CAPSULE ANALYTICS (all capsules across all programs) ───
     const capsuleAnalytics = [];
-    for (let num = 1; num <= config.engine.totalCapsules; num++) {
-      const capsuleInfo = capsules.find((c) => c.number === num);
-      const progressForCap = allProgress.filter((p) => capsuleNumberById.get(p.capsule_id) === num);
+    for (const capsuleInfo of capsules) {
+      const num = capsuleInfo.number;
+      const progressForCap = allProgress.filter((p) => p.capsule_id === capsuleInfo.id);
       const completedCount = progressForCap.filter((p) => p.status === "completed").length;
       const startedCount = progressForCap.filter((p) => p.status === "viewed" || p.status === "in_progress").length;
-      const vaultForCap = allVault.filter((v) => capsuleNumberById.get(v.capsule_id) === num);
+      const vaultForCap = allVault.filter((v) => v.capsule_id === capsuleInfo.id);
       const completionRate = (completedCount + startedCount) > 0
         ? Math.round((completedCount / (completedCount + startedCount)) * 100)
         : 0;
 
       capsuleAnalytics.push({
         numero: num,
-        titulo: capsuleInfo?.title ?? `Capsula ${num}`,
+        titulo: capsuleInfo.title ?? `Capsula ${num}`,
         total_started: completedCount + startedCount,
         completed: completedCount,
         in_progress: startedCount,
