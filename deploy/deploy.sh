@@ -25,7 +25,10 @@ ssh "${SSH_USER}@${VPS_IP}" "mkdir -p ${REMOTE_DIR}/fia-engine"
 echo "Copying deployment files..."
 scp "${SCRIPT_DIR}/docker-compose.yml" "${SSH_USER}@${VPS_IP}:${REMOTE_DIR}/"
 scp "${SCRIPT_DIR}/.env" "${SSH_USER}@${VPS_IP}:${REMOTE_DIR}/"
-scp "${SCRIPT_DIR}/nginx-dittofeed.conf" "${SSH_USER}@${VPS_IP}:/etc/nginx/sites-available/dittofeed" 2>/dev/null || true
+# Nginx vhost for engine.axeljutoran.com is Certbot-managed on the VPS.
+# Only install the template on first-time setup — never clobber the live (SSL) config.
+ssh "${SSH_USER}@${VPS_IP}" "test -f /etc/nginx/sites-available/fia-engine" 2>/dev/null \
+  || scp "${SCRIPT_DIR}/nginx-engine.conf" "${SSH_USER}@${VPS_IP}:/etc/nginx/sites-available/fia-engine"
 
 # Copy FIA Engine source for building
 echo "Copying FIA Engagement Engine..."
@@ -42,7 +45,7 @@ ssh "${SSH_USER}@${VPS_IP}" "cd ${REMOTE_DIR} && docker compose build fia-engine
 # Enable nginx site if nginx is installed
 ssh "${SSH_USER}@${VPS_IP}" "
   if command -v nginx &> /dev/null; then
-    ln -sf /etc/nginx/sites-available/dittofeed /etc/nginx/sites-enabled/dittofeed 2>/dev/null || true
+    ln -sf /etc/nginx/sites-available/fia-engine /etc/nginx/sites-enabled/fia-engine 2>/dev/null || true
     nginx -t && systemctl reload nginx
     echo 'Nginx configured'
   fi
