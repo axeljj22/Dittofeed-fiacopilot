@@ -40,18 +40,26 @@ function jsonResponse(
 
 /**
  * Bearer-token auth gate for admin endpoints.
- * Returns true if authorized; otherwise writes the response and returns false.
- * Caller should `return` immediately if false.
+ * Accepts either ADMIN_API_TOKEN (long hex, for scripts/curl) or ADMIN_PASSWORD
+ * (short human password, for the web UI). Returns true if authorized; otherwise
+ * writes the response and returns false. Caller should `return` immediately if false.
  */
 function requireAdminAuth(req: http.IncomingMessage, res: http.ServerResponse): boolean {
   const authHeader = req.headers["authorization"];
   const expectedToken = process.env["ADMIN_API_TOKEN"];
+  const adminPassword = process.env["ADMIN_PASSWORD"];
+
   if (!expectedToken || expectedToken === "admin-secret") {
-    // Caller intent is admin-only — if env is missing/default, fail closed
     jsonResponse(res, 503, { error: "ADMIN_API_TOKEN not configured (or set to default)" });
     return false;
   }
-  if (authHeader !== `Bearer ${expectedToken}`) {
+
+  const provided = authHeader?.startsWith("Bearer ") ? authHeader.slice(7) : null;
+  const isValid =
+    provided !== null &&
+    (provided === expectedToken || (adminPassword != null && adminPassword.length > 0 && provided === adminPassword));
+
+  if (!isValid) {
     jsonResponse(res, 401, { error: "Unauthorized" });
     return false;
   }

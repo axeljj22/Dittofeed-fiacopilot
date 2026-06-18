@@ -3,6 +3,8 @@
  * Lives at /admin/schedule in the engine.
  */
 
+import { ADMIN_AUTH_SCRIPT, ADMIN_LOGOUT_LINK } from "./authHelper";
+
 export function getScheduleAdminHtml(): string {
   return `<!DOCTYPE html>
 <html lang="es">
@@ -279,20 +281,21 @@ export function getScheduleAdminHtml(): string {
       <a href="/admin/engagement">← Dashboard</a>
       <a href="/admin/design">✏️ Visual Designer</a>
       <a href="/admin/config">⚙️ Config Editor</a>
+      ${ADMIN_LOGOUT_LINK}
     </div>
   </div>
 
+  ${ADMIN_AUTH_SCRIPT}
   <script>
     let TOKEN = '';
     let schedules = [];
     let selectedDays = new Set([1]); // Mon by default
 
-    window.addEventListener('load', async () => {
-      TOKEN = prompt('Admin token:') || '';
-      if (!TOKEN) { document.getElementById('loading').textContent = 'Token requerido.'; return; }
+    window.onAuthReady = async function() {
+      TOKEN = window.TOKEN;
       updateCron();
       await loadSchedules();
-    });
+    };
 
     // ── Cron picker ──
     function toggleDay(day) {

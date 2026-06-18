@@ -4,6 +4,8 @@
  * All data loaded from and saved to /api/config via Bearer token auth.
  */
 
+import { ADMIN_AUTH_SCRIPT, ADMIN_LOGOUT_LINK } from "./authHelper";
+
 // Known config items with metadata for the designer UI
 const DESIGN_ITEMS = [
   // ── Prompts IA ──
@@ -524,8 +526,10 @@ export function getVisualDesignerHtml(): string {
 
   <div id="loading-overlay">
     <span>Cargando configuración...</span>
+    <div style="margin-top:12px;font-size:11px">${ADMIN_LOGOUT_LINK}</div>
   </div>
 
+  ${ADMIN_AUTH_SCRIPT}
   <script>
     const ITEMS = ${itemsJson};
     let TOKEN = '';
@@ -537,12 +541,11 @@ export function getVisualDesignerHtml(): string {
     let allVariables = [];
 
     // ── Init ──
-    window.addEventListener('load', async () => {
-      TOKEN = prompt('Admin token:') || '';
-      if (!TOKEN) { document.getElementById('loading-overlay').querySelector('span').textContent = 'Token requerido — recargá la página.'; return; }
+    window.onAuthReady = async function() {
+      TOKEN = window.TOKEN;
       await Promise.all([loadAllConfig(), loadVariables()]);
       document.getElementById('loading-overlay').classList.add('hidden');
-    });
+    };
 
     async function loadVariables() {
       try {

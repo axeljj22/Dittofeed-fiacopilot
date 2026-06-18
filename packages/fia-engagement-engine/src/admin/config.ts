@@ -8,6 +8,7 @@ import {
   OPT_OUT_FOOTER_DEFAULT,
   JOURNEY_PROMPTS_DEFAULT,
 } from "../config/engineConfigCache";
+import { ADMIN_AUTH_SCRIPT, ADMIN_LOGOUT_LINK } from "./authHelper";
 
 export function getConfigEditorHtml(_baseUrl: string): string {
   const journeyNames = Object.keys(JOURNEY_PROMPTS_DEFAULT);
@@ -252,6 +253,7 @@ export function getConfigEditorHtml(_baseUrl: string): string {
     </div>
 
     <div class="nav">
+      ${ADMIN_LOGOUT_LINK}
       <a href="/admin/engagement">← Dashboard</a>
       <a href="/admin/design">✏️ Visual Designer</a>
       <a href="/admin/whatsapp">📱 WhatsApp</a>
@@ -259,17 +261,19 @@ export function getConfigEditorHtml(_baseUrl: string): string {
     </div>
   </div>
 
+  ${ADMIN_AUTH_SCRIPT}
   <script>
-    const TOKEN = prompt('Admin token:') || '';
+    let TOKEN = '';
 
-    // Load all configs on page load
-    window.addEventListener('load', async () => {
+    window.onAuthReady = async function() {
+      TOKEN = window.TOKEN;
       try {
         const resp = await fetch('/api/config', {
           headers: { 'Authorization': 'Bearer ' + TOKEN }
         });
         if (!resp.ok) {
-          alert('Error: ' + resp.status + ' — token inválido o configuración no encontrada');
+          alert('Error: ' + resp.status + ' — contraseña inválida o configuración no encontrada');
+          window._fiaLogout();
           return;
         }
         const { data } = await resp.json();
@@ -285,7 +289,7 @@ export function getConfigEditorHtml(_baseUrl: string): string {
       } catch (error) {
         console.error('Failed to load config:', error);
       }
-    });
+    };
 
     function updateCharCount(key) {
       const el = document.getElementById('config-' + key);

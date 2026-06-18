@@ -4,6 +4,8 @@
  * Tests are stored in engine_config as key-value pairs with prefix "ab_test.".
  */
 
+import { ADMIN_AUTH_SCRIPT, ADMIN_LOGOUT_LINK } from "./authHelper";
+
 export function getAbTestingHtml(): string {
   return `<!DOCTYPE html>
 <html lang="es">
@@ -160,18 +162,19 @@ export function getAbTestingHtml(): string {
       <a href="/admin/design">✏️ Visual Designer</a>
       <a href="/admin/schedule">⏰ Programados</a>
       <a href="/admin/config">⚙️ Config</a>
+      ${ADMIN_LOGOUT_LINK}
     </div>
   </div>
 
+  ${ADMIN_AUTH_SCRIPT}
   <script>
     let TOKEN = '';
     let tests = [];
 
-    window.addEventListener('load', async () => {
-      TOKEN = prompt('Admin token:') || '';
-      if (!TOKEN) { document.getElementById('tests-container').innerHTML = '<div class="empty">Token requerido.</div>'; return; }
+    window.onAuthReady = async function() {
+      TOKEN = window.TOKEN;
       await loadTests();
-    });
+    };
 
     async function loadTests() {
       try {
