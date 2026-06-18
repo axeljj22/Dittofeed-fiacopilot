@@ -50,7 +50,7 @@ class EvolutionManager {
     try {
       const res = await axios.get(
         this.url(`/instance/connectionState/${config.whatsapp.evolution.instanceName}`),
-        { headers: this.headers, timeout: 2000 },
+        { headers: this.headers, timeout: config.whatsapp.evolution.statusTimeoutMs },
       );
       const state = (res.data?.instance?.state ?? "unknown") as EvolutionStatus;
       this._statusCache = { value: state, ts: Date.now() };

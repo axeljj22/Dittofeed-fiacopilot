@@ -63,6 +63,10 @@ export const config = {
       baseUrl: optionalEnv("EVOLUTION_BASE_URL", ""),
       apiKey: optionalEnv("EVOLUTION_API_KEY", ""),
       instanceName: optionalEnv("EVOLUTION_INSTANCE_NAME", "Sofia"),
+      // Timeout (ms) for the connectionState poll used by /health. The default
+      // 2s was too aggressive and made /health report connected:false on a slow
+      // poll even when messaging worked. Cosmetic only — does not gate sends.
+      statusTimeoutMs: parseInt(optionalEnv("EVOLUTION_STATUS_TIMEOUT_MS", "6000"), 10),
     },
   },
 
