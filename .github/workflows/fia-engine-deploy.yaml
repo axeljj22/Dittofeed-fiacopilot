@@ -56,7 +56,7 @@ jobs:
       - name: Create remote directories
         run: |
           ssh ${{ secrets.VPS_USER }}@${{ secrets.VPS_HOST }} \
-            "mkdir -p /opt/dittofeed/fia-engine"
+            "mkdir -p /opt/dittofeed/fia-engine && rm -rf /opt/dittofeed/fia-engine/src"
 
       - name: Copy engine source
         run: |
