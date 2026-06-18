@@ -209,6 +209,48 @@ export function getConfigEditorHtml(_baseUrl: string): string {
       <div class="status" id="status-positive_short_responses"></div>
     </div>
 
+    <!-- Seguimiento por Segmento (paid vs free) -->
+    <div class="section">
+      <div class="section-title">
+        <span>Cadencia de Seguimiento por Segmento</span>
+        <span class="updated-at" id="ts-segment_followup_config">—</span>
+      </div>
+      <p style="font-size: 12px; color: #9394a5; margin-bottom: 12px;">
+        JSON con umbrales de inactividad y cooldown por segmento.
+        <code style="background:#1e1f2e;padding:2px 6px;border-radius:4px">paid</code> = alumnos pagos,
+        <code style="background:#1e1f2e;padding:2px 6px;border-radius:4px">free</code> = método libre.
+        <br>Campos: <code>inactivityDays</code>, <code>levels</code> (array), <code>campaignCooldownDays</code>.
+      </p>
+      <textarea id="config-segment_followup_config" style="min-height:160px" placeholder='{
+  "paid":  { "inactivityDays": 3, "levels": [3, 7, 14], "campaignCooldownDays": 4 },
+  "free":  { "inactivityDays": 5, "levels": [5, 10, 20], "campaignCooldownDays": 7 }
+}'></textarea>
+      <button class="btn" onclick="saveConfig('segment_followup_config')">Guardar</button>
+      <div class="status" id="status-segment_followup_config"></div>
+    </div>
+
+    <!-- Mapa Slug → Path (fallback pre-migración) -->
+    <div class="section">
+      <div class="section-title">
+        <span>Mapa Programa Slug → Path (fallback)</span>
+        <span class="updated-at" id="ts-program_slug_path_map">—</span>
+      </div>
+      <p style="font-size: 12px; color: #9394a5; margin-bottom: 12px;">
+        Puente provisional entre <code style="background:#1e1f2e;padding:2px 6px;border-radius:4px">program_slug</code> y el
+        <code style="background:#1e1f2e;padding:2px 6px;border-radius:4px">path_id</code> de cada programa en
+        <code>learning_paths</code>. Solo se usa si la migración de BD aún no agrega
+        <code>program_slug</code> e <code>is_paid</code> a esa tabla.
+        Clave = UUID del path, valor = <code>&#123; slug, isPaid &#125;</code>.
+      </p>
+      <textarea id="config-program_slug_path_map" style="min-height:160px" placeholder='{
+  "b2c3d4e5-f6a7-8901-bcde-f12345678901": { "slug": "fia-ventas",   "isPaid": true },
+  "c3d4e5f6-a7b8-9012-cdef-123456789012": { "slug": "fia-empresas", "isPaid": true },
+  "d4e5f6a7-b8c9-0123-defa-234567890123": { "slug": "fia-agentica", "isPaid": true }
+}'></textarea>
+      <button class="btn" onclick="saveConfig('program_slug_path_map')">Guardar</button>
+      <div class="status" id="status-program_slug_path_map"></div>
+    </div>
+
     <div class="nav">
       <a href="/admin/engagement">← Dashboard</a>
       <a href="/admin/design">✏️ Visual Designer</a>

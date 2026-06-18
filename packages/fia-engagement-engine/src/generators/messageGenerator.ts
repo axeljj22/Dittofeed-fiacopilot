@@ -19,6 +19,9 @@ import {
   getVaultOutputsForUser,
   getCapsuleProgressForUser,
   getCapsules,
+  getLearningPaths,
+  getPathTotals,
+  resolveUserPaths,
   getLeadScoreForUser,
   getAssessmentForUser,
   getConversationHistory,
@@ -55,6 +58,10 @@ interface TemplateContext {
   level: number;
   painAreas: string[];          // from assessment_submissions
   companySize: "emprendedor" | "empresa" | null; // derived from answers.m_size
+  // Path-aware fields
+  programa: string;             // name of the active learning path
+  capsulasDelPrograma: number;  // total capsules in that path
+  pathProgress: string;         // "X/N" for the active path
 }
 
 /**
@@ -89,11 +96,11 @@ function buildTemplates(footer: string): Record<string, (ctx: TemplateContext) =
 
     celebracion_capsula: (ctx) =>
       `${ctx.nombre}, soy Sofía de FIA Copilot 🎉 ` +
-      `Completaste la cápsula ${ctx.capsulaPendiente - 1} (${ctx.capsulasTotales}/25). ` +
+      `Completaste la cápsula ${ctx.capsulaPendiente - 1} (${ctx.pathProgress} en ${ctx.programa}). ` +
       `Próxima: ${ctx.deepLink}` + footer,
 
     celebracion_capsula_final: (ctx) =>
-      `${ctx.nombre}, soy Sofía de FIA Copilot. Completaste las 25 cápsulas del Método FIA 🎉 ` +
+      `${ctx.nombre}, soy Sofía de FIA Copilot. Completaste todas las cápsulas de ${ctx.programa} 🎉 ` +
       `Todo lo que construiste está en tu Bóveda: ${ctx.deepLink}` + footer,
 
     bienvenida_diagnostico: (ctx) => {
@@ -196,7 +203,7 @@ PERFIL DEL USUARIO:
 - Objetivo: ${opportunity.profile.objective}
 - Temperatura: ${opportunity.profile.temperature}
 - Tamaño de empresa: ${companySize ?? "desconocido"}
-- Cápsulas completadas: ${completedCount}/25
+- Cápsulas completadas: ${completedCount} en total
 
 SCORES:
 - Fit Score: ${scores?.fit_score ?? "N/A"}
@@ -278,6 +285,7 @@ async function generateFromTemplate(
     daysSinceLastEvent?: number;
     painAreas?: string[];
     nextCapsuleTitle?: string | null;
+    programName?: string;
   };
 
   const capsulaPendiente =
@@ -288,6 +296,15 @@ async function generateFromTemplate(
 
   // Find capsule title: prefer context-provided title, fallback to progress array lookup
   const capsuleEntry = capsuleProgress.find((p) => p.capsule_number === capsulaPendiente);
+
+  // Resolve path-aware fields
+  const pathTotals = await getPathTotals();
+  const userPaths = resolveUserPaths(capsuleProgress, pathTotals);
+  const activePath = userPaths.find((p) => p.activePath) ?? userPaths[0];
+  const programaName = ctx_opportunity.programName ?? activePath?.name ?? "Método FIA";
+  const capsulasDelPrograma = activePath?.total ?? completedCount;
+  const pathProgressCompleted = activePath?.completed ?? completedCount;
+  const pathProgressStr = `${pathProgressCompleted}/${capsulasDelPrograma}`;
 
   const ctx: TemplateContext = {
     nombre: opportunity.profile.name || "ahí",
@@ -304,6 +321,9 @@ async function generateFromTemplate(
     level: opportunity.level ?? 1,
     painAreas: ctx_opportunity.painAreas ?? assessment?.pain_areas ?? [],
     companySize: resolveCompanySize(assessment),
+    programa: programaName,
+    capsulasDelPrograma,
+    pathProgress: pathProgressStr,
   };
 
   const templateKey = getTemplateKey(opportunity);
@@ -620,6 +640,17 @@ export async function generateInboundReply(
 
       const { name: segmentName, objective: segmentObjective } = resolveSegmentInfo(segment);
 
+      // Resolve path info for inbound context
+      const pathTotalsInbound = await getPathTotals();
+      const userPathsInbound = resolveUserPaths(capsuleProgress, pathTotalsInbound);
+      const activePathInbound = userPathsInbound.find((p) => p.activePath) ?? userPathsInbound[0];
+      const pathInfoLine = activePathInbound
+        ? ` (${activePathInbound.completed}/${activePathInbound.total} en ${activePathInbound.name})`
+        : "";
+      const enrolledLine = segment.enrolledPrograms.length > 0
+        ? `\n- Programas matriculados: ${segment.enrolledPrograms.map((p) => p.name).join(", ")}`
+        : "";
+
       userContext = `
 SEGMENTO: ${segmentName}
 OBJETIVO DE ESTA CONVERSACIÓN: ${segmentObjective}
@@ -631,7 +662,7 @@ PERFIL DEL USUARIO:
 - Objetivo: ${profile?.objective ?? "no disponible"}
 - Temperatura: ${profile?.temperature ?? "desconocida"}
 - Tamaño de empresa: ${companySize ?? "desconocido"}
-- Cápsulas completadas: ${completedCount}/25${completedCapsules ? `\n- Completadas: ${completedCapsules}` : ""}${inProgressCapsule ? `\n- En progreso: Cápsula ${inProgressCapsule.capsule_number}${inProgressTitle ? `: ${inProgressTitle}` : ""}` : ""}
+- Cápsulas completadas: ${completedCount}${pathInfoLine}${enrolledLine}${completedCapsules ? `\n- Completadas: ${completedCapsules}` : ""}${inProgressCapsule ? `\n- En progreso: Cápsula ${inProgressCapsule.capsule_number}${inProgressTitle ? `: ${inProgressTitle}` : ""}` : ""}
 
 SCORES:
 - Fit Score: ${scores?.fit_score ?? "N/A"}
@@ -658,7 +689,13 @@ ${vaultContext}${profile?.preferences?.['sofia_notes'] ? `\n\nCONTEXTO ESPECIAL 
       const facts = state.userFacts && state.userFacts.length > 0
         ? `\n\nHECHOS DEL USUARIO (mencionados en mensajes anteriores):\n${state.userFacts.map((f) => `- ${f}`).join("\n")}`
         : "";
-      userContext = `PERFIL: ${profile?.name ?? "desconocido"} (${profile?.company_name ?? "—"}) · ${completedCount}/25 cápsulas${inProgressCapsule ? ` · cursando ${inProgressCapsule.capsule_number}${inProgressTitle ? `: ${inProgressTitle}` : ""}` : ""}${facts}`;
+      const pathTotalsMin = await getPathTotals();
+      const userPathsMin = resolveUserPaths(capsuleProgress, pathTotalsMin);
+      const activePathMin = userPathsMin.find((p) => p.activePath) ?? userPathsMin[0];
+      const capsulaSuffix = activePathMin
+        ? ` (${activePathMin.completed}/${activePathMin.total} en ${activePathMin.name})`
+        : ` cápsulas`;
+      userContext = `PERFIL: ${profile?.name ?? "desconocido"} (${profile?.company_name ?? "—"}) · ${completedCount}${capsulaSuffix}${inProgressCapsule ? ` · cursando ${inProgressCapsule.capsule_number}${inProgressTitle ? `: ${inProgressTitle}` : ""}` : ""}${facts}`;
     }
 
     // Save user message AFTER deciding cold-start (so history.length is accurate above)

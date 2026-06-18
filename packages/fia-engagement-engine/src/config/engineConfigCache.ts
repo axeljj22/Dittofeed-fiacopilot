@@ -269,3 +269,35 @@ export async function getPositiveShortResponses(): Promise<Set<string>> {
     return new Set();
   }
 }
+
+// ─── Path-aware segmentation config ───
+
+export interface SegmentFollowupConfig {
+  paid: { inactivityDays: number; levels: number[]; campaignCooldownDays: number };
+  free: { inactivityDays: number; levels: number[]; campaignCooldownDays: number };
+}
+
+const SEGMENT_FOLLOWUP_DEFAULT: SegmentFollowupConfig = {
+  paid: { inactivityDays: 3, levels: [3, 7, 14], campaignCooldownDays: 4 },
+  free: { inactivityDays: 5, levels: [5, 10, 20], campaignCooldownDays: 7 },
+};
+
+/**
+ * Returns the follow-up cadence configuration by segment (paid vs free).
+ * Editable from the admin config panel without deploy.
+ */
+export async function getSegmentFollowupConfig(): Promise<SegmentFollowupConfig> {
+  try {
+    const json = await getCachedConfig("segment_followup_config", "{}");
+    if (json && json !== "{}") {
+      const parsed = JSON.parse(json) as Partial<SegmentFollowupConfig>;
+      return {
+        paid: { ...SEGMENT_FOLLOWUP_DEFAULT.paid, ...(parsed.paid ?? {}) },
+        free: { ...SEGMENT_FOLLOWUP_DEFAULT.free, ...(parsed.free ?? {}) },
+      };
+    }
+  } catch {
+    logger.warn("Failed to parse segment_followup_config, using defaults");
+  }
+  return SEGMENT_FOLLOWUP_DEFAULT;
+}

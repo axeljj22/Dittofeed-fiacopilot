@@ -2,7 +2,7 @@
  * Journey 1 — Reactivación por inactividad
  *
  * Detecta usuarios sin actividad en X días con cápsulas pendientes.
- * Tres niveles: día 5 (suave), día 10 (con contexto Bóveda), día 20 (última llamada).
+ * Tres niveles configurables por segmento (paid vs free) via engine_config.
  */
 import { differenceInDays } from "date-fns";
 import { config } from "../config";
@@ -12,20 +12,43 @@ import {
   getUsersWithPendingCapsules,
   getLastEventsForUsers,
   getRecentEngagementForUsers,
+  getPathTotals,
+  resolveUserPaths,
 } from "../db/supabase";
+import { getSegmentFollowupConfig } from "../config/engineConfigCache";
 import type { EngagementOpportunity, CapsuleProgress, EngagementLog } from "../db/types";
 
-function getInactivityLevel(daysSinceLastEvent: number): number | null {
-  if (daysSinceLastEvent >= 20) return 3;
-  if (daysSinceLastEvent >= 10) return 2;
-  if (daysSinceLastEvent >= config.engine.inactivityDays) return 1;
+function getInactivityLevel(daysSinceLastEvent: number, levels: number[]): number | null {
+  const sorted = [...levels].sort((a, b) => b - a); // descending: highest threshold first
+  for (let i = 0; i < sorted.length; i++) {
+    if (daysSinceLastEvent >= (sorted[i] ?? 0)) return sorted.length - i; // level = position from lowest
+  }
   return null;
 }
 
-function findPendingCapsule(
+function findPendingCapsuleInActivePath(
   progress: CapsuleProgress[],
+  pathTotals: Map<string, { name: string; total: number; isPaid: boolean; programSlug: string | null }>,
 ): CapsuleProgress | undefined {
-  // Return the most recently started pending capsule (lowest number = earliest)
+  // First try pending capsule in the active path (paid-first preference)
+  const userPaths = resolveUserPaths(progress, pathTotals);
+  const activePath = userPaths.find((p) => p.activePath) ?? userPaths[0];
+
+  if (activePath) {
+    // Find the progress entry matching the next capsule in the active path
+    const next = progress.find(
+      (p) => p.capsule_number === activePath.nextCapsuleNumber && p.path_id === activePath.pathId,
+    );
+    if (next) return next;
+    // Fallback: any pending in active path
+    const inActivePath = progress.filter((p) => p.path_id === activePath.pathId);
+    const pendingInPath = inActivePath
+      .filter((p) => p.status === "viewed" || p.status === "in_progress")
+      .sort((a, b) => (a.capsule_number ?? 0) - (b.capsule_number ?? 0))[0];
+    if (pendingInPath) return pendingInPath;
+  }
+
+  // Final fallback: any pending globally
   return [...progress]
     .filter((p) => p.status === "viewed" || p.status === "in_progress")
     .sort((a, b) => (a.capsule_number ?? 0) - (b.capsule_number ?? 0))[0];
@@ -49,9 +72,11 @@ function alreadySentThisLevel(
 export async function detectInactiveUsers(): Promise<EngagementOpportunity[]> {
   const opportunities: EngagementOpportunity[] = [];
 
-  const [users, pendingProgress] = await Promise.all([
+  const [users, pendingProgress, followupConfig, pathTotals] = await Promise.all([
     getActiveUsersWithWhatsapp(),
     getUsersWithPendingCapsules(),
+    getSegmentFollowupConfig(),
+    getPathTotals(),
   ]);
 
   if (users.length === 0) return opportunities;
@@ -84,18 +109,26 @@ export async function detectInactiveUsers(): Promise<EngagementOpportunity[]> {
       new Date(),
       new Date(lastEvent.created_at),
     );
-    const level = getInactivityLevel(daysSince);
+
+    const userPending = pendingByUser.get(user.id)!;
+    const userPaths = resolveUserPaths(userPending, pathTotals);
+    const isPaid = userPaths.some((p) => p.isPaid);
+    const cadence = isPaid ? followupConfig.paid : followupConfig.free;
+
+    const level = getInactivityLevel(daysSince, cadence.levels);
     if (level === null) continue;
 
-    // Check rate limiting — don't re-send same level
-    const hoursWindow = level === 1 ? 120 : level === 2 ? 240 : 480;
+    // Check rate limiting — don't re-send same level (window scales with level index)
+    const levelIdx = level - 1;
+    const nextLevelDays = cadence.levels[levelIdx + 1] ?? cadence.levels[levelIdx] ?? cadence.inactivityDays;
+    const hoursWindow = nextLevelDays * 24;
     const userLogs = engagementMap.get(user.id) ?? [];
     if (alreadySentThisLevel(userLogs, level, hoursWindow)) continue;
 
-    const userPending = pendingByUser.get(user.id)!;
-    const pending = findPendingCapsule(userPending);
+    const pending = findPendingCapsuleInActivePath(userPending, pathTotals);
     if (!pending) continue;
 
+    const activePath = userPaths.find((p) => p.activePath) ?? userPaths[0];
     const deepLink = `${config.engine.appBaseUrl}/capsulas/${pending.capsule_number}`;
 
     opportunities.push({
@@ -108,6 +141,10 @@ export async function detectInactiveUsers(): Promise<EngagementOpportunity[]> {
         daysSinceLastEvent: daysSince,
         pendingCapsuleNumber: pending.capsule_number,
         pendingCapsuleStatus: pending.status,
+        nextCapsuleTitle: pending.capsule_title ?? null,
+        programName: activePath?.name ?? null,
+        pathProgress: activePath ? `${activePath.completed}/${activePath.total}` : null,
+        isPaidProgram: isPaid,
       },
     });
   }

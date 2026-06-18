@@ -361,7 +361,7 @@ function renderOverview(){
     kpi('Diagnosticados',k.diagnosed,'cyan')+
     kpi('Graduados',k.graduated,'purple')+
     kpi('Inactivos',k.inactive,'yellow',k.critical+' criticos')+
-    kpi('Caps promedio',k.avg_capsules_completed,'blue','/25')+
+    kpi('Caps promedio',k.avg_capsules_completed,'blue')+
     kpi('Outputs Boveda',k.total_vault_outputs,'purple')+
     kpi('Eventos (30d)',k.total_events_30d,'green');
 
@@ -374,7 +374,7 @@ function renderOverview(){
     {l:'5+ capsulas',v:f.completed_5_plus,c:'var(--purple)'},
     {l:'10+ capsulas',v:f.completed_10_plus,c:'var(--yellow)'},
     {l:'20+ capsulas',v:f.completed_20_plus,c:'var(--orange)'},
-    {l:'Graduados (25)',v:f.graduated,c:'var(--green)'}
+    {l:'Graduados',v:f.graduated,c:'var(--green)'}
   ];
   document.getElementById('funnel').innerHTML=steps.map(function(s){
     var w=Math.max(pct(s.v,t),3);
@@ -461,7 +461,7 @@ function filterUsers(){
       '<td>'+esc(u.empresa)+'<br><span style="font-size:10px;color:var(--text3)">'+esc(u.industria)+'</span></td>'+
       '<td><span class="badge b-blue">'+esc(u.plan)+'</span></td>'+
       '<td>'+statusBadge(u.status)+'</td>'+
-      '<td><strong>'+u.capsules_completed+'</strong>/25</td>'+
+      '<td><strong>'+u.capsules_completed+'</strong>/'+(u.path_total||25)+'<br><span style="font-size:10px;color:var(--text3)">'+esc(u.program_name||'')+'</span></td>'+
       '<td>'+(u.overall_score!==null?u.overall_score+'/100':'-')+'</td>'+
       '<td>'+u.vault_outputs+'</td>'+
       '<td>'+(u.whatsapp==='si'?(u.wp_opted_out?'<span class="badge b-red">Opted-out</span>':'<span class="badge b-green">Si</span>'):'<span class="badge b-gray">No</span>')+'</td>'+
