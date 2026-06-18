@@ -1,28 +1,3 @@
 {
-  "references": [
-    {
-      "path": "./packages/isomorphic-lib"
-    },
-    {
-      "path": "./packages/backend-lib"
-    },
-    {
-      "path": "./packages/api"
-    },
-    {
-      "path": "./packages/dashboard"
-    },
-    {
-      "path": "./packages/worker"
-    },
-    {
-      "path": "./packages/admin-cli"
-    },
-    {
-      "path": "./packages/lite"
-    },
-    {
-      "path": "./packages/emailo"
-    }
-  ]
+  "references": []
 }

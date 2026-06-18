@@ -1,11 +1,11 @@
 #!/bin/bash
-# Dittofeed + FIA Engine VPS Setup Script
+# FIA Engagement Engine (Sofía) VPS Setup Script
 # Run this on your Hetzner VPS (Ubuntu/Debian)
 # Usage: ssh root@77.42.40.0 'bash -s' < setup.sh
 
 set -euo pipefail
 
-echo "=== Dittofeed + FIA Engine VPS Setup ==="
+echo "=== FIA Engagement Engine VPS Setup ==="
 
 # Update system
 apt-get update && apt-get upgrade -y
@@ -55,14 +55,13 @@ echo "=== Setup complete ==="
 echo ""
 echo "Next steps:"
 echo "1. Point DNS records:"
-echo "   ditto.axeljutoran.com  → 77.42.40.0"
 echo "   engine.axeljutoran.com → 77.42.40.0"
 echo ""
 echo "2. Copy files to VPS:"
 echo "   Run: ./deploy.sh from your local machine"
 echo ""
 echo "3. Setup SSL:"
-echo "   certbot --nginx -d ditto.axeljutoran.com -d engine.axeljutoran.com"
+echo "   certbot --nginx -d engine.axeljutoran.com"
 echo ""
-echo "4. Run the FIA Copilot SQL migration:"
-echo "   Execute sql/001_engagement_log.sql in your Supabase SQL Editor"
+echo "4. Run the FIA Copilot SQL migrations:"
+echo "   Execute packages/fia-engagement-engine/supabase/migrations/*.sql in your Supabase SQL Editor"

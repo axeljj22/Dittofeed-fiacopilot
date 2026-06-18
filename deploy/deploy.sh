@@ -1,5 +1,5 @@
 #!/bin/bash
-# Deploy Dittofeed + FIA Engagement Engine to VPS
+# Deploy FIA Engagement Engine (Sofía) to VPS
 # Usage: ./deploy.sh [VPS_IP] [SSH_USER]
 
 set -euo pipefail
@@ -10,7 +10,7 @@ REMOTE_DIR="/opt/dittofeed"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-echo "=== Deploying Dittofeed + FIA Engine to ${SSH_USER}@${VPS_IP} ==="
+echo "=== Deploying FIA Engagement Engine to ${SSH_USER}@${VPS_IP} ==="
 
 # Check if .env exists
 if [ ! -f "${SCRIPT_DIR}/.env" ]; then
@@ -35,9 +35,9 @@ scp "${REPO_ROOT}/packages/fia-engagement-engine/tsconfig.json" "${SSH_USER}@${V
 scp "${REPO_ROOT}/packages/fia-engagement-engine/tsconfig.build.json" "${SSH_USER}@${VPS_IP}:${REMOTE_DIR}/fia-engine/"
 scp "${REPO_ROOT}/packages/fia-engagement-engine/Dockerfile" "${SSH_USER}@${VPS_IP}:${REMOTE_DIR}/fia-engine/"
 
-# Build and start services
-echo "Building and starting services..."
-ssh "${SSH_USER}@${VPS_IP}" "cd ${REMOTE_DIR} && docker compose pull && docker compose build fia-engine && docker compose up -d"
+# Build and start the engine
+echo "Building and starting the engine..."
+ssh "${SSH_USER}@${VPS_IP}" "cd ${REMOTE_DIR} && docker compose build fia-engine && docker compose up -d fia-engine"
 
 # Enable nginx site if nginx is installed
 ssh "${SSH_USER}@${VPS_IP}" "
@@ -52,10 +52,8 @@ echo ""
 echo "=== Deploy complete ==="
 echo ""
 echo "Services:"
-echo "  Dittofeed:  https://ditto.axeljutoran.com"
 echo "  FIA Engine: https://engine.axeljutoran.com"
 echo "  Health:     https://engine.axeljutoran.com/health"
 echo ""
 echo "Logs:"
 echo "  ssh ${SSH_USER}@${VPS_IP} 'cd ${REMOTE_DIR} && docker compose logs -f fia-engine'"
-echo "  ssh ${SSH_USER}@${VPS_IP} 'cd ${REMOTE_DIR} && docker compose logs -f dittofeed-lite'"

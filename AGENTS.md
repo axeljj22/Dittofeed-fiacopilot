@@ -1,32 +1,38 @@
 # Agents
 
+This repository contains a single active package: **`packages/fia-engagement-engine`** — the FIA
+Engagement Engine ("Sofía"), a standalone WhatsApp engagement sidecar for FIA Copilot. It reads/writes
+the FIA Copilot Supabase, generates messages with Claude/Codex, and delivers them via the Evolution API.
+
+The repo was forked from the open-source Dittofeed monorepo; all Dittofeed packages and infra have been
+removed. The monorepo wrapper (`workspaces: ["packages/*"]`) is kept, but only the engine remains.
+
 ## Commands
 
-The following are useful commands for the agents:
-
 ```bash
-# Lint a specific file in the backend-lib package. A similar command can be used for other packages.
-yarn workspace backend-lib eslint src/resources.test.ts --fix
+# Install workspace deps (Yarn 4)
+yarn install
 
-# Run tests for a specific file. A similar command can be used for other packages.
-yarn jest packages/backend-lib/src/resources.test.ts
+# Type-check the engine (this is exactly what CI runs)
+yarn workspace fia-engagement-engine check
 
-# Run tests and pipe output to a timestamped file in .tmp for debugging.
-# Prefer this for large tests to avoid inflating context. The output file can be
-# searched and explored more efficiently using Read, Grep, etc.
-yarn test:file packages/backend-lib/src/resources.test.ts
+# Build the engine (tsc → dist/)
+yarn workspace fia-engagement-engine build
 
-# Run tests with jest flags (e.g., -t to filter by test name).
-yarn test:file packages/backend-lib/src/resources.test.ts -t "specific test name"
-
-# Reduces the log levels before running tests, providing more verbose log output.
-LOG_LEVEL=debug yarn jest packages/backend-lib/src/resources.test.ts
-
-# Run type checking for the backend-lib package. A similar command can be used for other packages.
-yarn workspace backend-lib check
+# Run locally (ts-node)
+yarn workspace fia-engagement-engine dev
 ```
+
+> Note: on Windows with an accented repo path, the `tsc` bin shim may fail to resolve. Build directly with
+> `node node_modules/typescript/bin/tsc --build packages/fia-engagement-engine/tsconfig.build.json` if so.
+> CI runs on Linux and is unaffected.
 
 ## Key Files and Directories
 
-- packages/backend-lib/src/config.ts: Where the majority of our applications' environment variables and configuration values are resolved.
-- .tmp/: this directory can be used output disposable files for debugging purposes
+- `packages/fia-engagement-engine/src/config.ts`: environment variables and configuration.
+- `packages/fia-engagement-engine/src/db/supabase.ts`: all Supabase reads/writes.
+- `packages/fia-engagement-engine/CONVENTIONS.md`: deploy flow, VPS info, and code conventions.
+- `packages/fia-engagement-engine/supabase/migrations/`: SQL migrations for the engine's own tables.
+- `deploy/`: VPS deploy (docker-compose, nginx, setup/deploy scripts).
+- `.github/workflows/fia-engine-deploy.yaml`: CI — type-check + deploy to the Hetzner VPS.
+- `.tmp/`: disposable files for debugging.
