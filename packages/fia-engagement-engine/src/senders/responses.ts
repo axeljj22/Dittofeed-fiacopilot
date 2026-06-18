@@ -24,7 +24,7 @@ import {
   activateSofia,
   logConversation,
 } from "../db/supabase";
-import { getCommandReply } from "../config/engineConfigCache";
+import { getCommandReply, getTrackingLinkBase } from "../config/engineConfigCache";
 import { generateInboundReply } from "../generators/messageGenerator";
 
 export interface IncomingMessage {
@@ -401,6 +401,6 @@ async function wrapLinksWithTracking(text: string, userId: string, phone: string
     },
   });
   if (!logEntry?.id) return text;
-  const trackedLink = `${config.engine.engineBaseUrl}/r/${logEntry.id}`;
+  const trackedLink = `${await getTrackingLinkBase()}/r/${logEntry.id}`;
   return text.replace(link, trackedLink);
 }

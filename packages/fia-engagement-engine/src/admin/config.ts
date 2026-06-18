@@ -189,6 +189,15 @@ export function getConfigEditorHtml(_baseUrl: string): string {
       <div class="status" id="status-activation_welcome_message"></div>
     </div>
 
+    <!-- Dominio del link de tracking -->
+    <div class="section">
+      <div class="section-title"><span>Dominio del link de tracking</span></div>
+      <p style="font-size:12px;color:#9394a5;margin-bottom:12px">Dominio base de los links de click (<code>/r/{id}</code>) que ven los usuarios. Dejá la URL del engine hasta que FC publique la ruta <code>/r/[id]</code>; ahí cambialo a <code>https://fiacopilot.com</code> para que no vean el dominio del engine.</p>
+      <input type="text" id="config-tracking_link_base" placeholder="https://engine.axeljutoran.com">
+      <button class="btn" onclick="saveConfig('tracking_link_base')">Guardar</button>
+      <div class="status" id="status-tracking_link_base"></div>
+    </div>
+
     <!-- Journey Prompts -->
     <div class="section">
       <div class="section-title">Journey Prompts</div>

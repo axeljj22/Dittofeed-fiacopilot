@@ -194,11 +194,11 @@ export async function sendWhatsAppMessage(
     },
   });
 
-  // Replace direct deep link with tracked redirect URL
-  const engineBaseUrl = config.engine.engineBaseUrl;
+  // Replace direct deep link with tracked redirect URL (domain configurable via tracking_link_base)
   let finalMessage = message.text;
   if (logEntry?.id) {
-    const trackedLink = `${engineBaseUrl}/r/${logEntry.id}`;
+    const { getTrackingLinkBase } = await import("../config/engineConfigCache");
+    const trackedLink = `${await getTrackingLinkBase()}/r/${logEntry.id}`;
     finalMessage = message.text.replace(message.deepLink, trackedLink);
   }
 

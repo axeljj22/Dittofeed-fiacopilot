@@ -233,6 +233,16 @@ export async function getReportSchedule(): Promise<string> {
   return getCachedConfig("report_schedule", REPORT_SCHEDULE_DEFAULT);
 }
 
+// ─── Tracking link base (domain for /r/{id} click-redirects, editable from the panel) ───
+// Default = the engine's own URL (current behavior). Flip to https://fiacopilot.com once the
+// FC app serves the /r/[id] redirect, so users never see the engine domain in their messages.
+export const TRACKING_LINK_BASE_DEFAULT = config.engine.engineBaseUrl;
+
+export async function getTrackingLinkBase(): Promise<string> {
+  const base = await getCachedConfig("tracking_link_base", TRACKING_LINK_BASE_DEFAULT);
+  return base.replace(/\/+$/, ""); // no trailing slash
+}
+
 export async function getPositiveShortResponses(): Promise<Set<string>> {
   try {
     const json = await getCachedConfig("positive_short_responses", POSITIVE_SHORT_RESPONSES_DEFAULT);
@@ -279,6 +289,7 @@ export const CONFIG_DEFAULTS: Record<string, string> = {
   activation_welcome_message: ACTIVATION_WELCOME_DEFAULT,
   opt_out_footer: OPT_OUT_FOOTER_DEFAULT,
   report_schedule: REPORT_SCHEDULE_DEFAULT,
+  tracking_link_base: TRACKING_LINK_BASE_DEFAULT,
   positive_short_responses: POSITIVE_SHORT_RESPONSES_DEFAULT,
   ...CMD_REPLY_DEFAULTS,
 };

@@ -45,6 +45,23 @@ export interface GeneratedMessage {
 
 const FIRST_CONTACT_INTRO = (nombre: string) => `Hola ${nombre}, soy Sofía de FIA Copilot 👋`;
 
+/** Host of the public app (fiacopilot.com) — the only domain allowed in user-facing links. */
+const FIACO_HOST = (() => {
+  try { return new URL(config.engine.appBaseUrl).host; } catch { return "fiacopilot.com"; }
+})();
+
+/**
+ * Removes any http(s) URL whose host is NOT fiacopilot.com (defends against model-invented
+ * links / the engine domain leaking). Per product rule: send a correct fiacopilot link or none.
+ */
+function stripForeignUrls(text: string): string {
+  return text
+    .replace(/https?:\/\/[^\s]+/g, (m) => (m.includes(FIACO_HOST) ? m : ""))
+    .replace(/[ \t]{2,}/g, " ")
+    .replace(/ +\n/g, "\n")
+    .trim();
+}
+
 // ─── Shared helpers ───
 
 /** Maps assessment answers.m_size to a simplified segment label (used by inbound context). */
@@ -212,7 +229,8 @@ const MAX_MESSAGE_CHARS = 320;
  * 2. Enforce length (preserves deepLink at the end, even if body has to be truncated)
  */
 function enforceLength(text: string, deepLink: string): { text: string; truncated: boolean } {
-  let safe = text.trim();
+  // Drop any non-fiacopilot URL the model may have invented before anything else.
+  let safe = stripForeignUrls(text);
 
   // Step 1: if the model wrote a fiacopilot.com URL that differs from deepLink, swap it
   const urlPattern = /https?:\/\/(?:www\.)?fiacopilot\.com[^\s]*/g;
@@ -608,7 +626,7 @@ ${vaultContext}${formatKnowledge(knowledge)}${profile?.preferences?.['sofia_note
       return fallback;
     }
 
-    const finalReply = smartTrim(reply, MAX_MESSAGE_CHARS);
+    const finalReply = stripForeignUrls(smartTrim(reply, MAX_MESSAGE_CHARS));
 
     await appendConversationMessages(userId, [{ role: "assistant", content: finalReply }]);
     const newTimestamps = [...recentReplies, new Date().toISOString()].slice(-20);
