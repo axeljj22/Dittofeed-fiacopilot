@@ -882,7 +882,7 @@ export async function getProfilesForUsers(
 export interface SofiaConversationInsert {
   user_id: string;
   direction: "in" | "out";
-  kind: string; // 'weekly_report' | 'inbound_reply' | 'command' | 'activation'
+  kind: string; // 'reporte_semanal' | 'inbound_reply' | 'command' | 'activation'
   body: string;
   status?: string; // 'sent' | 'failed' | 'received'
   truncated?: boolean;
@@ -1382,7 +1382,7 @@ export async function getObservabilityStats(windowDays = 30): Promise<Observabil
   let inbound = 0, outbound = 0, failed = 0, templateFallbacks = 0, truncated = 0;
 
   // Per-thread tracking for response-rate and unanswered detection
-  const reportThreads = new Set<string>(); // threads containing a weekly_report
+  const reportThreads = new Set<string>(); // threads containing a reporte_semanal
   const inboundAfterReport = new Set<string>(); // threads with inbound after the report
   const reportTimeByThread = new Map<string, string>();
   const lastDirByThread = new Map<string, "in" | "out">();
@@ -1405,7 +1405,7 @@ export async function getObservabilityStats(windowDays = 30): Promise<Observabil
 
     lastDirByThread.set(r.conversation_id, r.direction);
 
-    if (r.kind === "weekly_report" && r.direction === "out") {
+    if (r.kind === "reporte_semanal" && r.direction === "out") {
       reportThreads.add(r.conversation_id);
       if (!reportTimeByThread.has(r.conversation_id)) reportTimeByThread.set(r.conversation_id, r.created_at);
     }
