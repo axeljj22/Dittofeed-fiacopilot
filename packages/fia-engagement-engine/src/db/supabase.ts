@@ -1155,6 +1155,20 @@ export async function setEngineConfig(
   logger.info({ key }, "Engine config updated");
 }
 
+export async function deleteEngineConfig(key: string): Promise<void> {
+  const { error } = await getSupabaseClient()
+    .from("engine_config")
+    .delete()
+    .eq("key", key);
+
+  if (error) {
+    logger.error({ error, key }, "Failed to delete engine config key");
+    throw error;
+  }
+
+  logger.info({ key }, "Engine config key deleted");
+}
+
 // ─── Scheduled Messages ───
 
 export interface ScheduledMessage {

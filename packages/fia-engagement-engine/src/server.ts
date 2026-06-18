@@ -1135,13 +1135,25 @@ async function router(
   // WhatsApp status API
   if (url === "/api/whatsapp/status" && method === "GET") {
     const codexReady = await isCodexAvailable();
-    jsonResponse(res, 200, {
-      provider: config.whatsapp.provider,
-      status: baileysManager.status,
-      phone: baileysManager.connectedPhone,
-      qr_ready: baileysManager.qrDataUrl !== null,
-      codex_available: codexReady,
-    });
+    const provider = config.whatsapp.provider;
+    if (provider === "evolution") {
+      const evolutionState = await evolutionManager.getStatus().catch(() => "unknown" as const);
+      jsonResponse(res, 200, {
+        provider,
+        status: evolutionState === "open" ? "connected" : evolutionState,
+        phone: null,
+        qr_ready: false,
+        codex_available: codexReady,
+      });
+    } else {
+      jsonResponse(res, 200, {
+        provider,
+        status: baileysManager.status,
+        phone: baileysManager.connectedPhone,
+        qr_ready: baileysManager.qrDataUrl !== null,
+        codex_available: codexReady,
+      });
+    }
     return;
   }
 
@@ -1601,9 +1613,13 @@ function showMsg(text, ok) {
   if (abDelMatch && method === "DELETE") {
     if (!requireAdminAuth(req, res)) return;
     const name = abDelMatch[1] as string;
-    const { setEngineConfig } = await import("./db/supabase");
-    // Remove all 4 keys (soft delete: set active=false and blank variants)
-    await setEngineConfig(`ab_test.${name}.active`, "false");
+    const { deleteEngineConfig } = await import("./db/supabase");
+    await Promise.all([
+      deleteEngineConfig(`ab_test.${name}.active`),
+      deleteEngineConfig(`ab_test.${name}.journey`),
+      deleteEngineConfig(`ab_test.${name}.a`),
+      deleteEngineConfig(`ab_test.${name}.b`),
+    ]);
     jsonResponse(res, 200, { status: "deleted" });
     return;
   }
