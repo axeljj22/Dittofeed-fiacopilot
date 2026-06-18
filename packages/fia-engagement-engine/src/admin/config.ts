@@ -147,6 +147,14 @@ export function getConfigEditorHtml(_baseUrl: string): string {
     <h1>⚙️ Configuración del Engine</h1>
     <p class="subtitle">Edita prompts, templates y respuestas sin deploy</p>
 
+    <div class="section" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">
+      <div style="font-size:12px;color:#9394a5">¿Campos vacíos? Carga los valores por defecto que faltan y limpia las claves viejas.</div>
+      <div>
+        <button class="btn" onclick="seedDefaults()">Completar valores por defecto</button>
+        <span class="status" id="status-seed" style="display:inline-block;margin-left:8px"></span>
+      </div>
+    </div>
+
     <!-- Sistema Prompt de Sofía (modular: personalidad / catálogo / grounding) -->
     <div class="section">
       <div class="section-title"><span>Sofía — Personalidad y tono</span></div>
@@ -212,10 +220,10 @@ export function getConfigEditorHtml(_baseUrl: string): string {
         <span>Cierre de Loop</span>
         <span class="updated-at" id="ts-close">—</span>
       </div>
-      <textarea id="config-low_engagement_close" placeholder="Mensaje de cierre..."></textarea>
+      <textarea id="config-cmd_reply.low_engagement_close" placeholder="Mensaje de cierre..."></textarea>
       <div class="char-count"><span id="count-close">0</span>/300</div>
-      <button class="btn" onclick="saveConfig('low_engagement_close')">Guardar</button>
-      <div class="status" id="status-low_engagement_close"></div>
+      <button class="btn" onclick="saveConfig('cmd_reply.low_engagement_close')">Guardar</button>
+      <div class="status" id="status-cmd_reply.low_engagement_close"></div>
     </div>
 
     <!-- Positive Short Responses (JSON) -->
@@ -277,6 +285,28 @@ export function getConfigEditorHtml(_baseUrl: string): string {
       const countEl = document.getElementById('count-' + key);
       if (el && countEl) {
         countEl.textContent = el.value.length;
+      }
+    }
+
+    async function seedDefaults() {
+      const statusEl = document.getElementById('status-seed');
+      showStatus(statusEl, 'loading', 'Completando...');
+      try {
+        const resp = await fetch('/api/config/seed-defaults', {
+          method: 'POST',
+          headers: { 'Authorization': 'Bearer ' + TOKEN },
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok) {
+          showStatus(statusEl, 'error', 'Error: ' + (data.error || resp.status));
+          return;
+        }
+        showStatus(statusEl, 'ok', '✓ ' + (data.seeded?.length || 0) + ' creadas, ' + (data.deleted?.length || 0) + ' viejas borradas');
+        // Reload the page values
+        if (typeof window.onAuthReady === 'function') await window.onAuthReady();
+      } catch (error) {
+        showStatus(statusEl, 'error', 'Error de conexión');
+        console.error(error);
       }
     }
 

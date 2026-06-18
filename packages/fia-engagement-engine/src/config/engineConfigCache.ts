@@ -9,6 +9,7 @@ import {
   getAllEngineConfig,
   setEngineConfig as dbSetEngineConfig,
 } from "../db/supabase";
+import { config } from "../config";
 import { logger } from "../logger";
 
 // ─── Hardcoded defaults (fallback if DB is unavailable) ───
@@ -234,7 +235,7 @@ export async function getReportSchedule(): Promise<string> {
 
 export async function getPositiveShortResponses(): Promise<Set<string>> {
   try {
-    const json = await getCachedConfig("positive_short_responses", "[]");
+    const json = await getCachedConfig("positive_short_responses", POSITIVE_SHORT_RESPONSES_DEFAULT);
     const array = JSON.parse(json) as string[];
     return new Set(array);
   } catch {
@@ -242,3 +243,58 @@ export async function getPositiveShortResponses(): Promise<Set<string>> {
     return new Set();
   }
 }
+
+// ─── Defaults registry (single source of truth for seeding the admin panel) ───
+
+const APP = config.engine.appBaseUrl;
+
+/** Default list of short replies that should NOT count as low-engagement. */
+export const POSITIVE_SHORT_RESPONSES_DEFAULT = JSON.stringify([
+  "si", "sí", "dale", "ok", "okay", "bueno", "claro", "listo", "va", "vamos",
+  "gracias", "muchas gracias", "genial", "perfecto", "entendido", "excelente",
+  "me interesa", "contame", "quiero", "adelante", "seguí", "segui",
+  "no entiendo", "no sé", "explicame", "ayuda", "como hago",
+  "hola", "buenas", "buen día", "buenos días", "buenas tardes", "buenas noches",
+  "chau", "nos vemos", "hasta luego", "saludos",
+]);
+
+/** Defaults for command replies (match the hardcoded texts in senders/responses.ts). */
+export const CMD_REPLY_DEFAULTS: Record<string, string> = {
+  "cmd_reply.stop": "Listo, no recibirás más mensajes de seguimiento. Si en algún momento querés retomar, respondé SI.",
+  "cmd_reply.si": `¡Genial! Tu progreso te espera: ${APP}/dashboard`,
+  "cmd_reply.ayuda": `Agendá una llamada con el equipo acá: ${APP}/agendar`,
+  "cmd_reply.ventas": `Mirá todo lo que incluye FIA Ventas acá: ${APP}/upgrade?ref=wa_ventas`,
+  "cmd_reply.diagnostico": `Tus resultados del diagnóstico están acá: ${APP}/diagnostico`,
+  "cmd_reply.perfil": `Editá tu perfil desde acá: ${APP}/perfil`,
+  "cmd_reply.puntos": `Tu score de FIA está disponible en tu dashboard: ${APP}/dashboard`,
+  "cmd_reply.low_engagement_close": `Cuando quieras retomar estoy acá. Tu dashboard: ${APP}/dashboard`,
+};
+
+/** Every config key the engine uses today, mapped to its default. Used to seed the panel. */
+export const CONFIG_DEFAULTS: Record<string, string> = {
+  sofia_personality: SOFIA_PERSONALITY_DEFAULT,
+  sofia_programs_catalog: SOFIA_PROGRAMS_CATALOG_DEFAULT,
+  sofia_grounding_rules: SOFIA_GROUNDING_RULES_DEFAULT,
+  "journey_prompt.reporte_semanal": JOURNEY_PROMPTS_DEFAULT["reporte_semanal"] ?? "",
+  activation_welcome_message: ACTIVATION_WELCOME_DEFAULT,
+  opt_out_footer: OPT_OUT_FOOTER_DEFAULT,
+  report_schedule: REPORT_SCHEDULE_DEFAULT,
+  positive_short_responses: POSITIVE_SHORT_RESPONSES_DEFAULT,
+  ...CMD_REPLY_DEFAULTS,
+};
+
+/** Keys left over from the pre-reconversion engine — deleted on seed so the panel stays clean. */
+export const STALE_CONFIG_KEYS: string[] = [
+  "sofia_system_prompt",
+  "journey_prompt.reactivacion_inactividad",
+  "journey_prompt.celebracion_capsula",
+  "journey_prompt.bienvenida_diagnostico",
+  "journey_prompt.recuperacion_lead_frio",
+  "journey_prompt.resumen_semanal_sponsor",
+  "journey_prompt.campana_activa",
+  "segment_followup_config",
+  "program_slug_path_map",
+];
+
+/** Stale key prefixes (e.g. all A/B test keys) to purge on seed. */
+export const STALE_CONFIG_PREFIXES: string[] = ["ab_test."];

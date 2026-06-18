@@ -1251,6 +1251,41 @@ function showMsg(text, ok) {
     return;
   }
 
+  // POST /api/config/seed-defaults — fill missing keys with code defaults + purge stale keys (admin only)
+  // Query: ?overwrite=true to also overwrite existing values.
+  if (url === "/api/config/seed-defaults" && method === "POST") {
+    if (!requireAdminAuth(req, res)) return;
+    try {
+      const overwrite = new URL(req.url ?? "", "http://x").searchParams.get("overwrite") === "true";
+      const { CONFIG_DEFAULTS, STALE_CONFIG_KEYS, STALE_CONFIG_PREFIXES } = await import("./config/engineConfigCache");
+      const { getAllEngineConfig, deleteEngineConfig } = await import("./db/supabase");
+      const existing = await getAllEngineConfig();
+
+      const seeded: string[] = [];
+      const skipped: string[] = [];
+      for (const [key, value] of Object.entries(CONFIG_DEFAULTS)) {
+        const cur = existing[key];
+        const isEmpty = cur === undefined || cur === "" || cur === "[]" || cur === "{}";
+        if (!overwrite && !isEmpty) { skipped.push(key); continue; }
+        await setCachedConfig(key, value);
+        seeded.push(key);
+      }
+
+      const deleted: string[] = [];
+      for (const key of Object.keys(existing)) {
+        const isStale = STALE_CONFIG_KEYS.includes(key) || STALE_CONFIG_PREFIXES.some((p) => key.startsWith(p));
+        if (isStale) { await deleteEngineConfig(key); deleted.push(key); }
+      }
+
+      logger.info({ seeded: seeded.length, deleted: deleted.length, skipped: skipped.length }, "Config defaults seeded");
+      jsonResponse(res, 200, { status: "ok", seeded, deleted, skipped });
+    } catch (error) {
+      logger.error({ error }, "Failed to seed config defaults");
+      jsonResponse(res, 500, { error: "Seed failed" });
+    }
+    return;
+  }
+
   // GET /api/config/:key — get specific config key (admin only)
   const getConfigMatch = url.match(/^\/api\/config\/([a-zA-Z0-9._-]+)$/);
   if (getConfigMatch && method === "GET") {
