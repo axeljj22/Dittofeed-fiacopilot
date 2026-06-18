@@ -14,13 +14,11 @@ import { logger } from "../logger";
 import {
   getSofiaActiveUsers,
   getCapsuleProgressForUser,
-  getPathTotals,
-  resolveUserPaths,
   getUserSegment,
   getEventsForUserSince,
   getCapsules,
 } from "../db/supabase";
-import type { EngagementOpportunity, Profile } from "../db/types";
+import type { EngagementOpportunity, Profile, Capsule } from "../db/types";
 
 export interface WeeklyReportContext {
   isTrack: boolean; // true = formative track, false = Método de 25 pasos (premium)
@@ -40,78 +38,152 @@ function weekAgoIso(): string {
   return new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
 }
 
+/** Internal key for grouping by path; the free Método (path_id NULL) gets a stable key. */
+const METODO_KEY = "__metodo__";
+const pathKey = (pathId: string | null): string => pathId ?? METODO_KEY;
+
+interface PathEval {
+  completedCount: number;
+  total: number;
+  isFinished: boolean;
+  next: Capsule | null;
+}
+
+/**
+ * Builds the weekly report context.
+ *
+ * Track selection (per product rule): focus on the enrolled, NON-finished track with the most
+ * recent activity; tie-break by most recent enrollment. The Método de 25 pasos is used ONLY for
+ * users with no enrolled tracks. Progress + next action are computed from the capsule CATALOG
+ * (so a track you're enrolled in but haven't started still counts, and "next" is the next
+ * uncompleted capsule in sequence — forward, not an old abandoned one).
+ */
 async function buildWeeklyContext(profile: Profile): Promise<WeeklyReportContext> {
   const userId = profile.id;
-  const [segment, capsuleProgress, pathTotals, capsules, events] = await Promise.all([
+  const weekAgo = weekAgoIso();
+  const [segment, capsuleProgress, capsules, events] = await Promise.all([
     getUserSegment(userId),
     getCapsuleProgressForUser(userId),
-    getPathTotals(),
     getCapsules(),
-    getEventsForUserSince(userId, weekAgoIso()),
+    getEventsForUserSince(userId, weekAgo),
   ]);
 
-  const userPaths = resolveUserPaths(capsuleProgress, pathTotals);
-  // Prefer the enrolled formative track; else the active path (Método de 25 pasos).
-  const trackSlugs = new Set(segment.enrolledPrograms.map((p) => p.slug));
-  const trackPath =
-    userPaths.find((p) => p.programSlug && trackSlugs.has(p.programSlug)) ??
-    userPaths.find((p) => p.activePath) ??
-    userPaths[0] ??
-    null;
-
-  const isTrack = Boolean(trackPath?.programSlug && trackSlugs.has(trackPath.programSlug));
-  const programName = trackPath?.name ?? "Método FIA";
-  const programSlug = trackPath?.programSlug ?? null;
-  // resolveUserPaths groups the free method (path_id NULL) under the "__core__" key.
-  // Normalize back to NULL so we match capsule_progress / capsules rows correctly.
-  const targetPathId = !trackPath || trackPath.pathId === "__core__" ? null : trackPath.pathId;
-  const samePath = (rowPathId: string | null) =>
-    targetPathId === null ? rowPathId == null : rowPathId === targetPathId;
-
-  // Capsules completed in the last 7 days within the relevant path
-  const weekAgo = weekAgoIso();
-  const completedThisWeek = capsuleProgress
-    .filter(
-      (p) =>
-        p.status === "completed" &&
-        p.completed_at != null &&
-        p.completed_at >= weekAgo &&
-        samePath(p.path_id),
-    )
-    .map((p) => ({ number: p.capsule_number, title: p.capsule_title }));
-
-  const nextCapsuleNumber = trackPath?.nextCapsuleNumber ?? null;
-  const nextCapsuleTitle = trackPath?.nextCapsuleTitle ?? null;
-  // Match the next capsule by number AND path so the mini_action is the right one
-  // (capsule numbers can repeat across paths).
-  const nextCapsule =
-    nextCapsuleNumber != null
-      ? capsules.find((c) => c.number === nextCapsuleNumber && samePath(c.path_id ?? null)) ?? null
-      : null;
-  const nextMiniAction = nextCapsule?.mini_action ?? null;
-
-  // Deep link: next capsule for a track, /pasos for the free method, dashboard if finished.
-  const base = config.engine.appBaseUrl;
-  let deepLink: string;
-  if (nextCapsuleNumber == null) {
-    deepLink = `${base}/dashboard`;
-  } else if (isTrack) {
-    deepLink = `${base}/capsulas/${nextCapsuleNumber}`;
-  } else {
-    deepLink = `${base}/pasos`;
+  // ── Per-path aggregates from the user's progress ──
+  const completedByPath = new Map<string, Set<number>>();
+  const lastActivityByPath = new Map<string, string>();
+  const completedThisWeekByPath = new Map<string, Array<{ number: number; title: string | null }>>();
+  for (const p of capsuleProgress) {
+    const key = pathKey(p.path_id);
+    if (p.status === "completed") {
+      let done = completedByPath.get(key);
+      if (!done) { done = new Set<number>(); completedByPath.set(key, done); }
+      done.add(p.capsule_number);
+      if (p.completed_at && p.completed_at >= weekAgo) {
+        const arr = completedThisWeekByPath.get(key) ?? [];
+        arr.push({ number: p.capsule_number, title: p.capsule_title });
+        completedThisWeekByPath.set(key, arr);
+      }
+    }
+    const ts = p.completed_at ?? p.started_at;
+    if (ts) {
+      const prev = lastActivityByPath.get(key);
+      if (!prev || ts > prev) lastActivityByPath.set(key, ts);
+    }
   }
 
+  // ── Catalog grouped by path (sorted by number) ──
+  const catalogByPath = new Map<string, Capsule[]>();
+  for (const c of capsules) {
+    const key = pathKey(c.path_id ?? null);
+    const arr = catalogByPath.get(key) ?? [];
+    arr.push(c);
+    catalogByPath.set(key, arr);
+  }
+  for (const arr of catalogByPath.values()) arr.sort((a, b) => a.number - b.number);
+
+  const evalPath = (key: string): PathEval => {
+    const catalog = catalogByPath.get(key) ?? [];
+    const done = completedByPath.get(key) ?? new Set<number>();
+    const completedCount = catalog.filter((c) => done.has(c.number)).length;
+    const total = catalog.length;
+    return {
+      completedCount,
+      total,
+      isFinished: total > 0 && completedCount >= total,
+      next: catalog.find((c) => !done.has(c.number)) ?? null,
+    };
+  };
+
+  const base = config.engine.appBaseUrl;
+
+  // ── Evaluate enrolled tracks ──
+  const tracks = segment.enrolledPrograms.map((ep) => {
+    const key = pathKey(ep.pathId);
+    return {
+      slug: ep.slug,
+      name: ep.name,
+      enrolledAt: ep.enrolledAt,
+      lastActivity: lastActivityByPath.get(key) ?? null,
+      key,
+      ...evalPath(key),
+    };
+  });
+
+  // Focus rule: most recent activity desc, tie-break by most recent enrollment desc.
+  const byRelevance = (a: typeof tracks[number], b: typeof tracks[number]) => {
+    const la = a.lastActivity ?? "", lb = b.lastActivity ?? "";
+    if (la !== lb) return lb.localeCompare(la);
+    return (b.enrolledAt ?? "").localeCompare(a.enrolledAt ?? "");
+  };
+
+  const focus = tracks.filter((t) => !t.isFinished).sort(byRelevance)[0] ?? null;
+
+  if (focus) {
+    const next = focus.next;
+    return {
+      isTrack: true,
+      programName: focus.name,
+      programSlug: focus.slug,
+      pathProgress: `${focus.completedCount}/${focus.total}`,
+      completedThisWeek: completedThisWeekByPath.get(focus.key) ?? [],
+      weekActivityCount: events.length,
+      nextCapsuleNumber: next?.number ?? null,
+      nextCapsuleTitle: next?.title ?? null,
+      nextMiniAction: next?.mini_action ?? null,
+      deepLink: next ? `${base}/capsulas/${next.number}` : `${base}/dashboard`,
+    };
+  }
+
+  // Enrolled but ALL tracks finished → congratulate on the most recent one, point to dashboard.
+  if (tracks.length > 0) {
+    const recent = tracks.slice().sort(byRelevance)[0]!;
+    return {
+      isTrack: true,
+      programName: recent.name,
+      programSlug: recent.slug,
+      pathProgress: `${recent.completedCount}/${recent.total}`,
+      completedThisWeek: completedThisWeekByPath.get(recent.key) ?? [],
+      weekActivityCount: events.length,
+      nextCapsuleNumber: null,
+      nextCapsuleTitle: null,
+      nextMiniAction: null,
+      deepLink: `${base}/dashboard`,
+    };
+  }
+
+  // No enrolled tracks (premium) → Método de 25 pasos (path_id NULL).
+  const metodo = evalPath(METODO_KEY);
   return {
-    isTrack,
-    programName,
-    programSlug,
-    pathProgress: trackPath ? `${trackPath.completed}/${trackPath.total}` : "0/0",
-    completedThisWeek,
+    isTrack: false,
+    programName: "Método FIA",
+    programSlug: null,
+    pathProgress: `${metodo.completedCount}/${metodo.total}`,
+    completedThisWeek: completedThisWeekByPath.get(METODO_KEY) ?? [],
     weekActivityCount: events.length,
-    nextCapsuleNumber,
-    nextCapsuleTitle,
-    nextMiniAction,
-    deepLink,
+    nextCapsuleNumber: metodo.next?.number ?? null,
+    nextCapsuleTitle: metodo.next?.title ?? null,
+    nextMiniAction: metodo.next?.mini_action ?? null,
+    deepLink: metodo.next ? `${base}/pasos` : `${base}/dashboard`,
   };
 }
 

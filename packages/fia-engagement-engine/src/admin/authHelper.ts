@@ -64,9 +64,22 @@ export const ADMIN_AUTH_SCRIPT = `<script>
 
   window._fiaLogout=function(){localStorage.removeItem(KEY); location.reload();};
 
+  function ensureOverlay(){
+    if(document.body) showOverlay();
+    else document.addEventListener('DOMContentLoaded', showOverlay);
+  }
+
   var saved=localStorage.getItem(KEY);
-  if(saved){ init(saved); }
-  else { document.addEventListener('DOMContentLoaded', showOverlay); }
+  if(saved){
+    // Re-validate the saved token. A stale one (e.g. after a password change) must NOT
+    // render a broken page where every call 401s — drop it and show the login overlay.
+    fetch('/api/config',{headers:{Authorization:'Bearer '+saved}}).then(function(r){
+      if(r.ok){ init(saved); }
+      else { localStorage.removeItem(KEY); ensureOverlay(); }
+    }).catch(function(){ init(saved); }); // network blip → optimistic init
+  } else {
+    ensureOverlay();
+  }
 })();
 </script>`;
 

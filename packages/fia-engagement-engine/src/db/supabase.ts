@@ -1084,7 +1084,7 @@ export interface UserSegment {
   planId: string | null;
   trialOfferExpiresAt: string | null;
   /** Data-driven list of programs the user is enrolled in (from user_program_access + learning_paths). */
-  enrolledPrograms: Array<{ slug: string; name: string; pathId: string; isPaid: boolean }>;
+  enrolledPrograms: Array<{ slug: string; name: string; pathId: string; isPaid: boolean; enrolledAt: string | null }>;
 }
 
 /**
@@ -1096,7 +1096,7 @@ export async function getUserSegment(userId: string): Promise<UserSegment> {
   const [programAccess, subscription, profile, paths] = await Promise.all([
     getSupabaseClient()
       .from("user_program_access")
-      .select("program_slug")
+      .select("program_slug, granted_at")
       .eq("user_id", userId)
       .eq("status", "active"),
     getSupabaseClient()
@@ -1115,7 +1115,9 @@ export async function getUserSegment(userId: string): Promise<UserSegment> {
     getLearningPaths(),
   ]);
 
-  const slugs = (programAccess.data ?? []).map((r) => (r as { program_slug: string }).program_slug);
+  const accessRows = (programAccess.data ?? []) as Array<{ program_slug: string; granted_at: string | null }>;
+  const slugs = accessRows.map((r) => r.program_slug);
+  const grantedBySlug = new Map(accessRows.map((r) => [r.program_slug, r.granted_at ?? null]));
   const sub = subscription.data as { plan_id: string; status: string } | null;
   const prof = profile.data as { org_role: string | null; trial_offer_expires_at: string | null } | null;
 
@@ -1123,7 +1125,7 @@ export async function getUserSegment(userId: string): Promise<UserSegment> {
   const hasOrgEmpresasAccess = prof?.org_role === "sponsor" || prof?.org_role === "implementador";
 
   // Build enrolledPrograms by crossing slugs with learning_paths (data-driven)
-  const enrolledPrograms: Array<{ slug: string; name: string; pathId: string; isPaid: boolean }> = [];
+  const enrolledPrograms: Array<{ slug: string; name: string; pathId: string; isPaid: boolean; enrolledAt: string | null }> = [];
   for (const path of paths) {
     if (!path.program_slug) continue; // skip free method (no slug needed)
     const hasAccess = slugs.includes(path.program_slug) ||
@@ -1134,6 +1136,7 @@ export async function getUserSegment(userId: string): Promise<UserSegment> {
         name: path.name,
         pathId: path.id,
         isPaid: path.is_paid,
+        enrolledAt: grantedBySlug.get(path.program_slug) ?? null,
       });
     }
   }
