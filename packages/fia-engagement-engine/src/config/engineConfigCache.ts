@@ -191,6 +191,14 @@ export async function getCommandReply(command: string): Promise<string | null> {
   return getCachedConfig(`cmd_reply.${command.toLowerCase()}`, "");
 }
 
+const ACTIVATION_WELCOME_DEFAULT = `Hola {{nombre}}, soy Sofía, tu asistente de FIA Copilot 🙋‍♀️
+Ya estoy activa y podés escribirme cuando quieras. Te ayudo con tus cápsulas, con la bóveda, o con cualquier duda del programa.
+Respondé AYUDA si querés ver qué puedo hacer.`;
+
+export async function getActivationWelcomeMessage(): Promise<string> {
+  return getCachedConfig("activation_welcome_message", ACTIVATION_WELCOME_DEFAULT);
+}
+
 /**
  * A/B test variant selection — deterministic per user (hash of userId).
  * Returns { variant, text } if an active A/B test exists for the given journey,

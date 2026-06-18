@@ -1673,6 +1673,94 @@ function showMsg(text, ok) {
     return handleClickRedirect(req, res, clickMatch[1]);
   }
 
+  // POST /api/activate-sofia — activates Sofía for a user and sends the welcome message.
+  // Called by FIA Copilot frontend when the user clicks "Activar Sofía".
+  // Auth: ADMIN_API_TOKEN (for testing) OR any request with a matching userId+email pair
+  // verified against Supabase (email must match the profile on record).
+  if (url === "/api/activate-sofia" && method === "POST") {
+    try {
+      const body = JSON.parse(await parseBody(req)) as { userId?: string; email?: string };
+      if (!body.userId || !body.email) {
+        jsonResponse(res, 400, { error: "Missing required fields: userId, email" });
+        return;
+      }
+
+      const supabase = getSupabaseClient();
+
+      // Verify the user exists and the email matches — this is the identity check
+      const { data: profile, error: profileError } = await supabase
+        .from("profiles")
+        .select("id, name, email, phone, whatsapp_opt_in")
+        .eq("id", body.userId)
+        .single();
+
+      if (profileError || !profile) {
+        jsonResponse(res, 404, { error: "User not found" });
+        return;
+      }
+
+      // Email verification: must match what's in the DB
+      if ((profile.email as string).toLowerCase() !== body.email.toLowerCase()) {
+        logger.warn({ userId: body.userId }, "activate-sofia: email mismatch — possible spoofing attempt");
+        jsonResponse(res, 403, { error: "Email does not match user record" });
+        return;
+      }
+
+      if (!profile.phone) {
+        jsonResponse(res, 422, { error: "no_phone", message: "El usuario no tiene número de teléfono registrado" });
+        return;
+      }
+
+      if (!profile.whatsapp_opt_in) {
+        jsonResponse(res, 422, { error: "not_opted_in", message: "El usuario no tiene WhatsApp activado" });
+        return;
+      }
+
+      // Build the welcome message (configurable from /admin/config)
+      const { getActivationWelcomeMessage } = await import("./config/engineConfigCache");
+      const welcomeTemplate = await getActivationWelcomeMessage();
+      const welcomeMessage = welcomeTemplate
+        .replace(/\{\{nombre\}\}/g, (profile.name as string | null) ?? "ahí");
+
+      // Check pilot mode — sendCampaignMessage enforces it internally
+      const { sendCampaignMessage } = await import("./senders/whatsapp");
+      const sent = await sendCampaignMessage(
+        profile.phone as string,
+        profile.id as string,
+        welcomeMessage,
+        "activacion_sofia",
+      );
+
+      // Override the trigger_type in the log to 'activation' (sendCampaignMessage logs 'campaign')
+      // We do this via a separate log insert with the correct type
+      const { insertEngagementLog } = await import("./db/supabase");
+      await insertEngagementLog({
+        lead_id: profile.id as string,
+        status: sent ? "sent" : "failed",
+        message: welcomeMessage,
+        channel: "whatsapp",
+        trigger_type: "activation",
+        metadata: {
+          journey_name: "activacion_sofia",
+          whatsapp_number: (profile.phone as string).replace(/\D/g, ""),
+          deep_link: config.engine.appBaseUrl,
+        },
+      });
+
+      if (sent) {
+        logger.info({ userId: profile.id, phone: (profile.phone as string).replace(/\D/g, "").slice(-4) + "****" }, "Sofía activation message sent");
+        jsonResponse(res, 200, { ok: true, message: "Mensaje de activación enviado" });
+      } else {
+        logger.warn({ userId: profile.id }, "Sofía activation: message send failed (pilot mode or provider error)");
+        jsonResponse(res, 200, { ok: false, message: "No se pudo enviar el mensaje — verificá el modo piloto o el número" });
+      }
+    } catch (error) {
+      logger.error({ error }, "Failed to activate sofia for user");
+      jsonResponse(res, 500, { error: "Activation failed" });
+    }
+    return;
+  }
+
   jsonResponse(res, 404, { error: "Not found" });
 }
 

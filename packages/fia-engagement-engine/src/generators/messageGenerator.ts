@@ -752,7 +752,7 @@ ${vaultContext}${profile?.preferences?.['sofia_notes'] ? `\n\nCONTEXTO ESPECIAL 
 
           const response = await client.messages.create({
             model: config.anthropic.model,
-            max_tokens: 150,
+            max_tokens: 400,
             system: sofiaPrompt,
             messages: [
               ...claudeHistory,

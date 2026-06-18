@@ -133,7 +133,7 @@ export interface EngagementLogInsert {
   status: "sent" | "failed" | "opted_out" | "skipped_paused" | "failed_pending_retry";
   message: string;
   channel: string; // 'whatsapp'
-  trigger_type: string; // 'campaign' | 'scheduled' | 'manual'
+  trigger_type: string; // 'campaign' | 'scheduled' | 'manual' | 'activation'
   metadata: {
     journey_name: string;
     whatsapp_number: string;
