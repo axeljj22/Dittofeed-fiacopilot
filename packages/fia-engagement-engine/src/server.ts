@@ -11,7 +11,6 @@ import { config } from "./config";
 import { logger } from "./logger";
 import { processIncomingResponse } from "./senders/responses";
 import { sendWhatsAppMessage, sendCampaignMessage } from "./senders/whatsapp";
-import { baileysManager } from "./senders/whatsappBaileys";
 import { evolutionManager } from "./senders/whatsappEvolution";
 import { getSupabaseClient, upsertCampaignLead, getPathTotals, resolveUserPaths } from "./db/supabase";
 import { runAllDetectors, runSponsorReports } from "./orchestrator";
@@ -84,7 +83,6 @@ async function handleHealthCheck(
     buildTime: process.env["BUILD_TIME"] ?? "unknown",
     whatsapp: {
       primary: config.whatsapp.provider,
-      baileys: baileysManager.status,
       cloudApi: config.whatsapp.cloudApi.token ? "configured" : "not_configured",
       evolution: {
         connected: evolutionState === "open",
@@ -183,7 +181,7 @@ async function handleWebhookIncoming(
  *   { event: "messages.upsert", instance: "Sofia",
  *     data: { key: { remoteJid, fromMe, id }, message: { conversation } | { extendedTextMessage: { text } }, ... } }
  *
- * We mirror what whatsappBaileys.ts does on `messages.upsert`: skip fromMe,
+ * We mirror what the Evolution webhook does on `messages.upsert`: skip fromMe,
  * resolve phone, hand off to processIncomingResponse, then reply + optional
  * notify-admin. Defensive parsing — log and ignore unknown shapes.
  */
@@ -356,12 +354,10 @@ async function handleTestMessage(
       text?: string;
     };
 
-    // Raw send (no AI generation) — route through active provider, NOT hardcoded to Baileys
+    // Raw send (no AI generation) — route through active provider
     if (body.phone && body.text) {
       const provider = config.whatsapp.provider;
-      const result = provider === "evolution"
-        ? await evolutionManager.sendMessage(body.phone, body.text)
-        : await baileysManager.sendMessage(body.phone, body.text);
+      const result = await evolutionManager.sendMessage(body.phone, body.text);
       jsonResponse(res, result.success ? 200 : 500, { ...result, provider });
       return;
     }
@@ -1053,8 +1049,6 @@ async function handleAdminStats(
       by_journey: byJourney,
       whatsapp_provider: {
         primary: config.whatsapp.provider,
-        baileys_status: baileysManager.status,
-        baileys_phone: baileysManager.connectedPhone,
         fallback_configured: config.whatsapp.fallbackProvider || "none",
       },
     });
@@ -1144,86 +1138,14 @@ async function router(
   if (url === "/api/whatsapp/status" && method === "GET") {
     const codexReady = await isCodexAvailable();
     const provider = config.whatsapp.provider;
-    if (provider === "evolution") {
-      const evolutionState = await evolutionManager.getStatus().catch(() => "unknown" as const);
-      jsonResponse(res, 200, {
-        provider,
-        status: evolutionState === "open" ? "connected" : evolutionState,
-        phone: null,
-        qr_ready: false,
-        codex_available: codexReady,
-      });
-    } else {
-      jsonResponse(res, 200, {
-        provider,
-        status: baileysManager.status,
-        phone: baileysManager.connectedPhone,
-        qr_ready: baileysManager.qrDataUrl !== null,
-        codex_available: codexReady,
-      });
-    }
-    return;
-  }
-
-  // WhatsApp reset session (admin only)
-  if (url === "/api/whatsapp/reset" && method === "POST") {
-    if (!requireAdminAuth(req, res)) return;
-    baileysManager.resetSession();
-    setTimeout(() => void baileysManager.connect(), 1000);
-    jsonResponse(res, 200, { status: "session_reset" });
-    return;
-  }
-
-  // WhatsApp admin page — QR + status
-  if (url === "/admin/whatsapp" && method === "GET") {
-    const status = baileysManager.status;
-    const qr = baileysManager.qrDataUrl;
-    const phone = baileysManager.connectedPhone;
-    const codexReady = await isCodexAvailable();
-
-    const html = `<!DOCTYPE html>
-<html lang="es">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>WhatsApp — FIA Engine</title>
-<style>
-body{font-family:system-ui,sans-serif;background:#0a0b10;color:#e4e4ef;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;margin:0;gap:24px}
-.card{background:#12131a;border:1px solid #2a2b3d;border-radius:12px;padding:32px;text-align:center;max-width:420px;width:90%}
-h1{font-size:20px;margin-bottom:4px}
-.sub{font-size:13px;color:#9394a5;margin-bottom:24px}
-.badge{display:inline-block;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:600}
-.badge-connected{background:#166534;color:#4ade80}
-.badge-qr{background:#854d0e;color:#facc15}
-.badge-connecting{background:#1d4ed8;color:#93c5fd}
-.badge-disconnected{background:#991b1b;color:#fca5a5}
-.qr-img{width:256px;height:256px;border-radius:8px;margin:20px auto;display:block}
-.info{font-size:13px;color:#9394a5;margin-top:12px}
-.btn{background:#6366f1;color:#fff;border:none;border-radius:8px;padding:10px 20px;font-size:13px;font-weight:600;cursor:pointer;margin-top:16px;text-decoration:none;display:inline-block}
-.codex{margin-top:16px;padding:12px;background:#1a1b25;border-radius:8px;font-size:12px}
-.codex-ok{color:#4ade80}
-.codex-no{color:#fca5a5}
-a{color:#818cf8}
-</style>
-${status !== "connected" ? '<meta http-equiv="refresh" content="15">' : ""}
-</head>
-<body>
-<div class="card">
-  <h1>📱 WhatsApp</h1>
-  <p class="sub">FIA Engagement Engine</p>
-  <span class="badge badge-${status}">${status === "connected" ? "✓ Conectado" : status === "qr_ready" ? "⏳ Escanear QR" : status === "connecting" ? "⟳ Conectando..." : "✗ Desconectado"}</span>
-  ${status === "connected" ? `<p class="info" style="margin-top:16px">📞 ${phone ?? "número conectado"}</p>` : ""}
-  ${qr ? `<img class="qr-img" src="${qr}" alt="WhatsApp QR Code"><p class="info">Abrí WhatsApp → ⋮ → Dispositivos vinculados → Vincular dispositivo</p>` : ""}
-  ${status === "disconnected" ? `<p class="info" style="margin-top:16px">El engine se reconecta automáticamente. Si persiste, usá el botón de reset.</p>` : ""}
-  <div class="codex">
-    <b>Codex OAuth:</b> <span class="${codexReady ? "codex-ok" : "codex-no"}">${codexReady ? "✓ Disponible (ChatGPT Plus)" : "✗ No configurado — corrá npx @openai/codex login en el VPS"}</span>
-  </div>
-  <p style="margin-top:16px;font-size:11px;color:#5d5e72">Se recarga automáticamente cada 15s · <a href="/admin/engagement">← Dashboard</a></p>
-</div>
-</body>
-</html>`;
-    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-    res.end(html);
+    const evolutionState = await evolutionManager.getStatus().catch(() => "unknown" as const);
+    jsonResponse(res, 200, {
+      provider,
+      status: evolutionState === "open" ? "connected" : evolutionState,
+      phone: null,
+      qr_ready: false,
+      codex_available: codexReady,
+    });
     return;
   }
 
@@ -1312,7 +1234,7 @@ a{color:#818cf8}
     <button class="btn btn-danger" onclick="deleteAuth()">Desconectar Codex</button>
   </div>` : ""}
 
-  <p style="margin-top:20px;font-size:11px;color:#5d5e72"><a href="/admin/whatsapp">📱 WhatsApp</a> · <a href="/admin/engagement">← Dashboard</a></p>
+  <p style="margin-top:20px;font-size:11px;color:#5d5e72"><a href="/admin/engagement">← Dashboard</a></p>
 </div>
 
 <script>
@@ -1807,11 +1729,6 @@ export function startServer(port: number = 3001): http.Server {
       void initScheduledMessages();
     }).catch(() => { /* non-critical — fails gracefully if table not yet created */ });
   });
-
-  // Auto-start Baileys if provider is configured
-  if (config.whatsapp.provider === "baileys") {
-    void baileysManager.connect();
-  }
 
   return server;
 }

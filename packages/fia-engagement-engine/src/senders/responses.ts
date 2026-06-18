@@ -302,8 +302,8 @@ export async function processIncomingResponse(
     );
     // Avisar a Axel que alguien le habló a Sofía pero no le respondimos
     try {
-      const { baileysManager } = await import("./whatsappBaileys");
-      await baileysManager.notifyAdmin(
+      const { evolutionManager } = await import("./whatsappEvolution");
+      await evolutionManager.notifyAdmin(
         `🤐 Mensaje silenciado (fuera de piloto)\n📞 ${message.from}\n📥 "${message.body.slice(0, 200)}"\n💡 Whitelistear: agregá ${normalizedFrom} a PILOT_WHITELIST_PHONES`,
       );
     } catch { /* notify es best-effort */ }

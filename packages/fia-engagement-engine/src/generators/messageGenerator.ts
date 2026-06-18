@@ -783,8 +783,8 @@ ${vaultContext}${profile?.preferences?.['sofia_notes'] ? `\n\nCONTEXTO ESPECIAL 
       }
       // Avisar a Axel — IA caída es crítico, Sofía suena robótica
       try {
-        const { baileysManager } = await import("../senders/whatsappBaileys");
-        await baileysManager.notifyAdmin(`🚨 IA caída — ambos providers fallaron.\nUsuario: ${userId}\nMsg: "${incomingText.slice(0, 150)}"`);
+        const { evolutionManager } = await import("../senders/whatsappEvolution");
+        await evolutionManager.notifyAdmin(`🚨 IA caída — ambos providers fallaron.\nUsuario: ${userId}\nMsg: "${incomingText.slice(0, 150)}"`);
       } catch { /* notify es best-effort */ }
       return fallback;
     }

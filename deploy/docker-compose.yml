@@ -56,7 +56,6 @@ services:
     ports:
       - "127.0.0.1:3001:3001"
     volumes:
-      # Persist Baileys WhatsApp session across container recreates
       - /opt/dittofeed/fia-engine-data:/app/sessions
       # Mount Codex auth.json (uploaded via /admin/codex)
       - /opt/dittofeed/codex-auth:/root/.codex

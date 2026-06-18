@@ -77,8 +77,7 @@ Look for: `FIA Engagement Engine HTTP server started` and `WhatsApp connected`.
 ## Dockerfile rules
 
 - **No yarn.lock dependency.** The Dockerfile uses plain `yarn install` (no `--frozen-lockfile`).
-- **Baileys is installed separately** via `yarn add @whiskeysockets/baileys` after the base install, because it requires Linux native compilation and is excluded from the monorepo lockfile.
-- **Build tools** (`python3 make g++ git`) are in the builder stage for libsignal.
+- **Build tools** (`python3 make g++ git`) are in the builder stage for native modules.
 - **Two-stage build:** builder compiles TypeScript → production image only copies `dist/` + `node_modules/`.
 
 ---

@@ -14,7 +14,7 @@ import {
   type ScheduledMessage,
 } from "../db/supabase";
 import { getCachedConfig } from "../config/engineConfigCache";
-import { baileysManager } from "../senders/whatsappBaileys";
+import { evolutionManager } from "../senders/whatsappEvolution";
 
 // Cron tasks keyed by scheduled_message.id — allows selective teardown
 const _tasks = new Map<string, cron.ScheduledTask>();
@@ -106,7 +106,7 @@ export async function runScheduledBroadcast(schedule: ScheduledMessage): Promise
           .replace(/\{\{nombre\}\}/g, user.name ?? "ahí")
           .replace(/\{\{empresa\}\}/g, user.company_name ?? "tu empresa");
 
-        await baileysManager.sendMessage(user.phone, text);
+        await evolutionManager.sendMessage(user.phone, text);
         sent++;
       } catch (err) {
         logger.warn({ err, userId: user.id }, "Failed to send scheduled message to user");
