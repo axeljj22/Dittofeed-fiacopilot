@@ -62,7 +62,11 @@ async function buildWeeklyContext(profile: Profile): Promise<WeeklyReportContext
   const isTrack = Boolean(trackPath?.programSlug && trackSlugs.has(trackPath.programSlug));
   const programName = trackPath?.name ?? "Método FIA";
   const programSlug = trackPath?.programSlug ?? null;
-  const pathId = trackPath?.pathId ?? null;
+  // resolveUserPaths groups the free method (path_id NULL) under the "__core__" key.
+  // Normalize back to NULL so we match capsule_progress / capsules rows correctly.
+  const targetPathId = !trackPath || trackPath.pathId === "__core__" ? null : trackPath.pathId;
+  const samePath = (rowPathId: string | null) =>
+    targetPathId === null ? rowPathId == null : rowPathId === targetPathId;
 
   // Capsules completed in the last 7 days within the relevant path
   const weekAgo = weekAgoIso();
@@ -72,14 +76,18 @@ async function buildWeeklyContext(profile: Profile): Promise<WeeklyReportContext
         p.status === "completed" &&
         p.completed_at != null &&
         p.completed_at >= weekAgo &&
-        (pathId == null || p.path_id === pathId),
+        samePath(p.path_id),
     )
     .map((p) => ({ number: p.capsule_number, title: p.capsule_title }));
 
   const nextCapsuleNumber = trackPath?.nextCapsuleNumber ?? null;
   const nextCapsuleTitle = trackPath?.nextCapsuleTitle ?? null;
+  // Match the next capsule by number AND path so the mini_action is the right one
+  // (capsule numbers can repeat across paths).
   const nextCapsule =
-    nextCapsuleNumber != null ? capsules.find((c) => c.number === nextCapsuleNumber) ?? null : null;
+    nextCapsuleNumber != null
+      ? capsules.find((c) => c.number === nextCapsuleNumber && samePath(c.path_id ?? null)) ?? null
+      : null;
   const nextMiniAction = nextCapsule?.mini_action ?? null;
 
   // Deep link: next capsule for a track, /pasos for the free method, dashboard if finished.

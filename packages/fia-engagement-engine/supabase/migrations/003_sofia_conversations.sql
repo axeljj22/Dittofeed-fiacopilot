@@ -25,8 +25,9 @@ CREATE INDEX IF NOT EXISTS idx_sofia_conv_kind_created ON sofia_conversations(ki
 
 ALTER TABLE sofia_conversations ENABLE ROW LEVEL SECURITY;
 
+-- Only the engine (service_role) writes/reads here — not end users.
 CREATE POLICY "Allow service role full access" ON sofia_conversations
   FOR ALL
-  TO authenticated
+  TO service_role
   USING (true)
   WITH CHECK (true);

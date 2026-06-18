@@ -82,10 +82,14 @@ function buildVaultContext(outputs: VaultOutput[]): string {
 function formatKnowledge(entries: KnowledgeEntry[]): string {
   if (entries.length === 0) return "";
   const top = entries
-    .slice(0, 6)
-    .map((e) => `• ${e.title}: ${e.body_md.slice(0, 400)}`)
+    .slice(0, 8)
+    .map((e) => {
+      const body = e.summary && e.summary.trim() ? e.summary : e.content;
+      const voice = e.voice_notes ? ` (voz: ${e.voice_notes.slice(0, 160)})` : "";
+      return `• [${e.category}] ${e.title}: ${(body ?? "").slice(0, 350)}${voice}`;
+    })
     .join("\n");
-  return `\n\nCONOCIMIENTO DE FIA (basate SOLO en esto para hablar del contenido — no inventes):\n${top}`;
+  return `\n\nCONOCIMIENTO DE FIA (basate SOLO en esto para hablar de frameworks/método/voz — no inventes):\n${top}`;
 }
 
 // ─── Weekly report context ───
@@ -433,7 +437,6 @@ export async function generateInboundReply(
 
     let userContext: string;
     if (isColdStart) {
-      const programSlug = segment.enrolledPrograms[0]?.slug ?? null;
       const [profile, vaultOutputs, capsuleProgress, capsules, scores, assessment, knowledge] =
         await Promise.all([
           getProfileWithWhatsapp(userId),
@@ -442,7 +445,7 @@ export async function generateInboundReply(
           getCapsulesCached(),
           getLeadScoreForUser(userId),
           getAssessmentForUser(userId),
-          getKnowledge(programSlug),
+          getKnowledge(),
         ]);
 
       const completedCount = capsuleProgress.filter((p) => p.status === "completed").length;
@@ -654,13 +657,11 @@ function smartTrim(text: string, maxChars: number): string {
 export async function generateMessage(
   opportunity: EngagementOpportunity,
 ): Promise<GeneratedMessage | null> {
-  const c = opportunity.context as WeeklyReportContext;
-
   // Recent conversation + facts so the report respects what the user last said
   const [recentHistory, state, knowledge] = await Promise.all([
     getConversationHistory(opportunity.userId, 5),
     getConversationState(opportunity.userId),
-    getKnowledge(c.programSlug ?? null),
+    getKnowledge(),
   ]);
 
   const reportContext = buildWeeklyReportContext(opportunity, knowledge);

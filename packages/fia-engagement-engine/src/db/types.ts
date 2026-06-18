@@ -15,6 +15,7 @@ export interface Profile {
   phone: string | null;         // used as WhatsApp number
   whatsapp_opt_in: boolean;     // true = user accepts WA messages
   sofia_activated_at: string | null; // set when user confirms Sofía activation; null = not active / deactivated
+  sofia_deactivated_at: string | null; // set on STOP; front shows "diste de baja por WhatsApp"
   temperature: string | null;   // CRM label: 'frio' | 'tibio' | 'caliente'
   country: string | null;
   is_admin: boolean;

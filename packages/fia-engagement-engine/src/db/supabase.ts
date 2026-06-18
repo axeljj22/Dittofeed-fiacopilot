@@ -87,12 +87,33 @@ export async function getSofiaActiveUsers(): Promise<Profile[]> {
 export async function deactivateSofia(userId: string): Promise<void> {
   const { error } = await getSupabaseClient()
     .from("profiles")
-    .update({ whatsapp_opt_in: false, sofia_activated_at: null })
+    .update({
+      whatsapp_opt_in: false,
+      sofia_activated_at: null,
+      sofia_deactivated_at: new Date().toISOString(),
+    })
     .eq("id", userId);
   if (error) {
     logger.error({ error, userId }, "Failed to deactivate Sofía");
   } else {
     logger.info({ userId }, "Sofía deactivated (opt-out)");
+  }
+}
+
+/**
+ * Activate Sofía for a user (inbound-first flow): the user clicked "Activar Sofía" in the
+ * front, which opened WhatsApp; their first inbound message confirms activation.
+ * Sets sofia_activated_at so the front poll flips to "✓ Sofía activa" and weekly reports include them.
+ */
+export async function activateSofia(userId: string): Promise<void> {
+  const { error } = await getSupabaseClient()
+    .from("profiles")
+    .update({ sofia_activated_at: new Date().toISOString(), sofia_deactivated_at: null })
+    .eq("id", userId);
+  if (error) {
+    logger.error({ error, userId }, "Failed to activate Sofía");
+  } else {
+    logger.info({ userId }, "Sofía activated (inbound)");
   }
 }
 
@@ -955,44 +976,55 @@ export async function appendConversationMessages(
   }
 }
 
-// ─── Sofía knowledge base (read-only; lives in FIA Copilot DB, seeded by their team) ───
+// ─── Knowledge base (read-only; lives in FIA Copilot DB, owned/maintained by Axel) ───
+// Table: knowledge_base (NO "sofia" prefix). Schema per Axel's doc:
+//   id, slug, category, title, summary, content, voice_notes, tags, related, priority, source, status
+// Categories: framework | principio | metafora | voz | caso | producto | icp
 
 export interface KnowledgeEntry {
-  topic: string;
-  program_slug: string | null;
+  slug: string;
+  category: string;
   title: string;
-  body_md: string;
+  summary: string | null;
+  content: string;
+  voice_notes: string | null;
+  tags: string[] | null;
+  priority: number | null;
+  status: string | null;
 }
+
+const INACTIVE_KNOWLEDGE_STATUS = new Set(["draft", "archived", "disabled", "inactive"]);
 
 let _knowledgeCache: KnowledgeEntry[] | null = null;
 let _knowledgeCacheExpiry = 0;
 
 /**
- * Returns active knowledge-base entries (methodology, frameworks, landing, per-program).
- * Reads the sofia_knowledge table; returns [] gracefully if it doesn't exist yet.
- * Cached 5 min. Filter by programSlug to fetch entries relevant to a user's track.
+ * Returns the active knowledge-base entries (frameworks, principles, metaphors, voice, ICP,
+ * products) ordered by priority desc. Reads `knowledge_base`; returns [] gracefully if the
+ * table doesn't exist yet. Cached 5 min. These are global to Sofía — program-specific detail
+ * comes from `capsules.content_md`, not from here.
  */
-export async function getKnowledge(programSlug?: string | null): Promise<KnowledgeEntry[]> {
+export async function getKnowledge(): Promise<KnowledgeEntry[]> {
   if (!_knowledgeCache || Date.now() >= _knowledgeCacheExpiry) {
     try {
       const { data, error } = await getSupabaseClient()
-        .from("sofia_knowledge")
-        .select("topic, program_slug, title, body_md")
-        .eq("is_active", true);
+        .from("knowledge_base")
+        .select("slug, category, title, summary, content, voice_notes, tags, priority, status");
       if (error) {
-        // Table may not exist yet (pre hand-off) — degrade gracefully
+        // Table may not exist yet — degrade gracefully
         _knowledgeCache = [];
       } else {
-        _knowledgeCache = (data ?? []) as KnowledgeEntry[];
+        const rows = (data ?? []) as KnowledgeEntry[];
+        _knowledgeCache = rows
+          .filter((k) => !k.status || !INACTIVE_KNOWLEDGE_STATUS.has(k.status.toLowerCase()))
+          .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
       }
     } catch {
       _knowledgeCache = [];
     }
     _knowledgeCacheExpiry = Date.now() + 5 * 60 * 1000;
   }
-  if (!programSlug) return _knowledgeCache;
-  // Program-specific entries + global ones (program_slug null)
-  return _knowledgeCache.filter((k) => k.program_slug === programSlug || k.program_slug == null);
+  return _knowledgeCache;
 }
 
 /** Shared transform for capsule_progress rows joined with capsules */

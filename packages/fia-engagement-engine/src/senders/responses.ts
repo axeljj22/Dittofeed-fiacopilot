@@ -21,6 +21,7 @@ import {
   getConversationState,
   upsertConversationState,
   deactivateSofia,
+  activateSofia,
   logConversation,
 } from "../db/supabase";
 import { getCommandReply } from "../config/engineConfigCache";
@@ -169,7 +170,7 @@ export async function processIncomingResponse(
   // Try both "5491125120212" and "+5491125120212" — apps may store either format.
   const { data: profile } = await getSupabaseClient()
     .from("profiles")
-    .select("id, whatsapp_opt_in, wp_opted_out")
+    .select("id, whatsapp_opt_in, wp_opted_out, sofia_activated_at")
     .or(`phone.eq.${normalizedFrom},phone.eq.+${normalizedFrom}`)
     .maybeSingle();
 
@@ -197,6 +198,13 @@ export async function processIncomingResponse(
 
   // ── 4. Save incoming message ─────────────────────────────────────────────
   await insertIncomingMessage(message.from, message.body, userId, message.messageId ?? null);
+
+  // ── 4b. Inbound-first activation ─────────────────────────────────────────
+  // The "Activar Sofía" button in /perfil opens WhatsApp with a pre-filled message.
+  // The first inbound from a recognized, opted-in user (not a STOP) confirms activation.
+  if (profile.sofia_activated_at == null && classified.type !== "opt_out") {
+    await activateSofia(userId);
+  }
 
   // ── 5. Handle commands (non-default) ────────────────────────────────────
   if (classified.type !== "default") {
