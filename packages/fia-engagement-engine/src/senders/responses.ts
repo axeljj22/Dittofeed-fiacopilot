@@ -26,8 +26,10 @@ import {
   findProfileByPhone,
   getOrCreateSofiaGroup,
   updateSofiaGroupStudent,
+  upsertGroupMembers,
   getGroupHistory,
 } from "../db/supabase";
+import type { GroupMember } from "../db/supabase";
 import { getCommandReply, getTrackingLinkBase, getPositiveShortResponses } from "../config/engineConfigCache";
 import { generateInboundReply, generateGroupReply } from "../generators/messageGenerator";
 
@@ -460,24 +462,43 @@ function recordGroupReply(groupJid: string): void {
   _groupReplyTimestamps.set(groupJid, arr);
 }
 
-// Groups we've already tried to auto-assign a student to (avoid re-fetching participants every msg).
-const _groupStudentAttempted = new Set<string>();
+// Group roster sync throttle (per process): groupJid → last sync (ms).
+const _groupSyncedAt = new Map<string, number>();
+const GROUP_SYNC_TTL_MS = 6 * 60 * 60 * 1000;
 
 /**
- * Identifies the student a follow-up group is about: the single registered participant that is
- * NOT admin, NOT coach, and NOT Sofía. Returns null if ambiguous (0 or >1) — e.g. the general group.
+ * Fetches the group's participants from Evolution, classifies each
+ * (superadmin = is_admin, coach = is_coach, student = registered non-staff, bot = Sofía,
+ * unknown = not in profiles) and persists the FULL roster (sofia_group_members).
+ * Returns the unique student's user_id if there is exactly one (else null).
  */
-async function resolveGroupStudent(groupJid: string): Promise<string | null> {
+async function syncGroupMembers(groupJid: string): Promise<string | null> {
   const { evolutionManager } = await import("./whatsappEvolution");
   const phones = await evolutionManager.getGroupParticipants(groupJid);
+  if (phones.length === 0) return null;
   const sofiaNum = config.engine.sofiaWhatsappNumber;
-  const studentIds = new Set<string>();
-  for (const ph of phones) {
-    if (sofiaNum && ph.includes(sofiaNum)) continue;
-    const p = await findProfileByPhone(ph);
-    if (p && !p.is_admin && !p.is_coach) studentIds.add(p.id);
+  const members: GroupMember[] = [];
+  const students = new Set<string>();
+  for (const phone of phones) {
+    const isBot = Boolean(sofiaNum && phone.includes(sofiaNum));
+    const p = isBot ? null : await findProfileByPhone(phone);
+    let role = "unknown";
+    if (isBot) role = "bot";
+    else if (p?.is_admin) role = "superadmin";
+    else if (p?.is_coach) role = "coach";
+    else if (p) { role = "student"; students.add(p.id); }
+    members.push({
+      group_jid: groupJid,
+      phone,
+      user_id: p?.id ?? null,
+      name: p?.name ?? (isBot ? "Sofía" : null),
+      role,
+      is_registered: Boolean(p),
+    });
   }
-  return studentIds.size === 1 ? [...studentIds][0]! : null;
+  await upsertGroupMembers(members);
+  _groupSyncedAt.set(groupJid, Date.now());
+  return students.size === 1 ? [...students][0]! : null;
 }
 
 /**
@@ -494,12 +515,11 @@ export async function processGroupMessage(msg: IncomingGroupMessage): Promise<vo
   ]);
   const conversationId = group?.conversation_id;
 
-  // Auto-assign the group's student once (the registered non-staff participant), so replies
-  // use that student's context even when Axel/the coach ask.
-  if (group && !group.student_user_id && !_groupStudentAttempted.has(groupJid)) {
-    _groupStudentAttempted.add(groupJid);
-    const studentId = await resolveGroupStudent(groupJid);
-    if (studentId) {
+  // Keep the full roster fresh (~every 6h, and on first contact) and auto-assign the student
+  // when there is exactly one registered non-staff member.
+  if (group && Date.now() - (_groupSyncedAt.get(groupJid) ?? 0) > GROUP_SYNC_TTL_MS) {
+    const studentId = await syncGroupMembers(groupJid);
+    if (studentId && !group.student_user_id) {
       await updateSofiaGroupStudent(groupJid, studentId);
       group.student_user_id = studentId;
       logger.info({ groupJid, studentId }, "Group student auto-assigned");

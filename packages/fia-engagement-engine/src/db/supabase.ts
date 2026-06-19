@@ -998,6 +998,38 @@ export async function updateSofiaGroupStudent(groupJid: string, studentUserId: s
   if (error) logger.warn({ error, groupJid }, "Failed to assign group student");
 }
 
+export interface GroupMember {
+  group_jid: string;
+  phone: string;
+  user_id: string | null;
+  name: string | null;
+  role: string; // superadmin | coach | student | bot | unknown
+  is_registered: boolean;
+}
+
+/** Upserts the full roster of a group (one row per participant). */
+export async function upsertGroupMembers(members: GroupMember[]): Promise<void> {
+  if (members.length === 0) return;
+  const rows = members.map((m) => ({ ...m, updated_at: new Date().toISOString() }));
+  const { error } = await getSupabaseClient()
+    .from("sofia_group_members")
+    .upsert(rows, { onConflict: "group_jid,phone" });
+  if (error) logger.warn({ error, count: rows.length }, "Failed to upsert group members");
+}
+
+/** Returns the stored roster of a group. */
+export async function getGroupMembers(groupJid: string): Promise<GroupMember[]> {
+  const { data, error } = await getSupabaseClient()
+    .from("sofia_group_members")
+    .select("group_jid, phone, user_id, name, role, is_registered")
+    .eq("group_jid", groupJid);
+  if (error) {
+    logger.warn({ error, groupJid }, "Failed to fetch group members");
+    return [];
+  }
+  return (data ?? []) as GroupMember[];
+}
+
 /** Recent messages of a group thread (chronological), with sender name for multi-speaker context. */
 export async function getGroupHistory(
   conversationId: string,
