@@ -1146,6 +1146,8 @@ export interface KnowledgeEntry {
   tags: string[] | null;
   priority: number | null;
   status: string | null;
+  program_slug?: string | null;
+  similarity?: number; // 0..1 cosine similarity when retrieved semantically
 }
 
 // Allowlist: only these statuses (or null) are injected into Sofía's grounding. Any other
@@ -1182,6 +1184,94 @@ export async function getKnowledge(): Promise<KnowledgeEntry[]> {
     _knowledgeCacheExpiry = Date.now() + 5 * 60 * 1000;
   }
   return _knowledgeCache;
+}
+
+function normalizeForSearch(s: string): string {
+  return s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+}
+
+/**
+ * Embeds `text` with OpenAI (1536-dim). Returns null when no key is configured or on any
+ * failure, so the caller falls back to keyword search. MUST use the same model the stored
+ * knowledge_base vectors were generated with (text-embedding-3-small) or similarity is noise.
+ */
+export async function embedText(text: string): Promise<number[] | null> {
+  if (!config.openai.apiKey) return null;
+  const input = (text ?? "").replace(/\s+/g, " ").trim().slice(0, 2000);
+  if (!input) return null;
+  try {
+    const res = await fetch("https://api.openai.com/v1/embeddings", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${config.openai.apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ model: config.openai.embeddingModel, input }),
+    });
+    if (!res.ok) {
+      logger.warn({ status: res.status }, "OpenAI embeddings request failed");
+      return null;
+    }
+    const data = (await res.json()) as { data?: Array<{ embedding?: number[] }> };
+    const vec = data.data?.[0]?.embedding;
+    return Array.isArray(vec) && vec.length > 0 ? vec : null;
+  } catch (error) {
+    logger.warn({ error: (error as Error).message }, "OpenAI embeddings error");
+    return null;
+  }
+}
+
+const KNOWLEDGE_MATCH_COUNT = 6;
+const KNOWLEDGE_MIN_SIMILARITY = 0.25;
+
+/**
+ * Retrieves the knowledge entries most RELEVANT to `query`, scoped to global + the user's
+ * program(s). Semantic (pgvector match_knowledge) first; falls back to keyword scoring over
+ * getKnowledge() when embeddings/RPC are unavailable. Returns [] when nothing is relevant so
+ * Sofía defers instead of inventing.
+ */
+export async function searchKnowledge(
+  query: string,
+  programSlugs?: string[] | null,
+): Promise<KnowledgeEntry[]> {
+  const q = (query ?? "").trim();
+  if (!q) return getKnowledge(); // no question → keep prior global-grounding behavior
+  const programs = programSlugs && programSlugs.length ? programSlugs : null;
+
+  // 1) Semantic retrieval (preferred).
+  const embedding = await embedText(q);
+  if (embedding) {
+    try {
+      const { data, error } = await getSupabaseClient().rpc("match_knowledge", {
+        query_embedding: embedding,
+        match_count: KNOWLEDGE_MATCH_COUNT,
+        filter_programs: programs,
+      });
+      if (!error && Array.isArray(data)) {
+        return (data as KnowledgeEntry[]).filter((e) => (e.similarity ?? 0) >= KNOWLEDGE_MIN_SIMILARITY);
+      }
+      logger.warn({ error: error?.message }, "match_knowledge RPC failed — keyword fallback");
+    } catch (error) {
+      logger.warn({ error: (error as Error).message }, "match_knowledge RPC threw — keyword fallback");
+    }
+  }
+
+  // 2) Keyword fallback over the cached set (no embeddings/RPC available).
+  const all = await getKnowledge();
+  const scoped = all.filter((e) => !e.program_slug || !programs || programs.includes(e.program_slug));
+  const tokens = [...new Set(normalizeForSearch(q).split(/\s+/).filter((t) => t.length >= 4))];
+  if (tokens.length === 0) return scoped.slice(0, KNOWLEDGE_MATCH_COUNT);
+  const scored = scoped
+    .map((e) => {
+      const body = normalizeForSearch([e.title, e.slug, e.category, (e.tags ?? []).join(" "), e.summary ?? "", e.content].join(" "));
+      const head = normalizeForSearch([e.title, (e.tags ?? []).join(" ")].join(" "));
+      let score = 0;
+      for (const t of tokens) {
+        if (body.includes(t)) score += 1;
+        if (head.includes(t)) score += 1; // title/tags hits weigh double
+      }
+      return { e, score: score + (e.priority ?? 0) / 1000 };
+    })
+    .filter((s) => s.score >= 1)
+    .sort((a, b) => b.score - a.score);
+  return scored.slice(0, KNOWLEDGE_MATCH_COUNT).map((s) => s.e);
 }
 
 /** Shared transform for capsule_progress rows joined with capsules */

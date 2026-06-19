@@ -28,6 +28,14 @@ export const config = {
     maxTokens: parseInt(optionalEnv("ANTHROPIC_MAX_TOKENS", "1024"), 10),
   },
 
+  // OpenAI — embeddings only (semantic knowledge retrieval). Optional: falls back to
+  // keyword search when the key is absent. Must match the model the stored vectors were
+  // generated with (text-embedding-3-small → 1536 dims) or similarity is meaningless.
+  openai: {
+    apiKey: optionalEnv("OPENAI_API_KEY", ""),
+    embeddingModel: optionalEnv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
+  },
+
   // Codex OAuth — message generation via ChatGPT Plus (replaces Anthropic)
   codex: {
     // Path to ~/.codex/auth.json created by `npx @openai/codex login`

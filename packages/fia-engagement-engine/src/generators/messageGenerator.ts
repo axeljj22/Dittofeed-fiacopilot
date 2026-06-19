@@ -28,6 +28,7 @@ import {
   getConversationState,
   upsertConversationState,
   getKnowledge,
+  searchKnowledge,
 } from "../db/supabase";
 import type { UserSegment, KnowledgeEntry } from "../db/supabase";
 import type { EngagementOpportunity, VaultOutput, AssessmentSubmission } from "../db/types";
@@ -95,18 +96,28 @@ function buildVaultContext(outputs: VaultOutput[]): string {
   return sections.join("\n\n");
 }
 
-/** Formats knowledge-base entries for grounding (anti-hallucination). */
+/**
+ * Formats knowledge entries for grounding (anti-hallucination). Entries arrive
+ * relevance-ordered (from searchKnowledge), so the top hits get fuller content and the
+ * rest a short summary, under a total char budget.
+ */
 function formatKnowledge(entries: KnowledgeEntry[]): string {
   if (entries.length === 0) return "";
-  const top = entries
-    .slice(0, 8)
-    .map((e) => {
-      const body = e.summary && e.summary.trim() ? e.summary : e.content;
-      const voice = e.voice_notes ? ` (voz: ${e.voice_notes.slice(0, 160)})` : "";
-      return `• [${e.category}] ${e.title}: ${(body ?? "").slice(0, 350)}${voice}`;
-    })
-    .join("\n");
-  return `\n\nCONOCIMIENTO DE FIA (basate SOLO en esto para hablar de frameworks/método/voz — no inventes):\n${top}`;
+  let budget = 3600;
+  const lines: string[] = [];
+  entries.slice(0, 6).forEach((e, i) => {
+    const full = (e.content ?? "").trim();
+    const sum = (e.summary ?? "").trim();
+    const maxLen = i < 3 ? 900 : 280;
+    let body = (i < 3 ? full || sum : sum || full).slice(0, maxLen);
+    if (body.length > budget) body = body.slice(0, Math.max(0, budget));
+    if (!body) return;
+    budget -= body.length;
+    const voice = e.voice_notes ? ` (voz: ${e.voice_notes.slice(0, 160)})` : "";
+    lines.push(`• [${e.category}] ${e.title}: ${body}${voice}`);
+  });
+  if (lines.length === 0) return "";
+  return `\n\nCONOCIMIENTO DE FIA RELEVANTE (basate SOLO en esto para responder; si no alcanza, decí que lo verificás y no inventes):\n${lines.join("\n")}`;
 }
 
 // ─── Weekly report context ───
@@ -452,6 +463,8 @@ export async function generateInboundReply(
 ): Promise<string | null> {
   try {
     const sofiaPrompt = await getSofiaSystemPrompt();
+    // Scope knowledge retrieval to the user's program(s) (+ global). Empty → global only.
+    const programSlugs = segment.enrolledPrograms.map((p) => p.slug).filter(Boolean);
 
     const [history, state] = await Promise.all([
       getConversationHistory(userId, 10),
@@ -470,7 +483,7 @@ export async function generateInboundReply(
           getCapsulesCached(),
           getLeadScoreForUser(userId),
           getAssessmentForUser(userId),
-          getKnowledge(),
+          searchKnowledge(incomingText, programSlugs),
         ]);
 
       const completedCount = capsuleProgress.filter((p) => p.status === "completed").length;
@@ -528,7 +541,7 @@ ${vaultContext}${formatKnowledge(knowledge)}${profile?.preferences?.['sofia_note
         getProfileWithWhatsapp(userId),
         getCapsuleProgressForUser(userId),
         getCapsulesCached(),
-        getKnowledge(),
+        searchKnowledge(incomingText, programSlugs),
       ]);
       const completedCount = capsuleProgress.filter((p) => p.status === "completed").length;
       const inProgressCapsule = capsuleProgress.find((p) => p.status === "in_progress");
@@ -753,7 +766,11 @@ export async function generateGroupReply(opts: {
 }): Promise<string | null> {
   const { contextUserId, segment, senderName, incomingText, groupHistory } = opts;
   try {
-    const [sofiaPrompt, knowledge] = await Promise.all([getSofiaSystemPrompt(), getKnowledge()]);
+    const programSlugs = segment?.enrolledPrograms.map((p) => p.slug).filter(Boolean) ?? null;
+    const [sofiaPrompt, knowledge] = await Promise.all([
+      getSofiaSystemPrompt(),
+      searchKnowledge(incomingText, programSlugs),
+    ]);
 
     let profileCtx = "";
     if (contextUserId) {
