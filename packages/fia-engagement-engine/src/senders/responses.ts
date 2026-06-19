@@ -25,6 +25,7 @@ import {
   logConversation,
   findProfileByPhone,
   getOrCreateSofiaGroup,
+  updateSofiaGroupStudent,
   getGroupHistory,
 } from "../db/supabase";
 import { getCommandReply, getTrackingLinkBase, getPositiveShortResponses } from "../config/engineConfigCache";
@@ -459,6 +460,26 @@ function recordGroupReply(groupJid: string): void {
   _groupReplyTimestamps.set(groupJid, arr);
 }
 
+// Groups we've already tried to auto-assign a student to (avoid re-fetching participants every msg).
+const _groupStudentAttempted = new Set<string>();
+
+/**
+ * Identifies the student a follow-up group is about: the single registered participant that is
+ * NOT admin, NOT coach, and NOT Sofía. Returns null if ambiguous (0 or >1) — e.g. the general group.
+ */
+async function resolveGroupStudent(groupJid: string): Promise<string | null> {
+  const { evolutionManager } = await import("./whatsappEvolution");
+  const phones = await evolutionManager.getGroupParticipants(groupJid);
+  const sofiaNum = config.engine.sofiaWhatsappNumber;
+  const studentIds = new Set<string>();
+  for (const ph of phones) {
+    if (sofiaNum && ph.includes(sofiaNum)) continue;
+    const p = await findProfileByPhone(ph);
+    if (p && !p.is_admin && !p.is_coach) studentIds.add(p.id);
+  }
+  return studentIds.size === 1 ? [...studentIds][0]! : null;
+}
+
 /**
  * Handle a group message: ALWAYS log it (observe), and reply ONLY when Sofía is mentioned.
  * Reply context = the group's mapped student (if any) else the sender's profile.
@@ -472,6 +493,18 @@ export async function processGroupMessage(msg: IncomingGroupMessage): Promise<vo
     findProfileByPhone(senderPhone),
   ]);
   const conversationId = group?.conversation_id;
+
+  // Auto-assign the group's student once (the registered non-staff participant), so replies
+  // use that student's context even when Axel/the coach ask.
+  if (group && !group.student_user_id && !_groupStudentAttempted.has(groupJid)) {
+    _groupStudentAttempted.add(groupJid);
+    const studentId = await resolveGroupStudent(groupJid);
+    if (studentId) {
+      await updateSofiaGroupStudent(groupJid, studentId);
+      group.student_user_id = studentId;
+      logger.info({ groupJid, studentId }, "Group student auto-assigned");
+    }
+  }
   const senderName = senderProfile?.name ?? `+${senderPhone.slice(-4)}`;
 
   // Listen: log every group message (even from unregistered senders).

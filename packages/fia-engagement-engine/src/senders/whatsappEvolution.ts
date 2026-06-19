@@ -89,6 +89,24 @@ class EvolutionManager {
     }
   }
 
+  /** GET /group/participants/{instance} — returns participant phone numbers (digits only). */
+  async getGroupParticipants(groupJid: string): Promise<string[]> {
+    if (!this.isConfigured) return [];
+    try {
+      const res = await axios.get(
+        this.url(`/group/participants/${config.whatsapp.evolution.instanceName}?groupJid=${encodeURIComponent(groupJid)}`),
+        { headers: this.headers, timeout: 10_000 },
+      );
+      const parts = (res.data?.participants ?? []) as Array<{ phoneNumber?: string; id?: string }>;
+      return parts
+        .map((p) => String(p.phoneNumber ?? p.id ?? "").replace(/@.*/, "").replace(/\D/g, ""))
+        .filter(Boolean);
+    } catch (error) {
+      logger.warn({ error: (error as Error).message, groupJid }, "getGroupParticipants failed");
+      return [];
+    }
+  }
+
   /** POST /chat/sendPresence/{instance}. Best-effort, never throws. */
   async sendTyping(phone: string, durationMs = 1500): Promise<void> {
     if (!this.isConfigured) return;

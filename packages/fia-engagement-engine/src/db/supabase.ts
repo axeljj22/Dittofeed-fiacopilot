@@ -941,6 +941,9 @@ export interface PhoneProfile {
   name: string | null;
   whatsapp_opt_in: boolean;
   sofia_activated_at: string | null;
+  is_admin: boolean;
+  is_coach: boolean;
+  org_role: string | null;
 }
 
 /** Finds a profile by WhatsApp phone, tolerating the +/no-+ formats. Returns null if unknown. */
@@ -949,7 +952,7 @@ export async function findProfileByPhone(phone: string): Promise<PhoneProfile | 
   if (!normalized) return null;
   const { data } = await getSupabaseClient()
     .from("profiles")
-    .select("id, name, whatsapp_opt_in, sofia_activated_at")
+    .select("id, name, whatsapp_opt_in, sofia_activated_at, is_admin, is_coach, org_role")
     .or(`phone.eq.${normalized},phone.eq.+${normalized}`)
     .maybeSingle();
   return (data as PhoneProfile | null) ?? null;
@@ -984,6 +987,15 @@ export async function getOrCreateSofiaGroup(groupJid: string): Promise<SofiaGrou
     return null;
   }
   return created as SofiaGroup;
+}
+
+/** Assigns the student a follow-up group is about. */
+export async function updateSofiaGroupStudent(groupJid: string, studentUserId: string): Promise<void> {
+  const { error } = await getSupabaseClient()
+    .from("sofia_groups")
+    .update({ student_user_id: studentUserId })
+    .eq("group_jid", groupJid);
+  if (error) logger.warn({ error, groupJid }, "Failed to assign group student");
 }
 
 /** Recent messages of a group thread (chronological), with sender name for multi-speaker context. */
