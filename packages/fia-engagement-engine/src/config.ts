@@ -95,6 +95,8 @@ export const config = {
     defaultTimezone: optionalEnv("DEFAULT_TIMEZONE", "America/Buenos_Aires"),
     // Sofía's own WhatsApp number (digits only) — used to detect @mentions in groups.
     sofiaWhatsappNumber: optionalEnv("SOFIA_WHATSAPP_NUMBER", "").replace(/\D/g, ""),
+    // Sofía's WhatsApp @lid (linked-id) — groups identify participants/@mentions by lid, not phone.
+    sofiaWhatsappLid: optionalEnv("SOFIA_WHATSAPP_LID", "").replace(/\D/g, ""),
     // Keywords that count as "calling Sofía" in a group (case-insensitive).
     groupMentionKeywords: optionalEnv("GROUP_MENTION_KEYWORDS", "sofia,sofi")
       .split(",").map((s) => s.trim().toLowerCase()).filter(Boolean),

@@ -89,8 +89,8 @@ class EvolutionManager {
     }
   }
 
-  /** GET /group/participants/{instance} — returns participant phone numbers (digits only). */
-  async getGroupParticipants(groupJid: string): Promise<string[]> {
+  /** GET /group/participants/{instance} — returns each participant's lid + phone (digits only). */
+  async getGroupParticipants(groupJid: string): Promise<Array<{ lid: string; phone: string }>> {
     if (!this.isConfigured) return [];
     try {
       const res = await axios.get(
@@ -99,8 +99,11 @@ class EvolutionManager {
       );
       const parts = (res.data?.participants ?? []) as Array<{ phoneNumber?: string; id?: string }>;
       return parts
-        .map((p) => String(p.phoneNumber ?? p.id ?? "").replace(/@.*/, "").replace(/\D/g, ""))
-        .filter(Boolean);
+        .map((p) => ({
+          lid: String(p.id ?? "").replace(/@.*/, "").replace(/\D/g, ""),
+          phone: String(p.phoneNumber ?? "").replace(/@.*/, "").replace(/\D/g, ""),
+        }))
+        .filter((x) => x.lid || x.phone);
     } catch (error) {
       logger.warn({ error: (error as Error).message, groupJid }, "getGroupParticipants failed");
       return [];

@@ -28,6 +28,7 @@ import {
   updateSofiaGroupStudent,
   updateSofiaGroupLabel,
   upsertGroupMembers,
+  getGroupMembers,
   getGroupHistory,
 } from "../db/supabase";
 import type { GroupMember } from "../db/supabase";
@@ -438,12 +439,19 @@ function normalize(s: string): string {
   return s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
 }
 
-/** True if Sofía was called: a real @mention of her number, or a name keyword in the text. */
-function isSofiaMentioned(text: string, mentionedJid?: string[]): boolean {
+/**
+ * True if Sofía was called: a real @mention (groups mention by @lid, so match her lid first;
+ * also accept her phone) or a name keyword in the text.
+ */
+function isSofiaMentioned(text: string, mentionedJid?: string[], botLid?: string): boolean {
   const sofiaNum = config.engine.sofiaWhatsappNumber;
-  if (sofiaNum && Array.isArray(mentionedJid) &&
-      mentionedJid.some((j) => String(j).replace(/\D/g, "").includes(sofiaNum))) {
-    return true;
+  const lid = botLid || config.engine.sofiaWhatsappLid;
+  if (Array.isArray(mentionedJid)) {
+    for (const j of mentionedJid) {
+      const d = String(j).replace(/@.*/, "").replace(/\D/g, "");
+      if (lid && d === lid) return true;
+      if (sofiaNum && d.includes(sofiaNum)) return true;
+    }
   }
   const norm = normalize(text);
   return config.engine.groupMentionKeywords.some((k) => new RegExp(`\\b${normalize(k)}\\b`).test(norm));
@@ -479,14 +487,15 @@ export async function syncGroupMembers(groupJid: string): Promise<string | null>
   const subject = await evolutionManager.getGroupSubject(groupJid);
   if (subject) await updateSofiaGroupLabel(groupJid, subject);
 
-  const phones = await evolutionManager.getGroupParticipants(groupJid);
-  if (phones.length === 0) return null;
+  const participants = await evolutionManager.getGroupParticipants(groupJid);
+  if (participants.length === 0) return null;
   const sofiaNum = config.engine.sofiaWhatsappNumber;
+  const sofiaLid = config.engine.sofiaWhatsappLid;
   const members: GroupMember[] = [];
   const students = new Set<string>();
-  for (const phone of phones) {
-    const isBot = Boolean(sofiaNum && phone.includes(sofiaNum));
-    const p = isBot ? null : await findProfileByPhone(phone);
+  for (const { lid, phone } of participants) {
+    const isBot = Boolean((sofiaNum && phone && phone.includes(sofiaNum)) || (sofiaLid && lid && lid === sofiaLid));
+    const p = !isBot && phone ? await findProfileByPhone(phone) : null;
     let role = "unknown";
     if (isBot) role = "bot";
     else if (p?.is_admin) role = "superadmin";
@@ -494,7 +503,8 @@ export async function syncGroupMembers(groupJid: string): Promise<string | null>
     else if (p) { role = "student"; students.add(p.id); }
     members.push({
       group_jid: groupJid,
-      phone,
+      phone: phone || lid, // PK needs a value; fall back to lid if phone not exposed
+      lid: lid || null,
       user_id: p?.id ?? null,
       name: p?.name ?? (isBot ? "Sofía" : null),
       role,
@@ -512,12 +522,11 @@ export async function syncGroupMembers(groupJid: string): Promise<string | null>
  */
 export async function processGroupMessage(msg: IncomingGroupMessage): Promise<void> {
   const { groupJid, senderJid, text } = msg;
-  const senderPhone = senderJid.replace(/\D/g, "");
+  // Group events identify people by @lid (linked-id), not phone.
+  const senderIsLid = senderJid.includes("@lid");
+  const senderDigits = senderJid.replace(/@.*/, "").replace(/\D/g, "");
 
-  const [group, senderProfile] = await Promise.all([
-    getOrCreateSofiaGroup(groupJid),
-    findProfileByPhone(senderPhone),
-  ]);
+  const group = await getOrCreateSofiaGroup(groupJid);
   const conversationId = group?.conversation_id;
 
   // Keep the full roster fresh (~every 6h, and on first contact) and auto-assign the student
@@ -530,27 +539,46 @@ export async function processGroupMessage(msg: IncomingGroupMessage): Promise<vo
       logger.info({ groupJid, studentId }, "Group student auto-assigned");
     }
   }
-  const senderName = senderProfile?.name ?? `+${senderPhone.slice(-4)}`;
+
+  // Resolve the sender from the roster (by lid or phone) → real profile + name.
+  const members = await getGroupMembers(groupJid);
+  let senderMember = senderIsLid
+    ? members.find((m) => m.lid === senderDigits)
+    : members.find((m) => m.phone === senderDigits) ?? members.find((m) => m.lid === senderDigits);
+  let senderProfileId = senderMember?.user_id ?? null;
+  let senderName = senderMember?.name ?? null;
+  if (!senderMember && !senderIsLid) {
+    const p = await findProfileByPhone(senderDigits);
+    if (p) { senderProfileId = p.id; senderName = p.name; }
+  }
+  const senderPhone = senderMember?.phone ?? (senderIsLid ? "" : senderDigits);
+  senderName = senderName ?? `+${(senderPhone || senderDigits).slice(-4)}`;
 
   // Listen: log every group message (even from unregistered senders).
   await logConversation({
-    user_id: senderProfile?.id ?? null,
+    user_id: senderProfileId,
     conversation_id: conversationId,
     direction: "in",
     kind: "group_in",
     body: text,
-    metadata: { group_jid: groupJid, sender_phone: senderPhone, sender_name: senderName },
+    metadata: {
+      group_jid: groupJid,
+      sender_phone: senderPhone || null,
+      sender_lid: senderIsLid ? senderDigits : (senderMember?.lid ?? null),
+      sender_name: senderName,
+    },
   });
 
-  // Respond only when mentioned.
-  if (!isSofiaMentioned(text, msg.mentionedJid)) return;
+  // Respond only when mentioned (groups mention by @lid → use the bot's lid).
+  const botLid = config.engine.sofiaWhatsappLid || members.find((m) => m.role === "bot")?.lid || "";
+  if (!isSofiaMentioned(text, msg.mentionedJid, botLid)) return;
   if (groupRateLimited(groupJid)) {
     logger.warn({ groupJid }, "Group reply rate-limited — skipping");
     return;
   }
 
   // Context: the group's mapped student wins; else the sender (if registered).
-  const contextUserId = group?.student_user_id ?? senderProfile?.id ?? null;
+  const contextUserId = group?.student_user_id ?? senderProfileId;
   const segment = contextUserId ? await getUserSegment(contextUserId) : null;
   const groupHistory = conversationId ? await getGroupHistory(conversationId, 12) : [];
 

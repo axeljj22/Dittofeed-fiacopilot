@@ -1010,6 +1010,7 @@ export async function updateSofiaGroupLabel(groupJid: string, label: string): Pr
 export interface GroupMember {
   group_jid: string;
   phone: string;
+  lid: string | null; // WhatsApp linked-id (how groups identify this participant / @mentions)
   user_id: string | null;
   name: string | null;
   role: string; // superadmin | coach | student | bot | unknown
@@ -1053,7 +1054,7 @@ export async function getSofiaGroupRow(groupJid: string): Promise<SofiaGroup | n
 export async function getGroupMembers(groupJid: string): Promise<GroupMember[]> {
   const { data, error } = await getSupabaseClient()
     .from("sofia_group_members")
-    .select("group_jid, phone, user_id, name, role, is_registered")
+    .select("group_jid, phone, lid, user_id, name, role, is_registered")
     .eq("group_jid", groupJid);
   if (error) {
     logger.warn({ error, groupJid }, "Failed to fetch group members");
