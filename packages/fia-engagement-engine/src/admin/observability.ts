@@ -90,6 +90,11 @@ export function getObservabilityHtml(): string {
       <h3>Grupos de WhatsApp</h3>
       <div id="groups"><div id="muted">Cargando...</div></div>
     </div>
+    <div class="panel">
+      <h3>Preguntas sin respuesta (gaps de conocimiento)</h3>
+      <div id="muted" style="margin-bottom:10px">Preguntas donde Sofía no encontró contenido relevante en la base → candidatas a cargar en <code>knowledge_base</code>.</div>
+      <div id="gaps"><div id="muted">Cargando...</div></div>
+    </div>
     <div class="nav">
       <a href="/admin/engagement">← Dashboard</a>
       <a href="/admin/schedule">⏰ Cadencia</a>
@@ -111,7 +116,22 @@ export function getObservabilityHtml(): string {
     function days() { return document.getElementById('days').value; }
 
     async function loadAll() {
-      await Promise.all([loadStats(), loadThreads(), loadGroups()]);
+      await Promise.all([loadStats(), loadThreads(), loadGroups(), loadGaps()]);
+    }
+
+    async function loadGaps() {
+      try {
+        const resp = await fetch('/api/observability/knowledge-gaps?days=' + days() + '&onlyGaps=1', { headers: hdr() });
+        if (!resp.ok) { document.getElementById('gaps').innerHTML = '<div id="muted">Error ' + resp.status + '</div>'; return; }
+        const { data } = await resp.json();
+        if (!data || !data.length) { document.getElementById('gaps').innerHTML = '<div id="muted">Sin gaps en el período: Sofía respondió todo con la base. 🎉</div>'; return; }
+        document.getElementById('gaps').innerHTML =
+          '<table><thead><tr><th>Pregunta</th><th>Origen</th><th>Mejor similitud</th><th>Fecha</th></tr></thead><tbody>' +
+          data.map(function(r){
+            var sim = (r.bestSimilarity == null) ? '—' : Number(r.bestSimilarity).toFixed(2);
+            return '<tr><td>' + esc(r.query) + '</td><td>' + esc(r.source || '—') + '</td><td>' + sim + '</td><td>' + new Date(r.createdAt).toLocaleString('es-AR') + '</td></tr>';
+          }).join('') + '</tbody></table>';
+      } catch (e) { document.getElementById('gaps').innerHTML = '<div id="muted">Error cargando gaps</div>'; }
     }
 
     const ROLE_LABEL = { superadmin: 'SuperAdmin', coach: 'Coach', student: 'Alumno', bot: 'Sofía', unknown: 'No registrado' };

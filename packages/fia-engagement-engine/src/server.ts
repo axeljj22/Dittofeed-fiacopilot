@@ -1499,6 +1499,18 @@ function showMsg(text, ok) {
     return;
   }
 
+  // GET /api/observability/knowledge-gaps?days=30&onlyGaps=1 — what students asked vs. what we can answer
+  if (url.startsWith("/api/observability/knowledge-gaps") && method === "GET") {
+    if (!requireAdminAuth(req, res)) return;
+    const sp = new URL(req.url ?? "", "http://x").searchParams;
+    const days = parseInt(sp.get("days") ?? "30", 10);
+    const onlyGaps = sp.get("onlyGaps") !== "0";
+    const { getKnowledgeQueries } = await import("./db/supabase");
+    const rows = await getKnowledgeQueries(Number.isFinite(days) ? days : 30, onlyGaps);
+    jsonResponse(res, 200, { data: rows });
+    return;
+  }
+
   // GET /admin/observability — conversation observability dashboard
   if (url === "/admin/observability" && method === "GET") {
     try {

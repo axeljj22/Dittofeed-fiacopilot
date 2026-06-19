@@ -31,6 +31,7 @@ import {
   searchKnowledge,
   searchCapsuleContent,
   formatCapsuleContent,
+  logKnowledgeQuery,
 } from "../db/supabase";
 import type { UserSegment, KnowledgeEntry } from "../db/supabase";
 import type { EngagementOpportunity, VaultOutput, AssessmentSubmission } from "../db/types";
@@ -539,6 +540,7 @@ DIAGNÓSTICO:
 
 BÓVEDA:
 ${vaultContext}${formatKnowledge(knowledge)}${formatCapsuleContent(capsuleHits)}${profile?.preferences?.['sofia_notes'] ? `\n\nCONTEXTO ESPECIAL DE ESTA CONVERSACIÓN:\n${profile.preferences['sofia_notes'] as string}` : ""}`.trim();
+      void logKnowledgeQuery({ userId, query: incomingText, knowledge, capsuleHits, source: "dm" });
     } else {
       const [profile, capsuleProgress, capsules, knowledge, capsuleHits] = await Promise.all([
         getProfileWithWhatsapp(userId),
@@ -564,6 +566,7 @@ ${vaultContext}${formatKnowledge(knowledge)}${formatCapsuleContent(capsuleHits)}
       // Knowledge base + capsule chunks injected on EVERY turn — most content questions
       // come mid-conversation; without this Sofía answers "no tengo esa info".
       userContext = `PERFIL: ${profile?.name ?? "desconocido"} (${profile?.company_name ?? "—"}) · ${completedCount}${capsulaSuffix}${inProgressCapsule ? ` · cursando ${inProgressCapsule.capsule_number}${inProgressTitle ? `: ${inProgressTitle}` : ""}` : ""}${facts}${formatKnowledge(knowledge)}${formatCapsuleContent(capsuleHits)}`;
+      void logKnowledgeQuery({ userId, query: incomingText, knowledge, capsuleHits, source: "dm" });
     }
 
     // Save user message AFTER deciding cold-start (so history.length is accurate above)
@@ -767,8 +770,9 @@ export async function generateGroupReply(opts: {
   senderName: string;
   incomingText: string;
   groupHistory: Array<{ direction: string; body: string; name: string }>;
+  conversationId?: string;
 }): Promise<string | null> {
-  const { contextUserId, segment, senderName, incomingText, groupHistory } = opts;
+  const { contextUserId, segment, senderName, incomingText, groupHistory, conversationId } = opts;
   try {
     const programSlugs = segment?.enrolledPrograms.map((p) => p.slug).filter(Boolean) ?? null;
     const [sofiaPrompt, knowledge, capsuleHits] = await Promise.all([
@@ -776,6 +780,7 @@ export async function generateGroupReply(opts: {
       searchKnowledge(incomingText, programSlugs),
       searchCapsuleContent(incomingText),
     ]);
+    void logKnowledgeQuery({ userId: contextUserId, conversationId, query: incomingText, knowledge, capsuleHits, source: "group" });
 
     let profileCtx = "";
     if (contextUserId) {

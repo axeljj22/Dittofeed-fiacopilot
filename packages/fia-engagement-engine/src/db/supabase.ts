@@ -1386,6 +1386,96 @@ export function formatCapsuleContent(hits: CapsuleSourceHit[]): string {
   return `\n\nCONTENIDO DEL PROGRAMA (usa esto para responder preguntas sobre las clases o cápsulas):\n${sections.join("\n\n")}`;
 }
 
+// ─── Knowledge-gap analytics (what students ask vs. what we can answer) ──────
+
+export interface KnowledgeQueryRow {
+  query: string;
+  grounded: boolean;
+  bestSimilarity: number | null;
+  topSlug: string | null;
+  source: string | null;
+  createdAt: string;
+}
+
+/**
+ * Records a "knowledge query" event for gap analytics: what was asked and whether retrieval
+ * found grounding (knowledge_base OR capsule content). Reuses the results already computed for
+ * the reply — NO extra embedding calls, NO vectors stored. Best-effort, never throws.
+ */
+export async function logKnowledgeQuery(opts: {
+  userId: string | null;
+  conversationId?: string;
+  query: string;
+  knowledge: KnowledgeEntry[];
+  capsuleHits: CapsuleSourceHit[];
+  source: "dm" | "group";
+}): Promise<void> {
+  try {
+    const q = (opts.query ?? "").trim();
+    if (!q) return;
+    const kbSim = opts.knowledge[0]?.similarity ?? 0;
+    const capChunks = opts.capsuleHits.flatMap((h) => h.chunks);
+    const topChunk = capChunks.slice().sort((a, b) => (b.similarity ?? 0) - (a.similarity ?? 0))[0];
+    const capSim = topChunk?.similarity ?? 0;
+    const grounded = opts.knowledge.length > 0 || capChunks.length > 0;
+    const bestSimilarity = Math.max(kbSim, capSim);
+    const topSlug = kbSim >= capSim ? (opts.knowledge[0]?.slug ?? null) : (topChunk?.capsule_slug ?? null);
+    await logConversation({
+      user_id: opts.userId,
+      conversation_id: opts.conversationId,
+      direction: "in",
+      kind: "kb_query",
+      body: q.slice(0, 500),
+      metadata: {
+        source: opts.source,
+        kb_grounded: grounded,
+        kb_best_similarity: Math.round(bestSimilarity * 1000) / 1000,
+        kb_top_slug: topSlug,
+        kb_hits: opts.knowledge.length + capChunks.length,
+      },
+    });
+  } catch (error) {
+    logger.warn({ error: (error as Error).message }, "logKnowledgeQuery failed");
+  }
+}
+
+/**
+ * Recent knowledge queries for the gap dashboard. onlyGaps=true → only the ones where retrieval
+ * found nothing relevant (kb_grounded=false) — i.e. questions Sofía couldn't answer from the DB.
+ */
+export async function getKnowledgeQueries(days: number, onlyGaps: boolean): Promise<KnowledgeQueryRow[]> {
+  try {
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+    let q = getSupabaseClient()
+      .from("sofia_conversations")
+      .select("body, metadata, created_at")
+      .eq("kind", "kb_query")
+      .gte("created_at", since)
+      .order("created_at", { ascending: false })
+      .limit(300);
+    if (onlyGaps) q = q.eq("metadata->>kb_grounded", "false");
+    const { data, error } = await q;
+    if (error) {
+      logger.warn({ error: error.message }, "getKnowledgeQueries failed");
+      return [];
+    }
+    return (data ?? []).map((r) => {
+      const m = (r.metadata ?? {}) as Record<string, unknown>;
+      return {
+        query: (r.body as string) ?? "",
+        grounded: m["kb_grounded"] === true,
+        bestSimilarity: typeof m["kb_best_similarity"] === "number" ? (m["kb_best_similarity"] as number) : null,
+        topSlug: (m["kb_top_slug"] as string | null) ?? null,
+        source: (m["source"] as string | null) ?? null,
+        createdAt: r.created_at as string,
+      };
+    });
+  } catch (error) {
+    logger.warn({ error: (error as Error).message }, "getKnowledgeQueries threw");
+    return [];
+  }
+}
+
 // ─── Sofia features registry ───────────────────────────────────────────────
 
 let _sofiaFeaturesCache: SofiaFeature[] | null = null;
