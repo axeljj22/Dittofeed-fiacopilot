@@ -524,10 +524,11 @@ DIAGNÓSTICO:
 BÓVEDA:
 ${vaultContext}${formatKnowledge(knowledge)}${profile?.preferences?.['sofia_notes'] ? `\n\nCONTEXTO ESPECIAL DE ESTA CONVERSACIÓN:\n${profile.preferences['sofia_notes'] as string}` : ""}`.trim();
     } else {
-      const [profile, capsuleProgress, capsules] = await Promise.all([
+      const [profile, capsuleProgress, capsules, knowledge] = await Promise.all([
         getProfileWithWhatsapp(userId),
         getCapsuleProgressForUser(userId),
         getCapsulesCached(),
+        getKnowledge(),
       ]);
       const completedCount = capsuleProgress.filter((p) => p.status === "completed").length;
       const inProgressCapsule = capsuleProgress.find((p) => p.status === "in_progress");
@@ -543,7 +544,9 @@ ${vaultContext}${formatKnowledge(knowledge)}${profile?.preferences?.['sofia_note
       const capsulaSuffix = activePathMin
         ? ` (${activePathMin.completed}/${activePathMin.total} en ${activePathMin.name})`
         : ` cápsulas`;
-      userContext = `PERFIL: ${profile?.name ?? "desconocido"} (${profile?.company_name ?? "—"}) · ${completedCount}${capsulaSuffix}${inProgressCapsule ? ` · cursando ${inProgressCapsule.capsule_number}${inProgressTitle ? `: ${inProgressTitle}` : ""}` : ""}${facts}`;
+      // Knowledge base injected on EVERY turn (not just cold-start) — most content questions
+      // come mid-conversation; without this Sofía answers "no tengo esa info".
+      userContext = `PERFIL: ${profile?.name ?? "desconocido"} (${profile?.company_name ?? "—"}) · ${completedCount}${capsulaSuffix}${inProgressCapsule ? ` · cursando ${inProgressCapsule.capsule_number}${inProgressTitle ? `: ${inProgressTitle}` : ""}` : ""}${facts}${formatKnowledge(knowledge)}`;
     }
 
     // Save user message AFTER deciding cold-start (so history.length is accurate above)
