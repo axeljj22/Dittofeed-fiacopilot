@@ -26,6 +26,7 @@ import {
   findProfileByPhone,
   getOrCreateSofiaGroup,
   updateSofiaGroupStudent,
+  updateSofiaGroupLabel,
   upsertGroupMembers,
   getGroupHistory,
 } from "../db/supabase";
@@ -474,6 +475,10 @@ const GROUP_SYNC_TTL_MS = 6 * 60 * 60 * 1000;
  */
 export async function syncGroupMembers(groupJid: string): Promise<string | null> {
   const { evolutionManager } = await import("./whatsappEvolution");
+  // Store the group's name (subject) too — best-effort.
+  const subject = await evolutionManager.getGroupSubject(groupJid);
+  if (subject) await updateSofiaGroupLabel(groupJid, subject);
+
   const phones = await evolutionManager.getGroupParticipants(groupJid);
   if (phones.length === 0) return null;
   const sofiaNum = config.engine.sofiaWhatsappNumber;

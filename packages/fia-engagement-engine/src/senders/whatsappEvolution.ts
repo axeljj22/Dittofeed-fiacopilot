@@ -107,6 +107,21 @@ class EvolutionManager {
     }
   }
 
+  /** GET /group/findGroupInfos/{instance} — returns the group's subject (name), or null. */
+  async getGroupSubject(groupJid: string): Promise<string | null> {
+    if (!this.isConfigured) return null;
+    try {
+      const res = await axios.get(
+        this.url(`/group/findGroupInfos/${config.whatsapp.evolution.instanceName}?groupJid=${encodeURIComponent(groupJid)}`),
+        { headers: this.headers, timeout: 10_000 },
+      );
+      return (res.data?.subject as string | undefined) ?? null;
+    } catch (error) {
+      logger.warn({ error: (error as Error).message, groupJid }, "getGroupSubject failed");
+      return null;
+    }
+  }
+
   /** POST /chat/sendPresence/{instance}. Best-effort, never throws. */
   async sendTyping(phone: string, durationMs = 1500): Promise<void> {
     if (!this.isConfigured) return;

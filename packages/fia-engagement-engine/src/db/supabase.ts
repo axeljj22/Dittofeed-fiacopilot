@@ -998,6 +998,15 @@ export async function updateSofiaGroupStudent(groupJid: string, studentUserId: s
   if (error) logger.warn({ error, groupJid }, "Failed to assign group student");
 }
 
+/** Stores the group's name (WhatsApp subject). */
+export async function updateSofiaGroupLabel(groupJid: string, label: string): Promise<void> {
+  const { error } = await getSupabaseClient()
+    .from("sofia_groups")
+    .update({ label })
+    .eq("group_jid", groupJid);
+  if (error) logger.warn({ error, groupJid }, "Failed to update group label");
+}
+
 export interface GroupMember {
   group_jid: string;
   phone: string;
