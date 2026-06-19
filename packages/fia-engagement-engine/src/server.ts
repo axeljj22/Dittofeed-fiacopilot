@@ -12,7 +12,7 @@ import { logger } from "./logger";
 import { processIncomingResponse } from "./senders/responses";
 import { sendWhatsAppMessage } from "./senders/whatsapp";
 import { evolutionManager } from "./senders/whatsappEvolution";
-import { getSupabaseClient, getPathTotals, resolveUserPaths } from "./db/supabase";
+import { getSupabaseClient, getPathTotals, resolveUserPaths, getSofiaFeatures } from "./db/supabase";
 import { runWeeklyReport } from "./orchestrator";
 import { getAdminPanelHtml } from "./admin/panel";
 import { isCodexAvailable, invalidateCodexAuthCache } from "./generators/codexGenerator";
@@ -1651,6 +1651,28 @@ function showMsg(text, ok) {
     } catch (error) {
       logger.error({ error }, "Failed to activate sofia for user");
       jsonResponse(res, 500, { error: "Activation failed" });
+    }
+    return;
+  }
+
+  // GET /api/sofia/features — Sofia feature registry (public; no auth required)
+  // ?status=live|beta|planned|deprecated|all (default: live)
+  // Used by FIACO Pilot for context, developers as reference, landing page for copy.
+  if (url.startsWith("/api/sofia/features") && method === "GET") {
+    try {
+      const parsedUrl = new URL(req.url ?? "/", `http://${req.headers.host}`);
+      const statusParam = parsedUrl.searchParams.get("status");
+      const filter = statusParam === "all" ? undefined : (statusParam ?? "live");
+      const features = await getSofiaFeatures(filter);
+      jsonResponse(res, 200, {
+        features,
+        count: features.length,
+        filter: filter ?? "all",
+        generated_at: new Date().toISOString(),
+      });
+    } catch (error) {
+      logger.error({ error }, "Failed to fetch sofia features");
+      jsonResponse(res, 500, { error: "Failed to fetch features" });
     }
     return;
   }

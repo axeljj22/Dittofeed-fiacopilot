@@ -156,6 +156,34 @@ export interface EngagementLog extends EngagementLogInsert {
   created_at: string;
 }
 
+// ─── Sofia features registry ───
+
+export interface SofiaFeature {
+  id: string;
+  key: string;
+  category: "outbound_journey" | "inbound_command" | "inbound_ai" | "admin" | "infrastructure";
+  title: string;
+  summary: string;
+  description: string;
+  technical_notes: string | null;
+  status: "live" | "beta" | "planned" | "deprecated";
+  since: string | null;
+  metadata: Record<string, unknown>;
+  updated_at: string;
+}
+
+export interface SofiaFeatureInsert {
+  key: string;
+  category: SofiaFeature["category"];
+  title: string;
+  summary: string;
+  description: string;
+  technical_notes?: string;
+  status?: SofiaFeature["status"];
+  since?: string;
+  metadata?: Record<string, unknown>;
+}
+
 // ─── Detector output ───
 
 /** Only one journey remains: the personalized weekly report. */

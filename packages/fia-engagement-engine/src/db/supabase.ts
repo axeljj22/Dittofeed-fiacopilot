@@ -14,6 +14,7 @@ import type {
   AssessmentSubmission,
   EngagementLogInsert,
   EngagementLog,
+  SofiaFeature,
 } from "./types";
 
 let client: SupabaseClient | null = null;
@@ -1272,6 +1273,40 @@ export async function searchKnowledge(
     .filter((s) => s.score >= 1)
     .sort((a, b) => b.score - a.score);
   return scored.slice(0, KNOWLEDGE_MATCH_COUNT).map((s) => s.e);
+}
+
+// ─── Sofia features registry ───────────────────────────────────────────────
+
+let _sofiaFeaturesCache: SofiaFeature[] | null = null;
+let _sofiaFeaturesCacheExpiry = 0;
+
+/**
+ * Returns all sofia_features rows, optionally filtered by status.
+ * Cached 10 min — features change rarely (only on migrations or manual edits).
+ * Degrades gracefully to [] if the table doesn't exist yet.
+ */
+export async function getSofiaFeatures(statusFilter?: string): Promise<SofiaFeature[]> {
+  if (!_sofiaFeaturesCache || Date.now() >= _sofiaFeaturesCacheExpiry) {
+    try {
+      const { data, error } = await getSupabaseClient()
+        .from("sofia_features")
+        .select("*")
+        .order("category")
+        .order("key");
+      if (error) {
+        logger.warn({ error }, "Failed to load sofia_features — table may not exist yet");
+        _sofiaFeaturesCache = [];
+      } else {
+        _sofiaFeaturesCache = (data ?? []) as SofiaFeature[];
+      }
+    } catch {
+      _sofiaFeaturesCache = [];
+    }
+    _sofiaFeaturesCacheExpiry = Date.now() + 10 * 60 * 1000;
+  }
+  return statusFilter
+    ? _sofiaFeaturesCache.filter((f) => f.status === statusFilter)
+    : _sofiaFeaturesCache;
 }
 
 /** Shared transform for capsule_progress rows joined with capsules */
