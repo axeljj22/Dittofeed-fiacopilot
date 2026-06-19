@@ -86,6 +86,10 @@ export function getObservabilityHtml(): string {
       <h3>Conversaciones recientes</h3>
       <div id="threads"><div id="muted">Cargando...</div></div>
     </div>
+    <div class="panel">
+      <h3>Grupos de WhatsApp</h3>
+      <div id="groups"><div id="muted">Cargando...</div></div>
+    </div>
     <div class="nav">
       <a href="/admin/engagement">← Dashboard</a>
       <a href="/admin/schedule">⏰ Cadencia</a>
@@ -107,7 +111,58 @@ export function getObservabilityHtml(): string {
     function days() { return document.getElementById('days').value; }
 
     async function loadAll() {
-      await Promise.all([loadStats(), loadThreads()]);
+      await Promise.all([loadStats(), loadThreads(), loadGroups()]);
+    }
+
+    const ROLE_LABEL = { superadmin: 'SuperAdmin', coach: 'Coach', student: 'Alumno', bot: 'Sofía', unknown: 'No registrado' };
+
+    async function loadGroups() {
+      try {
+        const resp = await fetch('/api/observability/groups', { headers: hdr() });
+        if (!resp.ok) { document.getElementById('groups').innerHTML = '<div id="muted">Error ' + resp.status + '</div>'; return; }
+        const { data } = await resp.json();
+        if (!data || !data.length) { document.getElementById('groups').innerHTML = '<div id="muted">Sofía todavía no está en ningún grupo</div>'; return; }
+        document.getElementById('groups').innerHTML =
+          '<table><thead><tr><th>Grupo</th><th>Integrantes</th><th>Alumno</th><th></th></tr></thead><tbody>' +
+          data.map(function(g){
+            return '<tr class="clickable" onclick="openGroup(\\'' + esc(g.group_jid) + '\\')">' +
+              '<td>' + esc((g.label || g.group_jid).slice(0,32)) + '</td>' +
+              '<td>' + g.member_count + '</td>' +
+              '<td>' + (g.student_name ? esc(g.student_name) : '<span class="chip">sin asignar</span>') + '</td>' +
+              '<td>›</td></tr>';
+          }).join('') + '</tbody></table>';
+      } catch { document.getElementById('groups').innerHTML = '<div id="muted">Error de conexión</div>'; }
+    }
+
+    async function openGroup(jid) {
+      document.getElementById('modal-bg').style.display = 'block';
+      document.getElementById('modal').style.display = 'block';
+      document.getElementById('modal-body').innerHTML = 'Cargando...';
+      try {
+        const resp = await fetch('/api/observability/group?jid=' + encodeURIComponent(jid), { headers: hdr() });
+        const { data } = await resp.json();
+        const members = (data.members || []).map(function(m){
+          return '<div class="msg in" style="max-width:100%"><b>' + (ROLE_LABEL[m.role] || m.role) + '</b>: ' + esc(m.name || m.phone) +
+            (m.is_registered ? '' : ' <span class="chip">no registrado</span>') + '</div>';
+        }).join('') || '<div style="color:#4b5563">Sin roster (probá Re-sincronizar)</div>';
+        const msgs = (data.messages || []).map(function(m){
+          return '<div class="msg ' + m.direction + '">' + esc(m.body) +
+            '<div class="meta">' + esc(m.kind) + ' · ' + new Date(m.created_at).toLocaleString('es-AR') + '</div></div>';
+        }).join('') || '<div style="color:#4b5563">Sin mensajes aún</div>';
+        document.getElementById('modal-body').innerHTML =
+          '<button class="primary" onclick="syncGroup(\\'' + esc(jid) + '\\')">Re-sincronizar roster</button>' +
+          '<h4 style="color:#fff;margin:14px 0 8px">Integrantes</h4>' + members +
+          '<h4 style="color:#fff;margin:14px 0 8px">Mensajes</h4>' + msgs;
+      } catch { document.getElementById('modal-body').innerHTML = 'Error de conexión'; }
+    }
+
+    async function syncGroup(jid) {
+      try {
+        const resp = await fetch('/api/observability/group/sync', { method: 'POST', headers: Object.assign({ 'Content-Type': 'application/json' }, hdr()), body: JSON.stringify({ jid: jid }) });
+        const data = await resp.json().catch(function(){return {};});
+        alert(resp.ok ? ('Roster sincronizado' + (data.assignedStudent ? ' (alumno asignado)' : '')) : ('Error: ' + (data.error || resp.status)));
+        await openGroup(jid); await loadGroups();
+      } catch { alert('Error de conexión'); }
     }
 
     async function loadStats() {

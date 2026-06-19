@@ -472,7 +472,7 @@ const GROUP_SYNC_TTL_MS = 6 * 60 * 60 * 1000;
  * unknown = not in profiles) and persists the FULL roster (sofia_group_members).
  * Returns the unique student's user_id if there is exactly one (else null).
  */
-async function syncGroupMembers(groupJid: string): Promise<string | null> {
+export async function syncGroupMembers(groupJid: string): Promise<string | null> {
   const { evolutionManager } = await import("./whatsappEvolution");
   const phones = await evolutionManager.getGroupParticipants(groupJid);
   if (phones.length === 0) return null;

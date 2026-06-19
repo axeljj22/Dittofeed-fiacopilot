@@ -1017,6 +1017,29 @@ export async function upsertGroupMembers(members: GroupMember[]): Promise<void> 
   if (error) logger.warn({ error, count: rows.length }, "Failed to upsert group members");
 }
 
+/** All known groups (for the admin Groups view). */
+export async function getSofiaGroups(): Promise<SofiaGroup[]> {
+  const { data, error } = await getSupabaseClient()
+    .from("sofia_groups")
+    .select("group_jid, conversation_id, student_user_id, label")
+    .order("created_at", { ascending: false });
+  if (error) {
+    logger.warn({ error }, "Failed to fetch sofia_groups");
+    return [];
+  }
+  return (data ?? []) as SofiaGroup[];
+}
+
+/** Read-only fetch of a single group row (does not create it). */
+export async function getSofiaGroupRow(groupJid: string): Promise<SofiaGroup | null> {
+  const { data } = await getSupabaseClient()
+    .from("sofia_groups")
+    .select("group_jid, conversation_id, student_user_id, label")
+    .eq("group_jid", groupJid)
+    .maybeSingle();
+  return (data as SofiaGroup | null) ?? null;
+}
+
 /** Returns the stored roster of a group. */
 export async function getGroupMembers(groupJid: string): Promise<GroupMember[]> {
   const { data, error } = await getSupabaseClient()

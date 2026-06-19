@@ -1426,6 +1426,79 @@ function showMsg(text, ok) {
     return;
   }
 
+  // ─── Groups (Sofía in WhatsApp groups) ───
+
+  // GET /api/observability/groups — list groups with roster summary
+  if (url === "/api/observability/groups" && method === "GET") {
+    if (!requireAdminAuth(req, res)) return;
+    const { getSofiaGroups, getGroupMembers } = await import("./db/supabase");
+    const groups = await getSofiaGroups();
+    const out = [];
+    for (const g of groups) {
+      const members = await getGroupMembers(g.group_jid);
+      const student = members.find((m) => m.user_id === g.student_user_id) ?? members.find((m) => m.role === "student");
+      out.push({
+        group_jid: g.group_jid,
+        conversation_id: g.conversation_id,
+        label: g.label,
+        student_user_id: g.student_user_id,
+        student_name: student?.name ?? null,
+        member_count: members.length,
+        members,
+      });
+    }
+    jsonResponse(res, 200, { data: out });
+    return;
+  }
+
+  // GET /api/observability/group?jid=... — roster + message thread of one group
+  if (url.startsWith("/api/observability/group") && method === "GET") {
+    if (!requireAdminAuth(req, res)) return;
+    const jid = new URL(req.url ?? "", "http://x").searchParams.get("jid") ?? "";
+    if (!jid) { jsonResponse(res, 400, { error: "jid required" }); return; }
+    const { getSofiaGroupRow, getGroupMembers, getThread } = await import("./db/supabase");
+    const group = await getSofiaGroupRow(jid);
+    const members = await getGroupMembers(jid);
+    const messages = group ? await getThread(group.conversation_id) : [];
+    jsonResponse(res, 200, { data: { group, members, messages } });
+    return;
+  }
+
+  // POST /api/observability/group/sync — re-sync a group's roster now (body {jid})
+  if (url === "/api/observability/group/sync" && method === "POST") {
+    if (!requireAdminAuth(req, res)) return;
+    try {
+      const { jid } = JSON.parse(await parseBody(req)) as { jid?: string };
+      if (!jid) { jsonResponse(res, 400, { error: "jid required" }); return; }
+      const { getOrCreateSofiaGroup, updateSofiaGroupStudent } = await import("./db/supabase");
+      const { syncGroupMembers } = await import("./senders/responses");
+      await getOrCreateSofiaGroup(jid); // ensure the group row exists
+      const studentId = await syncGroupMembers(jid);
+      if (studentId) await updateSofiaGroupStudent(jid, studentId);
+      jsonResponse(res, 200, { status: "ok", assignedStudent: studentId ?? null });
+    } catch (error) {
+      logger.error({ error }, "Group sync failed");
+      jsonResponse(res, 500, { error: "Internal error" });
+    }
+    return;
+  }
+
+  // POST /api/observability/group/student — manually (re)assign a group's student (body {jid, userId})
+  if (url === "/api/observability/group/student" && method === "POST") {
+    if (!requireAdminAuth(req, res)) return;
+    try {
+      const { jid, userId } = JSON.parse(await parseBody(req)) as { jid?: string; userId?: string };
+      if (!jid || !userId) { jsonResponse(res, 400, { error: "jid and userId required" }); return; }
+      const { updateSofiaGroupStudent } = await import("./db/supabase");
+      await updateSofiaGroupStudent(jid, userId);
+      jsonResponse(res, 200, { status: "ok" });
+    } catch (error) {
+      logger.error({ error }, "Group student assign failed");
+      jsonResponse(res, 500, { error: "Internal error" });
+    }
+    return;
+  }
+
   // GET /admin/observability — conversation observability dashboard
   if (url === "/admin/observability" && method === "GET") {
     try {
