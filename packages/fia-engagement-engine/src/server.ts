@@ -278,6 +278,7 @@ async function handleTestMessage(
       userId?: string;
       phone?: string;
       text?: string;
+      dryRun?: boolean;
     };
 
     // Raw send (no AI generation) — route through active provider
@@ -288,7 +289,7 @@ async function handleTestMessage(
       return;
     }
 
-    // Full pipeline: fetch profile → build weekly report context → generate → send
+    // Full pipeline: fetch profile → build weekly report context → generate → (send | dryRun)
     if (!body.userId) {
       jsonResponse(res, 400, { error: "userId or phone+text required" });
       return;
@@ -309,6 +310,12 @@ async function handleTestMessage(
     const message = await generateMessage(opportunity);
     if (!message) {
       jsonResponse(res, 500, { error: "Message generation failed" });
+      return;
+    }
+
+    // dryRun = generate + return the text WITHOUT sending (preview without spamming the user)
+    if (body.dryRun) {
+      jsonResponse(res, 200, { success: true, dryRun: true, text: message.text, deepLink: message.deepLink, journey: opportunity.journeyName, source: message.source, context: opportunity.context });
       return;
     }
 

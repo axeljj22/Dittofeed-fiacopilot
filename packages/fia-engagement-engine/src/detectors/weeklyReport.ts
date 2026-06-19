@@ -129,11 +129,12 @@ async function buildWeeklyContext(profile: Profile): Promise<WeeklyReportContext
     };
   });
 
-  // Focus rule: most recent activity desc, tie-break by most recent enrollment desc.
+  // Focus rule: the NEWEST program the user enrolled in (= "lo último que estoy cursando"),
+  // tie-broken by most recent activity. Only non-finished tracks are candidates (filtered below).
   const byRelevance = (a: typeof tracks[number], b: typeof tracks[number]) => {
-    const la = a.lastActivity ?? "", lb = b.lastActivity ?? "";
-    if (la !== lb) return lb.localeCompare(la);
-    return (b.enrolledAt ?? "").localeCompare(a.enrolledAt ?? "");
+    const ea = a.enrolledAt ?? "", eb = b.enrolledAt ?? "";
+    if (ea !== eb) return eb.localeCompare(ea); // most recent enrollment first
+    return (b.lastActivity ?? "").localeCompare(a.lastActivity ?? ""); // tie-break: recent activity
   };
 
   const focus = tracks.filter((t) => !t.isFinished).sort(byRelevance)[0] ?? null;
