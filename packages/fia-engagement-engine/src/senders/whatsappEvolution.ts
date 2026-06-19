@@ -62,12 +62,13 @@ class EvolutionManager {
     }
   }
 
-  /** POST /message/sendText/{instance} */
+  /** POST /message/sendText/{instance}. Accepts a phone (1:1) or a group JID (…@g.us). */
   async sendMessage(phone: string, text: string): Promise<SendResult> {
     if (!this.isConfigured) {
       return { success: false, error: "Evolution API not configured" };
     }
-    const number = phone.replace(/\D/g, "");
+    // Groups: send the JID as-is; 1:1: strip to digits.
+    const number = phone.includes("@g.us") ? phone : phone.replace(/\D/g, "");
     try {
       const res = await axios.post(
         this.url(`/message/sendText/${config.whatsapp.evolution.instanceName}`),

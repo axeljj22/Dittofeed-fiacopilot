@@ -738,3 +738,66 @@ export async function generateMessage(
   logger.info({ userId: opportunity.userId, journey: opportunity.journeyName, mode: "template" }, "Message generated from template");
   return finalizeMessage(await generateWeeklyFallback(opportunity));
 }
+
+/**
+ * Generates Sofía's reply when she's mentioned in a WhatsApp group.
+ * Like generateInboundReply but: group-aware prompt + multi-speaker group history.
+ * Returns null if both providers fail (caller then stays silent — better than garbage in a group).
+ */
+export async function generateGroupReply(opts: {
+  contextUserId: string | null;
+  segment: UserSegment | null;
+  senderName: string;
+  incomingText: string;
+  groupHistory: Array<{ direction: string; body: string; name: string }>;
+}): Promise<string | null> {
+  const { contextUserId, segment, senderName, incomingText, groupHistory } = opts;
+  try {
+    const [sofiaPrompt, knowledge] = await Promise.all([getSofiaSystemPrompt(), getKnowledge()]);
+
+    let profileCtx = "";
+    if (contextUserId) {
+      const profile = await getProfileWithWhatsapp(contextUserId);
+      const seg = segment ? resolveSegmentInfo(segment) : null;
+      const enrolled = segment && segment.enrolledPrograms.length > 0
+        ? ` Programas: ${segment.enrolledPrograms.map((p) => p.name).join(", ")}.`
+        : "";
+      profileCtx = `\nALUMNO DEL GRUPO: ${profile?.name ?? "desconocido"}${profile?.company_name ? ` (${profile.company_name})` : ""}.${enrolled}${seg ? ` ${seg.objective}` : ""}`;
+    }
+
+    const historyText = groupHistory.length > 0
+      ? `\n\nMENSAJES RECIENTES DEL GRUPO:\n${groupHistory.map((h) => `${h.name}: ${h.body.slice(0, 200)}`).join("\n")}`
+      : "";
+
+    const groupInstruction =
+      "Estás en un grupo de WhatsApp de seguimiento (el alumno, Axel y el coach). Te mencionaron. " +
+      "Respondé SOLO lo que te preguntaron, breve y al punto, sin saludar de más ni presentarte. " +
+      "Si el mensaje no es para vos, respondé muy corto o no aportes de más.";
+
+    const userMessage = `${groupInstruction}${profileCtx}${formatKnowledge(knowledge)}${historyText}\n\nMensaje de ${senderName} (te mencionó): ${incomingText}\n\nRespondé SOLO con el texto del mensaje, sin prefijos ni comillas.`;
+
+    // 1. Codex → 2. Claude
+    let reply = await generateWithCodex(sofiaPrompt, userMessage);
+    if (!reply && useClaudeAI) {
+      try {
+        const Anthropic = (await import("@anthropic-ai/sdk")).default;
+        const client = new Anthropic({ apiKey: config.anthropic.apiKey });
+        const response = await client.messages.create({
+          model: config.anthropic.model,
+          max_tokens: 400,
+          system: sofiaPrompt,
+          messages: [{ role: "user", content: userMessage }],
+        });
+        const tb = response.content.find((b) => b.type === "text");
+        if (tb && tb.type === "text") reply = tb.text.trim();
+      } catch (error) {
+        logger.error({ error }, "Claude group reply failed");
+      }
+    }
+    if (!reply) return null;
+    return stripForeignUrls(smartTrim(reply, MAX_MESSAGE_CHARS));
+  } catch (error) {
+    logger.error({ error }, "generateGroupReply failed");
+    return null;
+  }
+}

@@ -93,6 +93,13 @@ export const config = {
     totalCapsules: parseInt(optionalEnv("TOTAL_CAPSULES", "25"), 10),
     // Default timezone for business hours check (IANA format)
     defaultTimezone: optionalEnv("DEFAULT_TIMEZONE", "America/Buenos_Aires"),
+    // Sofía's own WhatsApp number (digits only) — used to detect @mentions in groups.
+    sofiaWhatsappNumber: optionalEnv("SOFIA_WHATSAPP_NUMBER", "").replace(/\D/g, ""),
+    // Keywords that count as "calling Sofía" in a group (case-insensitive).
+    groupMentionKeywords: optionalEnv("GROUP_MENTION_KEYWORDS", "sofia,sofi")
+      .split(",").map((s) => s.trim().toLowerCase()).filter(Boolean),
+    // Max group replies per group per hour (anti-loop / anti-spam).
+    groupReplyMaxPerHour: parseInt(optionalEnv("GROUP_REPLY_MAX_PER_HOUR", "6"), 10),
   },
 
   // Scheduler cron expressions

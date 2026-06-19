@@ -880,9 +880,10 @@ export async function getProfilesForUsers(
 // ─── Unified conversation log (sofia_conversations) ───
 
 export interface SofiaConversationInsert {
-  user_id: string;
+  user_id?: string | null; // null = sender without a registered profile (e.g. some group members)
+  conversation_id?: string; // explicit thread id (groups pass the group's id); else resolved per user
   direction: "in" | "out";
-  kind: string; // 'reporte_semanal' | 'inbound_reply' | 'command' | 'activation'
+  kind: string; // 'reporte_semanal' | 'inbound_reply' | 'command' | 'activation' | 'group_in' | 'group_reply'
   body: string;
   status?: string; // 'sent' | 'failed' | 'received'
   truncated?: boolean;
@@ -911,11 +912,12 @@ async function resolveConversationId(userId: string): Promise<string> {
 /** Logs one message (inbound or outbound) to the unified conversation table. Best-effort. */
 export async function logConversation(entry: SofiaConversationInsert): Promise<void> {
   try {
-    const conversation_id = await resolveConversationId(entry.user_id);
+    const conversation_id =
+      entry.conversation_id ?? (entry.user_id ? await resolveConversationId(entry.user_id) : randomUUID());
     const { error } = await getSupabaseClient()
       .from("sofia_conversations")
       .insert({
-        user_id: entry.user_id,
+        user_id: entry.user_id ?? null,
         conversation_id,
         direction: entry.direction,
         kind: entry.kind,
@@ -930,6 +932,82 @@ export async function logConversation(entry: SofiaConversationInsert): Promise<v
   } catch (error) {
     logger.warn({ error, userId: entry.user_id }, "logConversation threw");
   }
+}
+
+// ─── Profile lookup by phone (shared by 1:1 + group handlers) ───
+
+export interface PhoneProfile {
+  id: string;
+  name: string | null;
+  whatsapp_opt_in: boolean;
+  sofia_activated_at: string | null;
+}
+
+/** Finds a profile by WhatsApp phone, tolerating the +/no-+ formats. Returns null if unknown. */
+export async function findProfileByPhone(phone: string): Promise<PhoneProfile | null> {
+  const normalized = phone.replace(/\D/g, "");
+  if (!normalized) return null;
+  const { data } = await getSupabaseClient()
+    .from("profiles")
+    .select("id, name, whatsapp_opt_in, sofia_activated_at")
+    .or(`phone.eq.${normalized},phone.eq.+${normalized}`)
+    .maybeSingle();
+  return (data as PhoneProfile | null) ?? null;
+}
+
+// ─── Sofía groups (group_jid → conversation thread + optional student) ───
+
+export interface SofiaGroup {
+  group_jid: string;
+  conversation_id: string;
+  student_user_id: string | null;
+  label: string | null;
+}
+
+/** Gets the group row, creating it (unassigned) on first contact. Returns null only on hard error. */
+export async function getOrCreateSofiaGroup(groupJid: string): Promise<SofiaGroup | null> {
+  const sb = getSupabaseClient();
+  const { data: existing } = await sb
+    .from("sofia_groups")
+    .select("group_jid, conversation_id, student_user_id, label")
+    .eq("group_jid", groupJid)
+    .maybeSingle();
+  if (existing) return existing as SofiaGroup;
+
+  const { data: created, error } = await sb
+    .from("sofia_groups")
+    .insert({ group_jid: groupJid })
+    .select("group_jid, conversation_id, student_user_id, label")
+    .single();
+  if (error) {
+    logger.warn({ error, groupJid }, "Failed to create sofia_group");
+    return null;
+  }
+  return created as SofiaGroup;
+}
+
+/** Recent messages of a group thread (chronological), with sender name for multi-speaker context. */
+export async function getGroupHistory(
+  conversationId: string,
+  limit = 12,
+): Promise<Array<{ direction: string; body: string; name: string }>> {
+  const { data, error } = await getSupabaseClient()
+    .from("sofia_conversations")
+    .select("direction, body, metadata")
+    .eq("conversation_id", conversationId)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (error) {
+    logger.warn({ error, conversationId }, "Failed to fetch group history");
+    return [];
+  }
+  return ((data ?? []) as Array<{ direction: string; body: string; metadata: Record<string, unknown> | null }>)
+    .reverse()
+    .map((r) => ({
+      direction: r.direction,
+      body: r.body,
+      name: (r.metadata?.["sender_name"] as string | undefined) ?? (r.direction === "out" ? "Sofía" : "Alumno"),
+    }));
 }
 
 /**

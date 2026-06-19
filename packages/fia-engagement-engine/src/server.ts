@@ -196,8 +196,11 @@ async function handleWebhookEvolution(
       event?: string;
       instance?: string;
       data?: {
-        key?: { remoteJid?: string; fromMe?: boolean; id?: string };
-        message?: { conversation?: string; extendedTextMessage?: { text?: string } } | null;
+        key?: { remoteJid?: string; fromMe?: boolean; id?: string; participant?: string };
+        message?: {
+          conversation?: string;
+          extendedTextMessage?: { text?: string; contextInfo?: { mentionedJid?: string[] } };
+        } | null;
       };
     };
 
@@ -209,14 +212,29 @@ async function handleWebhookEvolution(
     const key = body.data?.key;
     if (!key?.remoteJid || key.fromMe) return;
 
-    // Evolution sends @s.whatsapp.net for direct chats. Group chats (@g.us)
-    // and broadcasts are out of scope for Sofía — ignore.
-    if (!key.remoteJid.endsWith("@s.whatsapp.net")) return;
-
-    const from = key.remoteJid.replace("@s.whatsapp.net", "");
     const text = body.data?.message?.conversation
       ?? body.data?.message?.extendedTextMessage?.text
       ?? "";
+
+    // ── Group messages (@g.us): listen + reply only when mentioned ──
+    if (key.remoteJid.endsWith("@g.us")) {
+      if (!key.participant || !text) return;
+      const mentionedJid = body.data?.message?.extendedTextMessage?.contextInfo?.mentionedJid;
+      const { processGroupMessage } = await import("./senders/responses");
+      await processGroupMessage({
+        groupJid: key.remoteJid,
+        senderJid: key.participant,
+        text,
+        mentionedJid,
+        messageId: key.id ?? undefined,
+      });
+      return;
+    }
+
+    // ── Direct chats (@s.whatsapp.net): the 1:1 flow. Broadcasts etc. are ignored. ──
+    if (!key.remoteJid.endsWith("@s.whatsapp.net")) return;
+
+    const from = key.remoteJid.replace("@s.whatsapp.net", "");
     if (!from || !text) return;
 
     logger.info({ from, body: text.slice(0, 80) }, "Evolution inbound message");

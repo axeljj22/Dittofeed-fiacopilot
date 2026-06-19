@@ -23,9 +23,12 @@ import {
   deactivateSofia,
   activateSofia,
   logConversation,
+  findProfileByPhone,
+  getOrCreateSofiaGroup,
+  getGroupHistory,
 } from "../db/supabase";
 import { getCommandReply, getTrackingLinkBase, getPositiveShortResponses } from "../config/engineConfigCache";
-import { generateInboundReply } from "../generators/messageGenerator";
+import { generateInboundReply, generateGroupReply } from "../generators/messageGenerator";
 
 export interface IncomingMessage {
   from: string; // WhatsApp number
@@ -414,4 +417,106 @@ async function wrapLinksWithTracking(text: string, userId: string, phone: string
   if (!logEntry?.id) return text;
   const trackedLink = `${await getTrackingLinkBase()}/r/${logEntry.id}`;
   return text.replace(link, trackedLink);
+}
+
+// ─── Group messages (Sofía in WhatsApp groups: listen + reply when mentioned) ───
+
+export interface IncomingGroupMessage {
+  groupJid: string;       // <id>@g.us
+  senderJid: string;      // <phone>@s.whatsapp.net (key.participant)
+  text: string;
+  mentionedJid?: string[]; // contextInfo.mentionedJid
+  messageId?: string;
+}
+
+/** Strips accents + lowercases for keyword matching ("Sofía" → "sofia"). */
+function normalize(s: string): string {
+  return s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+}
+
+/** True if Sofía was called: a real @mention of her number, or a name keyword in the text. */
+function isSofiaMentioned(text: string, mentionedJid?: string[]): boolean {
+  const sofiaNum = config.engine.sofiaWhatsappNumber;
+  if (sofiaNum && Array.isArray(mentionedJid) &&
+      mentionedJid.some((j) => String(j).replace(/\D/g, "").includes(sofiaNum))) {
+    return true;
+  }
+  const norm = normalize(text);
+  return config.engine.groupMentionKeywords.some((k) => new RegExp(`\\b${normalize(k)}\\b`).test(norm));
+}
+
+// Per-group reply rate limit (in-memory; resets on restart).
+const _groupReplyTimestamps = new Map<string, number[]>();
+function groupRateLimited(groupJid: string): boolean {
+  const hourAgo = Date.now() - 3600_000;
+  const arr = (_groupReplyTimestamps.get(groupJid) ?? []).filter((t) => t > hourAgo);
+  _groupReplyTimestamps.set(groupJid, arr);
+  return arr.length >= config.engine.groupReplyMaxPerHour;
+}
+function recordGroupReply(groupJid: string): void {
+  const arr = _groupReplyTimestamps.get(groupJid) ?? [];
+  arr.push(Date.now());
+  _groupReplyTimestamps.set(groupJid, arr);
+}
+
+/**
+ * Handle a group message: ALWAYS log it (observe), and reply ONLY when Sofía is mentioned.
+ * Reply context = the group's mapped student (if any) else the sender's profile.
+ */
+export async function processGroupMessage(msg: IncomingGroupMessage): Promise<void> {
+  const { groupJid, senderJid, text } = msg;
+  const senderPhone = senderJid.replace(/\D/g, "");
+
+  const [group, senderProfile] = await Promise.all([
+    getOrCreateSofiaGroup(groupJid),
+    findProfileByPhone(senderPhone),
+  ]);
+  const conversationId = group?.conversation_id;
+  const senderName = senderProfile?.name ?? `+${senderPhone.slice(-4)}`;
+
+  // Listen: log every group message (even from unregistered senders).
+  await logConversation({
+    user_id: senderProfile?.id ?? null,
+    conversation_id: conversationId,
+    direction: "in",
+    kind: "group_in",
+    body: text,
+    metadata: { group_jid: groupJid, sender_phone: senderPhone, sender_name: senderName },
+  });
+
+  // Respond only when mentioned.
+  if (!isSofiaMentioned(text, msg.mentionedJid)) return;
+  if (groupRateLimited(groupJid)) {
+    logger.warn({ groupJid }, "Group reply rate-limited — skipping");
+    return;
+  }
+
+  // Context: the group's mapped student wins; else the sender (if registered).
+  const contextUserId = group?.student_user_id ?? senderProfile?.id ?? null;
+  const segment = contextUserId ? await getUserSegment(contextUserId) : null;
+  const groupHistory = conversationId ? await getGroupHistory(conversationId, 12) : [];
+
+  const reply = await generateGroupReply({ contextUserId, segment, senderName, incomingText: text, groupHistory });
+  if (!reply) {
+    logger.warn({ groupJid }, "No group reply generated — staying silent");
+    return;
+  }
+
+  const { evolutionManager } = await import("./whatsappEvolution");
+  const result = await evolutionManager.sendMessage(groupJid, reply);
+  recordGroupReply(groupJid);
+
+  await logConversation({
+    user_id: contextUserId,
+    conversation_id: conversationId,
+    direction: "out",
+    kind: "group_reply",
+    body: reply,
+    status: result.success ? "sent" : "failed",
+    generation_source: "ai",
+    error_reason: result.success ? null : (result.error ?? "unknown"),
+    metadata: { group_jid: groupJid },
+  });
+
+  logger.info({ groupJid, sent: result.success }, "Group reply processed");
 }
