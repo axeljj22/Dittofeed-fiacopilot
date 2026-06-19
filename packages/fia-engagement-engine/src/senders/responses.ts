@@ -446,6 +446,7 @@ function normalize(s: string): string {
 function isSofiaMentioned(text: string, mentionedJid?: string[], botLid?: string): boolean {
   const sofiaNum = config.engine.sofiaWhatsappNumber;
   const lid = botLid || config.engine.sofiaWhatsappLid;
+  // 1) Explicit @mention array — only present when Evolution forwards contextInfo.
   if (Array.isArray(mentionedJid)) {
     for (const j of mentionedJid) {
       const d = String(j).replace(/@.*/, "").replace(/\D/g, "");
@@ -453,6 +454,12 @@ function isSofiaMentioned(text: string, mentionedJid?: string[], botLid?: string
       if (sofiaNum && d.includes(sofiaNum)) return true;
     }
   }
+  // 2) Mention embedded in the body. Real Evolution group mentions arrive as a plain
+  //    `conversation` message with the bot's @lid in the text ("@197745260388481 …") and
+  //    NO contextInfo, so the text is the only reliable signal. (15-digit lid won't collide.)
+  if (lid && text.includes(lid)) return true;
+  if (sofiaNum && text.includes(sofiaNum)) return true;
+  // 3) Name keyword ("Sofía", "Sofi").
   const norm = normalize(text);
   return config.engine.groupMentionKeywords.some((k) => new RegExp(`\\b${normalize(k)}\\b`).test(norm));
 }
@@ -554,6 +561,10 @@ export async function processGroupMessage(msg: IncomingGroupMessage): Promise<vo
   const senderPhone = senderMember?.phone ?? (senderIsLid ? "" : senderDigits);
   senderName = senderName ?? `+${(senderPhone || senderDigits).slice(-4)}`;
 
+  // Decide mention up-front so we can persist it (groups mention by @lid → use the bot's lid).
+  const botLid = config.engine.sofiaWhatsappLid || members.find((m) => m.role === "bot")?.lid || "";
+  const mentioned = isSofiaMentioned(text, msg.mentionedJid, botLid);
+
   // Listen: log every group message (even from unregistered senders).
   await logConversation({
     user_id: senderProfileId,
@@ -566,12 +577,12 @@ export async function processGroupMessage(msg: IncomingGroupMessage): Promise<vo
       sender_phone: senderPhone || null,
       sender_lid: senderIsLid ? senderDigits : (senderMember?.lid ?? null),
       sender_name: senderName,
+      mentioned, // observability: was this treated as a call to Sofía?
     },
   });
 
-  // Respond only when mentioned (groups mention by @lid → use the bot's lid).
-  const botLid = config.engine.sofiaWhatsappLid || members.find((m) => m.role === "bot")?.lid || "";
-  if (!isSofiaMentioned(text, msg.mentionedJid, botLid)) return;
+  // Respond only when mentioned.
+  if (!mentioned) return;
   if (groupRateLimited(groupJid)) {
     logger.warn({ groupJid }, "Group reply rate-limited — skipping");
     return;
