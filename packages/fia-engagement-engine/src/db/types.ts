@@ -156,6 +156,35 @@ export interface EngagementLog extends EngagementLogInsert {
   created_at: string;
 }
 
+// ─── Sofia data sources (semantic routing) ───
+
+export interface DataSource {
+  source_key: string;
+  name: string;
+  description: string;
+  query_method: "match_capsule_chunks" | "match_knowledge_base";
+  rpc_name: string | null;
+  default_params: Record<string, unknown>;
+  covers_topics: string[];
+  example_questions: string[];
+  item_count: number | null;
+  is_active: boolean;
+  last_updated: string;
+}
+
+export interface DataSourceResult extends DataSource {
+  similarity: number;
+}
+
+export interface CapsuleChunkResult {
+  capsule_id: string;
+  capsule_slug: string;
+  capsule_title: string;
+  chunk_index: number;
+  content: string;
+  similarity: number;
+}
+
 // ─── Sofia features registry ───
 
 export interface SofiaFeature {

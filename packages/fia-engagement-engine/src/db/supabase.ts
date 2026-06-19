@@ -15,6 +15,8 @@ import type {
   EngagementLogInsert,
   EngagementLog,
   SofiaFeature,
+  DataSourceResult,
+  CapsuleChunkResult,
 } from "./types";
 
 let client: SupabaseClient | null = null;
@@ -1273,6 +1275,115 @@ export async function searchKnowledge(
     .filter((s) => s.score >= 1)
     .sort((a, b) => b.score - a.score);
   return scored.slice(0, KNOWLEDGE_MATCH_COUNT).map((s) => s.e);
+}
+
+// ─── Sofia data sources: two-step semantic routing ─────────────────────────
+// Step 1: match_data_sources — identify WHICH source is relevant (5 rows, fast)
+// Step 2: match_capsule_chunks — fetch actual program content from the winning source
+
+const DATA_SOURCE_THRESHOLD = 0.38;
+const DATA_SOURCE_MAX = 2; // max sources to query per turn
+
+/**
+ * Routes the query to the most relevant sofia_data_sources entries.
+ * Returns [] when embeddings are unavailable or nothing clears the threshold.
+ */
+async function matchDataSources(embedding: number[]): Promise<DataSourceResult[]> {
+  try {
+    const { data, error } = await getSupabaseClient().rpc("match_data_sources", {
+      query_embedding: embedding,
+      match_threshold: DATA_SOURCE_THRESHOLD,
+      match_count: DATA_SOURCE_MAX,
+    });
+    if (error) {
+      logger.warn({ error: error.message }, "match_data_sources RPC failed");
+      return [];
+    }
+    return (data ?? []) as DataSourceResult[];
+  } catch (error) {
+    logger.warn({ error: (error as Error).message }, "match_data_sources threw");
+    return [];
+  }
+}
+
+/**
+ * Fetches capsule content chunks for a given path via pgvector similarity.
+ * p_path_id = null searches across all tracks; otherwise scopes to one program.
+ */
+async function matchCapsuleChunks(
+  embedding: number[],
+  pathId: string | null,
+  threshold: number,
+  count: number,
+): Promise<CapsuleChunkResult[]> {
+  try {
+    const { data, error } = await getSupabaseClient().rpc("match_capsule_chunks", {
+      query_embedding: embedding,
+      match_threshold: threshold,
+      match_count: count,
+      p_path_id: pathId,
+    });
+    if (error) {
+      logger.warn({ error: error.message, pathId }, "match_capsule_chunks RPC failed");
+      return [];
+    }
+    return (data ?? []) as CapsuleChunkResult[];
+  } catch (error) {
+    logger.warn({ error: (error as Error).message }, "match_capsule_chunks threw");
+    return [];
+  }
+}
+
+export interface CapsuleSourceHit {
+  sourceName: string;
+  chunks: CapsuleChunkResult[];
+}
+
+/**
+ * Two-step semantic search over program content (capsule chunks).
+ * Step 1: route via match_data_sources → find which program source is relevant.
+ * Step 2: fetch actual capsule content chunks from the winning source(s).
+ * Only handles match_capsule_chunks sources — knowledge_base stays with searchKnowledge().
+ * Returns [] gracefully when embeddings or RPCs are unavailable.
+ */
+export async function searchCapsuleContent(query: string): Promise<CapsuleSourceHit[]> {
+  const q = (query ?? "").trim();
+  if (!q) return [];
+
+  const embedding = await embedText(q);
+  if (!embedding) return [];
+
+  const sources = await matchDataSources(embedding);
+  const capsuleSources = sources.filter((s) => s.query_method === "match_capsule_chunks");
+  if (capsuleSources.length === 0) return [];
+
+  const results = await Promise.all(
+    capsuleSources.map(async (source) => {
+      const params = source.default_params ?? {};
+      const pathId = (params["p_path_id"] as string | undefined) ?? null;
+      const threshold = (params["match_threshold"] as number | undefined) ?? 0.4;
+      const count = (params["match_count"] as number | undefined) ?? 5;
+      const chunks = await matchCapsuleChunks(embedding, pathId, threshold, count);
+      return { sourceName: source.name, chunks };
+    }),
+  );
+
+  return results.filter((r) => r.chunks.length > 0);
+}
+
+/**
+ * Formats capsule source hits for prompt injection.
+ * Keeps each chunk under 600 chars to stay within context budget.
+ */
+export function formatCapsuleContent(hits: CapsuleSourceHit[]): string {
+  if (hits.length === 0) return "";
+  const sections = hits.map((hit) => {
+    const chunkLines = hit.chunks
+      .map((c) => `  [${c.capsule_title}] ${c.content.slice(0, 600).trim()}`)
+      .join("\n");
+    return `${hit.sourceName}:\n${chunkLines}`;
+  });
+  return `\n\nCONTENIDO DEL PROGRAMA (usa esto para responder preguntas sobre las clases o cápsulas):\n${sections.join("\n\n")}`;
 }
 
 // ─── Sofia features registry ───────────────────────────────────────────────

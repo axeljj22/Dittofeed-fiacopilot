@@ -29,6 +29,8 @@ import {
   upsertConversationState,
   getKnowledge,
   searchKnowledge,
+  searchCapsuleContent,
+  formatCapsuleContent,
 } from "../db/supabase";
 import type { UserSegment, KnowledgeEntry } from "../db/supabase";
 import type { EngagementOpportunity, VaultOutput, AssessmentSubmission } from "../db/types";
@@ -475,7 +477,7 @@ export async function generateInboundReply(
 
     let userContext: string;
     if (isColdStart) {
-      const [profile, vaultOutputs, capsuleProgress, capsules, scores, assessment, knowledge] =
+      const [profile, vaultOutputs, capsuleProgress, capsules, scores, assessment, knowledge, capsuleHits] =
         await Promise.all([
           getProfileWithWhatsapp(userId),
           getVaultOutputsForUser(userId),
@@ -484,6 +486,7 @@ export async function generateInboundReply(
           getLeadScoreForUser(userId),
           getAssessmentForUser(userId),
           searchKnowledge(incomingText, programSlugs),
+          searchCapsuleContent(incomingText),
         ]);
 
       const completedCount = capsuleProgress.filter((p) => p.status === "completed").length;
@@ -535,13 +538,14 @@ DIAGNÓSTICO:
 - Áreas de dolor: ${painAreas.length > 0 ? painAreas.join(", ") : "no disponible"}
 
 BÓVEDA:
-${vaultContext}${formatKnowledge(knowledge)}${profile?.preferences?.['sofia_notes'] ? `\n\nCONTEXTO ESPECIAL DE ESTA CONVERSACIÓN:\n${profile.preferences['sofia_notes'] as string}` : ""}`.trim();
+${vaultContext}${formatKnowledge(knowledge)}${formatCapsuleContent(capsuleHits)}${profile?.preferences?.['sofia_notes'] ? `\n\nCONTEXTO ESPECIAL DE ESTA CONVERSACIÓN:\n${profile.preferences['sofia_notes'] as string}` : ""}`.trim();
     } else {
-      const [profile, capsuleProgress, capsules, knowledge] = await Promise.all([
+      const [profile, capsuleProgress, capsules, knowledge, capsuleHits] = await Promise.all([
         getProfileWithWhatsapp(userId),
         getCapsuleProgressForUser(userId),
         getCapsulesCached(),
         searchKnowledge(incomingText, programSlugs),
+        searchCapsuleContent(incomingText),
       ]);
       const completedCount = capsuleProgress.filter((p) => p.status === "completed").length;
       const inProgressCapsule = capsuleProgress.find((p) => p.status === "in_progress");
@@ -557,9 +561,9 @@ ${vaultContext}${formatKnowledge(knowledge)}${profile?.preferences?.['sofia_note
       const capsulaSuffix = activePathMin
         ? ` (${activePathMin.completed}/${activePathMin.total} en ${activePathMin.name})`
         : ` cápsulas`;
-      // Knowledge base injected on EVERY turn (not just cold-start) — most content questions
+      // Knowledge base + capsule chunks injected on EVERY turn — most content questions
       // come mid-conversation; without this Sofía answers "no tengo esa info".
-      userContext = `PERFIL: ${profile?.name ?? "desconocido"} (${profile?.company_name ?? "—"}) · ${completedCount}${capsulaSuffix}${inProgressCapsule ? ` · cursando ${inProgressCapsule.capsule_number}${inProgressTitle ? `: ${inProgressTitle}` : ""}` : ""}${facts}${formatKnowledge(knowledge)}`;
+      userContext = `PERFIL: ${profile?.name ?? "desconocido"} (${profile?.company_name ?? "—"}) · ${completedCount}${capsulaSuffix}${inProgressCapsule ? ` · cursando ${inProgressCapsule.capsule_number}${inProgressTitle ? `: ${inProgressTitle}` : ""}` : ""}${facts}${formatKnowledge(knowledge)}${formatCapsuleContent(capsuleHits)}`;
     }
 
     // Save user message AFTER deciding cold-start (so history.length is accurate above)
@@ -767,9 +771,10 @@ export async function generateGroupReply(opts: {
   const { contextUserId, segment, senderName, incomingText, groupHistory } = opts;
   try {
     const programSlugs = segment?.enrolledPrograms.map((p) => p.slug).filter(Boolean) ?? null;
-    const [sofiaPrompt, knowledge] = await Promise.all([
+    const [sofiaPrompt, knowledge, capsuleHits] = await Promise.all([
       getSofiaSystemPrompt(),
       searchKnowledge(incomingText, programSlugs),
+      searchCapsuleContent(incomingText),
     ]);
 
     let profileCtx = "";
@@ -791,7 +796,7 @@ export async function generateGroupReply(opts: {
       "Respondé SOLO lo que te preguntaron, breve y al punto, sin saludar de más ni presentarte. " +
       "Si el mensaje no es para vos, respondé muy corto o no aportes de más.";
 
-    const userMessage = `${groupInstruction}${profileCtx}${formatKnowledge(knowledge)}${historyText}\n\nMensaje de ${senderName} (te mencionó): ${incomingText}\n\nRespondé SOLO con el texto del mensaje, sin prefijos ni comillas.`;
+    const userMessage = `${groupInstruction}${profileCtx}${formatKnowledge(knowledge)}${formatCapsuleContent(capsuleHits)}${historyText}\n\nMensaje de ${senderName} (te mencionó): ${incomingText}\n\nRespondé SOLO con el texto del mensaje, sin prefijos ni comillas.`;
 
     // 1. Codex → 2. Claude
     let reply = await generateWithCodex(sofiaPrompt, userMessage);
