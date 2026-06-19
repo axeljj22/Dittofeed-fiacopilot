@@ -24,7 +24,7 @@ import {
   activateSofia,
   logConversation,
 } from "../db/supabase";
-import { getCommandReply, getTrackingLinkBase } from "../config/engineConfigCache";
+import { getCommandReply, getTrackingLinkBase, getPositiveShortResponses } from "../config/engineConfigCache";
 import { generateInboundReply } from "../generators/messageGenerator";
 
 export interface IncomingMessage {
@@ -75,9 +75,14 @@ const POSITIVE_SHORT_RESPONSES = new Set([
 ]);
 
 /** ¿El mensaje es de baja calidad? Solo lo verdaderamente vacío — WhatsApp es naturalmente corto */
-function isLowEngagement(body: string): boolean {
+async function isLowEngagement(body: string): Promise<boolean> {
   const normalized = body.trim().toLowerCase();
   if (POSITIVE_SHORT_RESPONSES.has(normalized)) return false;
+  // Respuestas positivas configurables desde /admin/config (se suman al set local)
+  try {
+    const configured = await getPositiveShortResponses();
+    if (configured.has(normalized)) return false;
+  } catch { /* fallback al set local */ }
   // Si tiene ?, ! o emoji, hay intención
   if (/[?!¿¡]/.test(body)) return false;
   if (/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(body)) return false;
@@ -201,8 +206,14 @@ export async function processIncomingResponse(
 
   // ── 4b. Inbound-first activation ─────────────────────────────────────────
   // The "Activar Sofía" button in /perfil opens WhatsApp with a pre-filled message.
-  // The first inbound from a recognized, opted-in user (not a STOP) confirms activation.
-  if (profile.sofia_activated_at == null && classified.type !== "opt_out") {
+  // The first inbound from a recognized user CONFIRMS activation — but only if they
+  // already opted in (the front gates opt-in/email/paid before showing the button).
+  // Without the opt-in check, anyone whose phone is on file would get auto-activated.
+  if (
+    profile.sofia_activated_at == null &&
+    profile.whatsapp_opt_in === true &&
+    classified.type !== "opt_out"
+  ) {
     await activateSofia(userId);
   }
 
@@ -334,7 +345,7 @@ export async function processIncomingResponse(
   const state = await getConversationState(userId);
   const consecutiveLow = state?.consecutiveLowEngagement ?? 0;
 
-  if (isLowEngagement(message.body)) {
+  if (await isLowEngagement(message.body)) {
     const newCount = consecutiveLow + 1;
     await upsertConversationState(userId, { consecutiveLowEngagement: newCount });
 

@@ -222,6 +222,9 @@ async function generateWeeklyFallback(
 // ─── Message length enforcement ───
 
 const MAX_MESSAGE_CHARS = 320;
+// The sender swaps the deep link for a tracked link ({base}/r/{uuid} ≈ 70 chars). Budget for the
+// worst case so the FINAL message (after the swap) stays within the limit.
+const TRACKED_LINK_RESERVE = 70;
 
 /**
  * Sanitize an outbound message before sending:
@@ -246,11 +249,15 @@ function enforceLength(text: string, deepLink: string): { text: string; truncate
     safe = `${safe} ${deepLink}`;
   }
 
-  if (safe.length <= MAX_MESSAGE_CHARS) return { text: safe, truncated: false };
+  // Effective limit leaves room for the longer tracked link the sender substitutes later.
+  const linkExtra = deepLink ? Math.max(0, TRACKED_LINK_RESERVE - deepLink.length) : 0;
+  const effMax = MAX_MESSAGE_CHARS - linkExtra;
+
+  if (safe.length <= effMax) return { text: safe, truncated: false };
 
   // Truncation: keep the deepLink at the end, trim body to fit
   const linkIndex = safe.lastIndexOf(deepLink);
-  const bodyBudget = MAX_MESSAGE_CHARS - deepLink.length - 1; // 1 for space
+  const bodyBudget = effMax - deepLink.length - 1; // 1 for space
   if (bodyBudget < 40) {
     return { text: deepLink, truncated: true };
   }

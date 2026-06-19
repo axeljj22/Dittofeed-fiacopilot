@@ -993,7 +993,9 @@ export interface KnowledgeEntry {
   status: string | null;
 }
 
-const INACTIVE_KNOWLEDGE_STATUS = new Set(["draft", "archived", "disabled", "inactive"]);
+// Allowlist: only these statuses (or null) are injected into Sofía's grounding. Any other
+// status (draft/review/pending/…) is treated as NOT live, so it never leaks into prompts.
+const ACTIVE_KNOWLEDGE_STATUS = new Set(["active", "published", "live"]);
 
 let _knowledgeCache: KnowledgeEntry[] | null = null;
 let _knowledgeCacheExpiry = 0;
@@ -1016,7 +1018,7 @@ export async function getKnowledge(): Promise<KnowledgeEntry[]> {
       } else {
         const rows = (data ?? []) as KnowledgeEntry[];
         _knowledgeCache = rows
-          .filter((k) => !k.status || !INACTIVE_KNOWLEDGE_STATUS.has(k.status.toLowerCase()))
+          .filter((k) => !k.status || ACTIVE_KNOWLEDGE_STATUS.has(k.status.toLowerCase()))
           .sort((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
       }
     } catch {
