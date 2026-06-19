@@ -15,6 +15,7 @@ import type {
   EngagementLogInsert,
   EngagementLog,
   SofiaFeature,
+  DataSource,
   DataSourceResult,
   CapsuleChunkResult,
 } from "./types";
@@ -1280,9 +1281,29 @@ export async function searchKnowledge(
 // ─── Sofia data sources: two-step semantic routing ─────────────────────────
 // Step 1: match_data_sources — identify WHICH source is relevant (5 rows, fast)
 // Step 2: match_capsule_chunks — fetch actual program content from the winning source
+// Fallback: if routing scores < threshold, search ALL active capsule sources so Sofía
+// can always answer program questions regardless of routing confidence.
 
 const DATA_SOURCE_THRESHOLD = 0.38;
 const DATA_SOURCE_MAX = 2; // max sources to query per turn
+
+// 10-min cache — source list changes rarely
+let _allDataSourcesCache: DataSource[] | null = null;
+let _allDataSourcesCacheExpiry = 0;
+
+async function getAllDataSources(): Promise<DataSource[]> {
+  if (!_allDataSourcesCache || Date.now() >= _allDataSourcesCacheExpiry) {
+    const { data, error } = await getSupabaseClient()
+      .from("sofia_data_sources")
+      .select("source_key,name,description,query_method,rpc_name,default_params,covers_topics,example_questions,item_count,is_active,last_updated")
+      .eq("is_active", true)
+      .order("source_key");
+    _allDataSourcesCache = error ? [] : ((data ?? []) as DataSource[]);
+    _allDataSourcesCacheExpiry = Date.now() + 10 * 60 * 1000;
+    if (error) logger.warn({ error: error.message }, "Failed to load all sofia_data_sources");
+  }
+  return _allDataSourcesCache!;
+}
 
 /**
  * Routes the query to the most relevant sofia_data_sources entries.
@@ -1353,8 +1374,24 @@ export async function searchCapsuleContent(query: string): Promise<CapsuleSource
   const embedding = await embedText(q);
   if (!embedding) return [];
 
-  const sources = await matchDataSources(embedding);
-  const capsuleSources = sources.filter((s) => s.query_method === "match_capsule_chunks");
+  const [routedSources, allSources] = await Promise.all([
+    matchDataSources(embedding),
+    getAllDataSources(),
+  ]);
+
+  // DataSourceResult extends DataSource — use base type so both routed and fallback work
+  let capsuleSources: DataSource[] = routedSources.filter((s) => s.query_method === "match_capsule_chunks");
+
+  // Fallback: routing scored below threshold → search ALL active capsule sources.
+  // The chunk similarity threshold still filters irrelevant content, so only the
+  // program that actually covers the query will return chunks.
+  if (capsuleSources.length === 0) {
+    capsuleSources = allSources.filter((s) => s.query_method === "match_capsule_chunks");
+    if (capsuleSources.length > 0) {
+      logger.debug({ query: q, fallbackCount: capsuleSources.length }, "capsule routing miss → fallback to all sources");
+    }
+  }
+
   if (capsuleSources.length === 0) return [];
 
   const results = await Promise.all(
