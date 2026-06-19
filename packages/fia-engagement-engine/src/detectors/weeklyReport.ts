@@ -150,7 +150,9 @@ async function buildWeeklyContext(profile: Profile): Promise<WeeklyReportContext
       nextCapsuleNumber: next?.number ?? null,
       nextCapsuleTitle: next?.title ?? null,
       nextMiniAction: next?.mini_action ?? null,
-      deepLink: next ? `${base}/capsulas/${next.number}` : `${base}/dashboard`,
+      // Front route: track capsules live at /pasos?path={slug} (the program panel). There is NO
+      // /capsulas/{n} route, and capsule numbers repeat across tracks, so we link to the panel.
+      deepLink: `${base}/pasos?path=${focus.slug}`,
     };
   }
 
@@ -183,7 +185,8 @@ async function buildWeeklyContext(profile: Profile): Promise<WeeklyReportContext
     nextCapsuleNumber: metodo.next?.number ?? null,
     nextCapsuleTitle: metodo.next?.title ?? null,
     nextMiniAction: metodo.next?.mini_action ?? null,
-    deepLink: metodo.next ? `${base}/pasos` : `${base}/dashboard`,
+    // Front route: the 25-pasos method lives at /pasos/{number} (numbers 1..25 are unique).
+    deepLink: metodo.next ? `${base}/pasos/${metodo.next.number}` : `${base}/pasos`,
   };
 }
 
