@@ -438,18 +438,16 @@ export interface IncomingGroupMessage {
 }
 
 /** Strips accents + lowercases for keyword matching ("Sofía" → "sofia"). */
-function normalize(s: string): string {
-  return s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
-}
-
 /**
- * True if Sofía was called: a real @mention (groups mention by @lid, so match her lid first;
- * also accept her phone) or a name keyword in the text.
+ * True only if Sofía was actually TAGGED (@mention). Groups tag by @lid, which Evolution
+ * delivers either in contextInfo.mentionedJid or embedded as @<lid> in the body text. Merely
+ * naming her ("Sofía …"), including in a voice note, does NOT count — she replies only when
+ * tagged.
  */
 function isSofiaMentioned(text: string, mentionedJid?: string[], botLid?: string): boolean {
   const sofiaNum = config.engine.sofiaWhatsappNumber;
   const lid = botLid || config.engine.sofiaWhatsappLid;
-  // 1) Explicit @mention array — only present when Evolution forwards contextInfo.
+  // 1) Explicit @mention array — present when Evolution forwards contextInfo.
   if (Array.isArray(mentionedJid)) {
     for (const j of mentionedJid) {
       const d = String(j).replace(/@.*/, "").replace(/\D/g, "");
@@ -457,14 +455,10 @@ function isSofiaMentioned(text: string, mentionedJid?: string[], botLid?: string
       if (sofiaNum && d.includes(sofiaNum)) return true;
     }
   }
-  // 2) Mention embedded in the body. Real Evolution group mentions arrive as a plain
-  //    `conversation` message with the bot's @lid in the text ("@197745260388481 …") and
-  //    NO contextInfo, so the text is the only reliable signal. (15-digit lid won't collide.)
+  // 2) The @tag rendered in the body text (real mentions arrive as @<lid> in `conversation`).
   if (lid && text.includes(lid)) return true;
   if (sofiaNum && text.includes(sofiaNum)) return true;
-  // 3) Name keyword ("Sofía", "Sofi").
-  const norm = normalize(text);
-  return config.engine.groupMentionKeywords.some((k) => new RegExp(`\\b${normalize(k)}\\b`).test(norm));
+  return false; // named-but-not-tagged (incl. voice notes) → do NOT reply
 }
 
 // Per-group reply rate limit (in-memory; resets on restart).
