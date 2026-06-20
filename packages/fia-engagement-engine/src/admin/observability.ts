@@ -134,7 +134,7 @@ export function getObservabilityHtml(): string {
       } catch (e) { document.getElementById('gaps').innerHTML = '<div id="muted">Error cargando gaps</div>'; }
     }
 
-    const ROLE_LABEL = { superadmin: 'SuperAdmin', coach: 'Coach', student: 'Alumno', bot: 'Sofía', unknown: 'No registrado' };
+    const ROLE_LABEL = { superadmin: 'SuperAdmin', coach: 'Coach', staff: 'Equipo', student: 'Alumno', bot: 'Sofía', unknown: 'No registrado' };
 
     async function loadGroups() {
       try {

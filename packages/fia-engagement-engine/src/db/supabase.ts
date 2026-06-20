@@ -1012,6 +1012,34 @@ export async function findProfileByName(rawName: string): Promise<{ id: string; 
   }
 }
 
+// Staff/owner phone registry (engine_config key "staff_phones"): numbers that belong to the
+// team (Axel's secondary lines, coaches/consultants) so group rosters classify them correctly
+// instead of leaving them "unknown". Stored in the DB so it's editable without a redeploy.
+let _staffCache: Array<{ phone10: string; name: string | null; role: string }> | null = null;
+let _staffCacheExpiry = 0;
+export async function getStaffRoster(): Promise<Array<{ phone10: string; name: string | null; role: string }>> {
+  if (_staffCache && Date.now() < _staffCacheExpiry) return _staffCache;
+  try {
+    const { data } = await getSupabaseClient()
+      .from("engine_config")
+      .select("value")
+      .eq("key", "staff_phones")
+      .maybeSingle();
+    const arr = data?.value ? JSON.parse(data.value as string) : [];
+    _staffCache = (Array.isArray(arr) ? arr : [])
+      .map((s: { phone?: string; name?: string; role?: string }) => ({
+        phone10: String(s.phone ?? "").replace(/\D/g, "").slice(-10),
+        name: s.name ?? null,
+        role: s.role ?? "staff",
+      }))
+      .filter((s) => s.phone10.length >= 8);
+  } catch {
+    _staffCache = [];
+  }
+  _staffCacheExpiry = Date.now() + 5 * 60 * 1000;
+  return _staffCache;
+}
+
 // ─── Sofía groups (group_jid → conversation thread + optional student) ───
 
 export interface SofiaGroup {

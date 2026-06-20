@@ -29,6 +29,7 @@ import {
   updateSofiaGroupStudent,
   updateSofiaGroupLabel,
   upsertGroupMembers,
+  getStaffRoster,
   getGroupMembers,
   getGroupHistory,
 } from "../db/supabase";
@@ -495,13 +496,18 @@ export async function syncGroupMembers(groupJid: string): Promise<string | null>
   if (participants.length === 0) return null;
   const sofiaNum = config.engine.sofiaWhatsappNumber;
   const sofiaLid = config.engine.sofiaWhatsappLid;
+  const staff = await getStaffRoster();
   const members: GroupMember[] = [];
   const students = new Set<string>();
   for (const { lid, phone } of participants) {
     const isBot = Boolean((sofiaNum && phone && phone.includes(sofiaNum)) || (sofiaLid && lid && lid === sofiaLid));
     const p = !isBot && phone ? await findProfileByPhone(phone) : null;
+    // Staff/owner registry wins over profile classification (Axel's other lines, team members).
+    const phone10 = (phone || "").replace(/\D/g, "").slice(-10);
+    const staffMatch = !isBot && phone10 ? staff.find((s) => s.phone10 === phone10) : undefined;
     let role = "unknown";
     if (isBot) role = "bot";
+    else if (staffMatch) role = staffMatch.role;
     else if (p?.is_admin) role = "superadmin";
     else if (p?.is_coach) role = "coach";
     else if (p) { role = "student"; students.add(p.id); }
@@ -510,9 +516,9 @@ export async function syncGroupMembers(groupJid: string): Promise<string | null>
       phone: phone || lid, // PK needs a value; fall back to lid if phone not exposed
       lid: lid || null,
       user_id: p?.id ?? null,
-      name: p?.name ?? (isBot ? "Sofía" : null),
+      name: staffMatch?.name ?? p?.name ?? (isBot ? "Sofía" : null),
       role,
-      is_registered: Boolean(p),
+      is_registered: Boolean(p) || Boolean(staffMatch),
     });
   }
   // Fallback: if the phone match found no single student but this is a 1:1 follow-up group
