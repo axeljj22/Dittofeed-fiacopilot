@@ -954,6 +954,17 @@ export interface PhoneProfile {
 export async function findProfileByPhone(phone: string): Promise<PhoneProfile | null> {
   const normalized = phone.replace(/\D/g, "");
   if (!normalized) return null;
+  // Primary: RPC that compares the canonical national number (last 10 digits of the stripped
+  // phone) — robust to country code, the Argentine mobile "9", "+" and spaces in profiles.
+  try {
+    const { data, error } = await getSupabaseClient().rpc("find_profile_by_phone", { p_phone: normalized });
+    if (!error && Array.isArray(data) && data.length > 0) {
+      return data[0] as PhoneProfile;
+    }
+  } catch (e) {
+    logger.warn({ error: (e as Error).message }, "find_profile_by_phone RPC failed — exact-match fallback");
+  }
+  // Fallback: exact match (works when the stored phone is already clean digits / +digits).
   const { data } = await getSupabaseClient()
     .from("profiles")
     .select("id, name, whatsapp_opt_in, sofia_activated_at, is_admin, is_coach, org_role")
