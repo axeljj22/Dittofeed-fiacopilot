@@ -973,6 +973,45 @@ export async function findProfileByPhone(phone: string): Promise<PhoneProfile | 
   return (data as PhoneProfile | null) ?? null;
 }
 
+/**
+ * Conservative name match for group-title fallback ("FIA Agéntica | <Nombre>"). Returns a
+ * profile ONLY when exactly one matches (one name is fully contained in the other), so an
+ * ambiguous title (e.g. two "Dario") yields null instead of a wrong guess. Used only when the
+ * phone match failed.
+ */
+export async function findProfileByName(rawName: string): Promise<{ id: string; name: string | null } | null> {
+  const norm = (s: string) => s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+  const STOP = new Set(["de", "la", "el", "del", "los", "las", "y", "del"]);
+  const titleTokens = norm(rawName).split(/\s+/).filter((t) => t.length >= 3 && !STOP.has(t));
+  if (titleTokens.length === 0) return null;
+  try {
+    const { data } = await getSupabaseClient()
+      .from("profiles")
+      .select("id, name")
+      .ilike("name", `%${titleTokens[0]}%`)
+      .limit(20);
+    const candidates = (data ?? []) as Array<{ id: string; name: string | null }>;
+    const titleSet = new Set(titleTokens);
+    const matches = candidates.filter((c) => {
+      const profTokens = norm(c.name ?? "").split(/\s+/).filter((t) => t.length >= 3 && !STOP.has(t));
+      if (profTokens.length === 0) return false;
+      const profSet = new Set(profTokens);
+      const profInTitle = profTokens.every((t) => titleSet.has(t));
+      const titleInProf = titleTokens.every((t) => profSet.has(t));
+      return profInTitle || titleInProf;
+    });
+    const uniqueIds = [...new Set(matches.map((m) => m.id))];
+    if (uniqueIds.length === 1) {
+      const m = matches.find((x) => x.id === uniqueIds[0])!;
+      return { id: m.id, name: m.name };
+    }
+    return null;
+  } catch (e) {
+    logger.warn({ error: (e as Error).message }, "findProfileByName failed");
+    return null;
+  }
+}
+
 // ─── Sofía groups (group_jid → conversation thread + optional student) ───
 
 export interface SofiaGroup {

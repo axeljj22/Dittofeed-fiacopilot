@@ -24,6 +24,7 @@ import {
   activateSofia,
   logConversation,
   findProfileByPhone,
+  findProfileByName,
   getOrCreateSofiaGroup,
   updateSofiaGroupStudent,
   updateSofiaGroupLabel,
@@ -518,6 +519,25 @@ export async function syncGroupMembers(groupJid: string): Promise<string | null>
       is_registered: Boolean(p),
     });
   }
+  // Fallback: if the phone match found no single student but this is a 1:1 follow-up group
+  // ("FIA … | <Nombre>") with exactly one unregistered participant, match that person by the
+  // name in the title. Conservative (unique-name only) → won't guess on ambiguous titles.
+  if (students.size !== 1 && subject && subject.includes("|")) {
+    const titleName = subject.split("|").pop()!.trim();
+    const unknowns = members.filter((m) => m.role === "unknown");
+    if (unknowns.length === 1 && titleName) {
+      const prof = await findProfileByName(titleName);
+      if (prof) {
+        unknowns[0]!.user_id = prof.id;
+        unknowns[0]!.name = prof.name;
+        unknowns[0]!.role = "student";
+        unknowns[0]!.is_registered = true;
+        students.add(prof.id);
+        logger.info({ groupJid, titleName, studentId: prof.id }, "Group student matched by title name (phone failed)");
+      }
+    }
+  }
+
   await upsertGroupMembers(members);
   _groupSyncedAt.set(groupJid, Date.now());
   return students.size === 1 ? [...students][0]! : null;
