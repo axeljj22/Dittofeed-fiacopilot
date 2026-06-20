@@ -166,7 +166,8 @@ export function getObservabilityHtml(): string {
             (m.is_registered ? '' : ' <span class="chip">no registrado</span>') + '</div>';
         }).join('') || '<div style="color:#4b5563">Sin roster (probá Re-sincronizar)</div>';
         const msgs = (data.messages || []).map(function(m){
-          return '<div class="msg ' + m.direction + '">' + esc(m.body) +
+          var au = (m.metadata && m.metadata.is_audio) ? '🎤 ' : '';
+          return '<div class="msg ' + m.direction + '">' + au + esc(m.body) +
             '<div class="meta">' + esc(m.kind) + ' · ' + new Date(m.created_at).toLocaleString('es-AR') + '</div></div>';
         }).join('') || '<div style="color:#4b5563">Sin mensajes aún</div>';
         document.getElementById('modal-body').innerHTML =
@@ -258,7 +259,8 @@ export function getObservabilityHtml(): string {
         const resp = await fetch('/api/observability/thread/' + id, { headers: hdr() });
         const { data } = await resp.json();
         document.getElementById('modal-body').innerHTML = (data || []).map(function(m){
-          return '<div class="msg ' + m.direction + '">' + esc(m.body) +
+          var au = (m.metadata && m.metadata.is_audio) ? '🎤 ' : '';
+          return '<div class="msg ' + m.direction + '">' + au + esc(m.body) +
             '<div class="meta">' + esc(m.kind) + ' · ' + esc(m.status) + ' · ' + new Date(m.created_at).toLocaleString('es-AR') + '</div></div>';
         }).join('') || 'Sin mensajes';
       } catch { document.getElementById('modal-body').innerHTML = 'Error de conexión'; }

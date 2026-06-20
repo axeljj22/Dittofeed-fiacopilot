@@ -200,6 +200,7 @@ async function handleWebhookEvolution(
         message?: {
           conversation?: string;
           extendedTextMessage?: { text?: string; contextInfo?: { mentionedJid?: string[] } };
+          audioMessage?: { seconds?: number; mimetype?: string };
         } | null;
       };
     };
@@ -212,9 +213,26 @@ async function handleWebhookEvolution(
     const key = body.data?.key;
     if (!key?.remoteJid || key.fromMe) return;
 
-    const text = body.data?.message?.conversation
+    const textRaw = body.data?.message?.conversation
       ?? body.data?.message?.extendedTextMessage?.text
       ?? "";
+
+    // Voice notes arrive as audioMessage (no text). Transcribe with Whisper so Sofía can read
+    // them and the log keeps a record. Falls back to a placeholder so the message isn't lost.
+    let text = textRaw;
+    let isAudio = false;
+    const audio = body.data?.message?.audioMessage;
+    if (!text && audio) {
+      isAudio = true;
+      if ((audio.seconds ?? 0) > config.openai.maxAudioSeconds) {
+        text = "🎤 [audio largo no transcrito]";
+      } else {
+        const { transcribeAudio } = await import("./generators/transcription");
+        const media = await evolutionManager.getMediaBase64(body.data);
+        const transcript = media ? await transcribeAudio(media.base64, media.mimetype || audio.mimetype || "audio/ogg") : null;
+        text = transcript ?? "🎤 [audio no transcrito]";
+      }
+    }
 
     // ── Group messages (@g.us): listen + reply only when mentioned ──
     if (key.remoteJid.endsWith("@g.us")) {
@@ -227,6 +245,7 @@ async function handleWebhookEvolution(
         text,
         mentionedJid,
         messageId: key.id ?? undefined,
+        isAudio,
       });
       return;
     }
@@ -237,9 +256,9 @@ async function handleWebhookEvolution(
     const from = key.remoteJid.replace("@s.whatsapp.net", "");
     if (!from || !text) return;
 
-    logger.info({ from, body: text.slice(0, 80) }, "Evolution inbound message");
+    logger.info({ from, body: text.slice(0, 80), isAudio }, "Evolution inbound message");
 
-    const action = await processIncomingResponse({ from, body: text, messageId: key.id ?? undefined });
+    const action = await processIncomingResponse({ from, body: text, messageId: key.id ?? undefined, isAudio });
 
     if (action.replyText) {
       // Typing indicator → small humanizing delay before the actual reply

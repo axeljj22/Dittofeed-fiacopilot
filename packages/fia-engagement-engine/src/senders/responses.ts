@@ -40,6 +40,7 @@ export interface IncomingMessage {
   from: string; // WhatsApp number
   body: string;
   messageId?: string;
+  isAudio?: boolean; // transcribed from a voice note
 }
 
 export interface ResponseAction {
@@ -376,7 +377,7 @@ export async function processIncomingResponse(
   const segment = await getUserSegment(userId);
 
   // ── 10. Generate AI reply ────────────────────────────────────────────────
-  const aiReply = await generateInboundReply(userId, message.body, segment);
+  const aiReply = await generateInboundReply(userId, message.body, segment, message.isAudio ?? false);
 
   if (aiReply) {
     action = { ...action, replyText: await wrapLinksWithTracking(aiReply, userId, normalizedFrom) };
@@ -433,6 +434,7 @@ export interface IncomingGroupMessage {
   text: string;
   mentionedJid?: string[]; // contextInfo.mentionedJid
   messageId?: string;
+  isAudio?: boolean;       // transcribed from a voice note
 }
 
 /** Strips accents + lowercases for keyword matching ("Sofía" → "sofia"). */
@@ -598,6 +600,7 @@ export async function processGroupMessage(msg: IncomingGroupMessage): Promise<vo
       sender_lid: senderIsLid ? senderDigits : (senderMember?.lid ?? null),
       sender_name: senderName,
       mentioned, // observability: was this treated as a call to Sofía?
+      is_audio: msg.isAudio ?? false,
     },
   });
 

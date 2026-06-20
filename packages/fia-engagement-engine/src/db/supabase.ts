@@ -1174,6 +1174,7 @@ export async function getConversationHistory(
 export async function appendConversationMessages(
   userId: string,
   messages: Array<{ role: string; content: string }>,
+  metadata?: Record<string, unknown>,
 ): Promise<void> {
   for (const m of messages) {
     await logConversation({
@@ -1181,6 +1182,7 @@ export async function appendConversationMessages(
       direction: m.role === "user" ? "in" : "out",
       kind: "inbound_reply",
       body: m.content,
+      ...(metadata ? { metadata } : {}),
     });
   }
 }
@@ -2058,17 +2060,17 @@ export async function getConversationThreads(windowDays = 30, limit = 100): Prom
 }
 
 /** Full message list of a single thread, chronological. */
-export async function getThread(conversationId: string): Promise<Array<{ direction: string; kind: string; body: string; status: string; created_at: string }>> {
+export async function getThread(conversationId: string): Promise<Array<{ direction: string; kind: string; body: string; status: string; created_at: string; metadata: Record<string, unknown> | null }>> {
   const { data, error } = await getSupabaseClient()
     .from("sofia_conversations")
-    .select("direction, kind, body, status, created_at")
+    .select("direction, kind, body, status, created_at, metadata")
     .eq("conversation_id", conversationId)
     .order("created_at", { ascending: true });
   if (error) {
     logger.warn({ error, conversationId }, "Failed to fetch thread");
     return [];
   }
-  return (data ?? []) as Array<{ direction: string; kind: string; body: string; status: string; created_at: string }>;
+  return (data ?? []) as Array<{ direction: string; kind: string; body: string; status: string; created_at: string; metadata: Record<string, unknown> | null }>;
 }
 
 /** Recent conversations not yet classified (for the AI labeling job). */

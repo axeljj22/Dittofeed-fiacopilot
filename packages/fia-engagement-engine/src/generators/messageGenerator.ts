@@ -463,6 +463,7 @@ export async function generateInboundReply(
   userId: string,
   incomingText: string,
   segment: UserSegment,
+  isAudio = false,
 ): Promise<string | null> {
   try {
     const sofiaPrompt = await getSofiaSystemPrompt();
@@ -570,7 +571,7 @@ ${vaultContext}${formatKnowledge(knowledge)}${formatCapsuleContent(capsuleHits)}
     }
 
     // Save user message AFTER deciding cold-start (so history.length is accurate above)
-    await appendConversationMessages(userId, [{ role: "user", content: incomingText }]);
+    await appendConversationMessages(userId, [{ role: "user", content: incomingText }], isAudio ? { is_audio: true } : undefined);
 
     // ── Rate limit: max 5 AI replies per hour per user ──
     const now = Date.now();

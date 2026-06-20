@@ -125,6 +125,29 @@ class EvolutionManager {
     }
   }
 
+  /**
+   * POST /chat/getBase64FromMediaMessage/{instance} — downloads a media message (e.g. a voice
+   * note) and returns its base64 + mimetype. `messageData` is the webhook's `data` object
+   * (must contain key + message). Returns null on failure.
+   */
+  async getMediaBase64(messageData: unknown): Promise<{ base64: string; mimetype: string } | null> {
+    if (!this.isConfigured) return null;
+    try {
+      const res = await axios.post(
+        this.url(`/chat/getBase64FromMediaMessage/${config.whatsapp.evolution.instanceName}`),
+        { message: messageData, convertToMp4: false },
+        { headers: this.headers, timeout: 20_000 },
+      );
+      const base64 = res.data?.base64 as string | undefined;
+      if (!base64) return null;
+      return { base64, mimetype: (res.data?.mimetype as string | undefined) ?? "audio/ogg" };
+    } catch (error) {
+      const axiosErr = error as { response?: { status?: number }; message?: string };
+      logger.warn({ status: axiosErr.response?.status, message: axiosErr.message }, "Evolution getMediaBase64 failed");
+      return null;
+    }
+  }
+
   /** POST /chat/sendPresence/{instance}. Best-effort, never throws. */
   async sendTyping(phone: string, durationMs = 1500): Promise<void> {
     if (!this.isConfigured) return;

@@ -34,6 +34,11 @@ export const config = {
   openai: {
     apiKey: optionalEnv("OPENAI_API_KEY", ""),
     embeddingModel: optionalEnv("OPENAI_EMBEDDING_MODEL", "text-embedding-3-small"),
+    // Audio transcription (voice notes → text). Dedicated key isolates the cost from embeddings;
+    // falls back to the embeddings key if not set.
+    transcribeApiKey: optionalEnv("OPENAI_WHISPER_API_KEY", "") || optionalEnv("OPENAI_API_KEY", ""),
+    transcribeModel: optionalEnv("OPENAI_TRANSCRIBE_MODEL", "whisper-1"),
+    maxAudioSeconds: parseInt(optionalEnv("MAX_AUDIO_SECONDS", "300"), 10),
   },
 
   // Codex OAuth — message generation via ChatGPT Plus (replaces Anthropic)
