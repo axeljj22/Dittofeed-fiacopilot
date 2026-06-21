@@ -719,6 +719,21 @@ export async function getPaidUserIds(userIds: string[]): Promise<Set<string>> {
   return paid;
 }
 
+/** User IDs with active access to any of the given program slugs (e.g. ["fia-agentica"]). */
+export async function getStudentsByProgram(programSlugs: string[]): Promise<string[]> {
+  if (!programSlugs.length) return [];
+  const { data, error } = await getSupabaseClient()
+    .from("user_program_access")
+    .select("user_id")
+    .in("program_slug", programSlugs)
+    .eq("status", "active");
+  if (error) {
+    logger.warn({ error: error.message, programSlugs }, "getStudentsByProgram failed");
+    return [];
+  }
+  return [...new Set((data ?? []).map((r) => (r as { user_id: string }).user_id))];
+}
+
 /**
  * Returns the set of user IDs already contacted for a given journey.
  */
@@ -1143,6 +1158,24 @@ export async function getGroupMembers(groupJid: string): Promise<GroupMember[]> 
     return [];
   }
   return (data ?? []) as GroupMember[];
+}
+
+/** Group-thread messages since a timestamp (for the internal report's weekly activity). */
+export async function getGroupMessagesSince(
+  conversationId: string,
+  sinceIso: string,
+): Promise<Array<{ direction: string; kind: string; body: string; metadata: Record<string, unknown> | null; created_at: string }>> {
+  const { data, error } = await getSupabaseClient()
+    .from("sofia_conversations")
+    .select("direction, kind, body, metadata, created_at")
+    .eq("conversation_id", conversationId)
+    .gte("created_at", sinceIso)
+    .order("created_at", { ascending: true });
+  if (error) {
+    logger.warn({ error: error.message, conversationId }, "getGroupMessagesSince failed");
+    return [];
+  }
+  return (data ?? []) as Array<{ direction: string; kind: string; body: string; metadata: Record<string, unknown> | null; created_at: string }>;
 }
 
 /** Recent messages of a group thread (chronological), with sender name for multi-speaker context. */

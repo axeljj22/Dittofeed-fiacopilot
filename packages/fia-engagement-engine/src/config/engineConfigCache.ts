@@ -233,6 +233,13 @@ export async function getReportSchedule(): Promise<string> {
   return getCachedConfig("report_schedule", REPORT_SCHEDULE_DEFAULT);
 }
 
+// Internal staff report cron — editable from the DB (engine_config.internal_report_schedule).
+export const INTERNAL_REPORT_SCHEDULE_DEFAULT = "0 18 * * 0"; // Sunday 18:00 (timezone applied in scheduler)
+
+export async function getInternalReportSchedule(): Promise<string> {
+  return getCachedConfig("internal_report_schedule", INTERNAL_REPORT_SCHEDULE_DEFAULT);
+}
+
 // ─── Tracking link base (domain for /r/{id} click-redirects, editable from the panel) ───
 // Default = the engine's own URL (current behavior). Flip to https://fiacopilot.com once the
 // FC app serves the /r/[id] redirect, so users never see the engine domain in their messages.

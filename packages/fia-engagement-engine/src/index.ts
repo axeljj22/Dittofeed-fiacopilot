@@ -17,7 +17,7 @@ import { logger } from "./logger";
 import { startServer } from "./server";
 import { runWeeklyReport } from "./orchestrator";
 import { retryFailedMessages } from "./senders/whatsapp";
-import { rescheduleWeeklyReport } from "./reportScheduler";
+import { rescheduleWeeklyReport, rescheduleInternalReport } from "./reportScheduler";
 import { classifyRecentConversations } from "./jobs/classifyConversations";
 
 async function startScheduler(): Promise<void> {
@@ -25,6 +25,9 @@ async function startScheduler(): Promise<void> {
 
   // Weekly report — single configurable cron (Domingo 17:00 by default)
   await rescheduleWeeklyReport();
+
+  // Internal staff control report — Sunday PM (ART), to the control group
+  await rescheduleInternalReport();
 
   // Retry failed messages — every 30 minutes (set CRON_RETRY_FAILED to never-fire to disable)
   cron.schedule(config.cron.retryFailed, async () => {

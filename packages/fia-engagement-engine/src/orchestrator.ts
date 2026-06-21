@@ -58,6 +58,10 @@ import { detectWeeklyReportRecipients } from "./detectors";
 import { generateMessage } from "./generators/messageGenerator";
 import { sendWhatsAppMessage } from "./senders/whatsapp";
 import type { EngagementOpportunity } from "./db/types";
+import { buildInternalReportContext } from "./detectors/internalReport";
+import { generateInternalReport } from "./generators/internalReport";
+import { evolutionManager } from "./senders/whatsappEvolution";
+import { getEngineConfig, logConversation } from "./db/supabase";
 
 /**
  * Rate limit check: don't exceed max messages per user per day.
@@ -159,4 +163,64 @@ export async function runWeeklyReport(): Promise<void> {
   logger.info({ count: opportunities.length }, "Weekly report opportunities to send");
 
   await processAll(opportunities);
+}
+
+/** Splits a long report into WhatsApp-sized chunks on paragraph boundaries (~3500 chars). */
+function splitForWhatsapp(text: string, max = 3500): string[] {
+  if (text.length <= max) return [text];
+  const chunks: string[] = [];
+  let cur = "";
+  for (const para of text.split("\n")) {
+    if ((cur + "\n" + para).length > max && cur) { chunks.push(cur); cur = para; }
+    else cur = cur ? `${cur}\n${para}` : para;
+  }
+  if (cur) chunks.push(cur);
+  return chunks;
+}
+
+/**
+ * Internal staff report — builds the per-student + summary context for the configured program(s),
+ * generates the report, and posts it to the internal control group. dryRun returns the text
+ * without sending. Reads engine_config: internal_report_programs, internal_report_group_jid.
+ */
+export async function runInternalReport(opts?: { dryRun?: boolean }): Promise<{ ok: boolean; text: string; sentTo?: string; students: number }> {
+  logger.info({ dryRun: opts?.dryRun ?? false }, "Running internal report");
+
+  let programs: string[] = ["fia-agentica"];
+  try {
+    const raw = await getEngineConfig("internal_report_programs");
+    if (raw) { const p = JSON.parse(raw); if (Array.isArray(p) && p.length) programs = p.map(String); }
+  } catch { /* keep default */ }
+
+  const ctx = await buildInternalReportContext(programs);
+  const text = await generateInternalReport(ctx);
+
+  if (opts?.dryRun) return { ok: true, text, students: ctx.totals.students };
+
+  const groupJid = await getEngineConfig("internal_report_group_jid");
+  if (!groupJid) {
+    if (config.engine.notifyPhone) {
+      await evolutionManager.sendMessage(config.engine.notifyPhone, `[Reporte interno — sin grupo configurado]\n\n${text}`);
+    }
+    logger.warn("Internal report: no internal_report_group_jid configured");
+    return { ok: false, text, students: ctx.totals.students };
+  }
+
+  const chunks = splitForWhatsapp(text);
+  let allSent = true;
+  for (const c of chunks) {
+    const res = await evolutionManager.sendMessage(groupJid, c);
+    if (!res.success) allSent = false;
+  }
+
+  await logConversation({
+    direction: "out",
+    kind: "internal_report",
+    body: text,
+    status: allSent ? "sent" : "failed",
+    metadata: { group_jid: groupJid, students: ctx.totals.students, programs },
+  });
+
+  logger.info({ groupJid, students: ctx.totals.students, sent: allSent }, "Internal report processed");
+  return { ok: allSent, text, sentTo: groupJid, students: ctx.totals.students };
 }

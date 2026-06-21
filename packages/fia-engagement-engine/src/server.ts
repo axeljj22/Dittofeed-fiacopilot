@@ -300,6 +300,26 @@ async function handleManualTrigger(
 }
 
 /**
+ * POST /api/trigger/internal-report — run the internal staff report now (admin only).
+ * Body: { dryRun?: true } → returns the generated text without sending to the group.
+ */
+async function handleInternalReportTrigger(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<void> {
+  if (!requireAdminAuth(req, res)) return;
+  try {
+    const body = await parseBody(req).then((b) => (b ? JSON.parse(b) : {})).catch(() => ({})) as { dryRun?: boolean };
+    const { runInternalReport } = await import("./orchestrator");
+    const result = await runInternalReport({ dryRun: body.dryRun === true });
+    jsonResponse(res, 200, { status: body.dryRun ? "preview" : (result.ok ? "sent" : "not_sent"), ...result });
+  } catch (error) {
+    logger.error({ error }, "Internal report trigger failed");
+    jsonResponse(res, 500, { error: "Internal report failed" });
+  }
+}
+
+/**
  * POST /api/test/message — send a test weekly report through the full Sofía pipeline (admin only)
  * Body: { userId: "uuid" }                              (builds the real weekly-report context)
  * Or:   { phone: "5491125120212", text: "hardcoded text" }  (raw send, no AI)
@@ -1063,6 +1083,10 @@ async function router(
 
   if (url === "/api/trigger" && method === "POST") {
     return handleManualTrigger(req, res);
+  }
+
+  if (url === "/api/trigger/internal-report" && method === "POST") {
+    return handleInternalReportTrigger(req, res);
   }
 
   if (url === "/api/test/message" && method === "POST") {

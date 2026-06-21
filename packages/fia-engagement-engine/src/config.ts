@@ -122,6 +122,9 @@ export const config = {
     // Weekly report fallback default — the live value comes from engine_config (report_schedule),
     // editable from the panel. Used only if the DB value can't be read at startup.
     weeklyReport: optionalEnv("CRON_WEEKLY_REPORT", "0 17 * * 0"),
+    // Internal staff report fallback — live value from engine_config (internal_report_schedule).
+    // Default: Sunday 18:00 (timezone applied in the scheduler).
+    internalReport: optionalEnv("CRON_INTERNAL_REPORT", "0 18 * * 0"),
     // Retry failed messages — every 30 minutes (set to "0 0 31 2 *" to disable)
     retryFailed: optionalEnv("CRON_RETRY_FAILED", "*/30 * * * *"),
   },
