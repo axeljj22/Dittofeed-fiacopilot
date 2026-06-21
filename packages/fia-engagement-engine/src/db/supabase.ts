@@ -1055,6 +1055,49 @@ export async function getStaffRoster(): Promise<Array<{ phone10: string; name: s
   return _staffCache;
 }
 
+// ─── Control-group pending actions (Phase 2: command → approve → execute) ───
+export interface PendingAction {
+  id: string;
+  group_jid: string;
+  action_type: string;
+  audience: string | null;
+  program_slug: string | null;
+  target_user_ids: string[];
+  draft_message: string | null;
+  status: string;
+  created_by: string | null;
+  result: Record<string, unknown> | null;
+  created_at: string;
+}
+
+export async function createPendingAction(row: Omit<PendingAction, "id" | "status" | "result" | "created_at">): Promise<string | null> {
+  // Supersede any previous pending action in this group.
+  await getSupabaseClient().from("sofia_pending_actions").update({ status: "cancelled", updated_at: new Date().toISOString() }).eq("group_jid", row.group_jid).eq("status", "pending");
+  const { data, error } = await getSupabaseClient()
+    .from("sofia_pending_actions")
+    .insert({ ...row, target_user_ids: row.target_user_ids, status: "pending" })
+    .select("id")
+    .single();
+  if (error) { logger.warn({ error: error.message }, "createPendingAction failed"); return null; }
+  return (data as { id: string }).id;
+}
+
+export async function getLatestPendingAction(groupJid: string): Promise<PendingAction | null> {
+  const { data } = await getSupabaseClient()
+    .from("sofia_pending_actions")
+    .select("*")
+    .eq("group_jid", groupJid)
+    .eq("status", "pending")
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+  return (data as PendingAction | null) ?? null;
+}
+
+export async function updatePendingAction(id: string, patch: Partial<Pick<PendingAction, "status" | "result">>): Promise<void> {
+  await getSupabaseClient().from("sofia_pending_actions").update({ ...patch, updated_at: new Date().toISOString() }).eq("id", id);
+}
+
 // ─── Sofía groups (group_jid → conversation thread + optional student) ───
 
 export interface SofiaGroup {

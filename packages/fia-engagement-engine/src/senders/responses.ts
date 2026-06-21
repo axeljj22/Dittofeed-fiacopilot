@@ -604,6 +604,20 @@ export async function processGroupMessage(msg: IncomingGroupMessage): Promise<vo
     },
   });
 
+  // Control group: route to the command/approval loop instead of the normal student flow.
+  const { getInternalReportGroupJid } = await import("../config/engineConfigCache");
+  const controlJid = await getInternalReportGroupJid();
+  if (controlJid && groupJid === controlJid) {
+    const { handleControlMessage } = await import("../control/internalActions");
+    const { evolutionManager } = await import("./whatsappEvolution");
+    const reply = await handleControlMessage({ groupJid, text, senderRole: senderMember?.role ?? null, mentioned });
+    if (reply) {
+      const res = await evolutionManager.sendMessage(groupJid, reply);
+      await logConversation({ conversation_id: conversationId, direction: "out", kind: "control_reply", body: reply, status: res.success ? "sent" : "failed", metadata: { group_jid: groupJid } });
+    }
+    return;
+  }
+
   // Respond only when mentioned.
   if (!mentioned) return;
   if (groupRateLimited(groupJid)) {

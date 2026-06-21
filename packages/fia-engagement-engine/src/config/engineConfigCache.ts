@@ -240,6 +240,11 @@ export async function getInternalReportSchedule(): Promise<string> {
   return getCachedConfig("internal_report_schedule", INTERNAL_REPORT_SCHEDULE_DEFAULT);
 }
 
+/** JID of the internal control group (where the report + approval loop live). "" if unset. */
+export async function getInternalReportGroupJid(): Promise<string> {
+  return getCachedConfig("internal_report_group_jid", "");
+}
+
 // ─── Tracking link base (domain for /r/{id} click-redirects, editable from the panel) ───
 // Default = the engine's own URL (current behavior). Flip to https://fiacopilot.com once the
 // FC app serves the /r/[id] redirect, so users never see the engine domain in their messages.
