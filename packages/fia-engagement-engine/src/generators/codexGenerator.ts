@@ -147,13 +147,49 @@ function parseSSEText(sseBody: string): string | null {
   return result.trim() || null;
 }
 
+/**
+ * Fallback generator via the OpenAI Chat Completions API (uses OPENAI_API_KEY). Kicks in when
+ * Codex (ChatGPT OAuth) is unavailable/expired, so Sofía never goes silent. Returns null if no
+ * key or on failure (caller then tries its own next fallback / template).
+ */
+async function generateWithOpenAIChat(
+  systemPrompt: string,
+  userMessage: string,
+  history: Array<{ role: "user" | "assistant"; content: string }> = [],
+): Promise<string | null> {
+  if (!config.openai.apiKey) return null;
+  try {
+    const messages = [
+      { role: "system", content: systemPrompt },
+      ...history.map((m) => ({ role: m.role, content: m.content })),
+      { role: "user", content: userMessage },
+    ];
+    const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${config.openai.apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ model: config.openai.chatModel, messages, max_tokens: 600, temperature: 0.7 }),
+    });
+    if (!resp.ok) {
+      logger.warn({ status: resp.status, body: (await resp.text()).slice(0, 200) }, "OpenAI chat fallback failed");
+      return null;
+    }
+    const data = (await resp.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    const text = data.choices?.[0]?.message?.content?.trim();
+    if (text) logger.info("Generated via OpenAI chat fallback (Codex unavailable)");
+    return text || null;
+  } catch (error) {
+    logger.warn({ error: (error as Error).message }, "OpenAI chat fallback error");
+    return null;
+  }
+}
+
 export async function generateWithCodexConversation(
   systemPrompt: string,
   history: Array<{ role: "user" | "assistant"; content: string }>,
   newMessage: string,
 ): Promise<string | null> {
   const auth = await getValidAuth();
-  if (!auth) return null;
+  if (!auth) return generateWithOpenAIChat(systemPrompt, newMessage, history);
 
   const headers: Record<string, string> = {
     Authorization: `Bearer ${auth.tokens.access_token}`,
@@ -186,20 +222,20 @@ export async function generateWithCodexConversation(
 
     if (!resp.ok) {
       const text = await resp.text();
-      logger.error({ status: resp.status, body: text.slice(0, 300) }, "Codex conversation API error");
-      return null;
+      logger.error({ status: resp.status, body: text.slice(0, 300) }, "Codex conversation API error — OpenAI fallback");
+      return generateWithOpenAIChat(systemPrompt, newMessage, history);
     }
 
     const sseText = await resp.text();
     const text = parseSSEText(sseText);
     if (!text) {
-      logger.error({ preview: sseText.slice(0, 200) }, "No text in Codex conversation SSE response");
-      return null;
+      logger.error({ preview: sseText.slice(0, 200) }, "No text in Codex conversation SSE response — OpenAI fallback");
+      return generateWithOpenAIChat(systemPrompt, newMessage, history);
     }
     return text;
   } catch (error) {
-    logger.error({ error }, "Codex conversation API call failed");
-    return null;
+    logger.error({ error }, "Codex conversation API call failed — OpenAI fallback");
+    return generateWithOpenAIChat(systemPrompt, newMessage, history);
   }
 }
 
@@ -209,8 +245,8 @@ export async function generateWithCodex(
 ): Promise<string | null> {
   const auth = await getValidAuth();
   if (!auth) {
-    logger.debug("Codex auth not found — skipping");
-    return null;
+    logger.debug("Codex auth not found — OpenAI fallback");
+    return generateWithOpenAIChat(systemPrompt, userMessage);
   }
 
   const headers: Record<string, string> = {
@@ -241,19 +277,19 @@ export async function generateWithCodex(
 
     if (!resp.ok) {
       const text = await resp.text();
-      logger.error({ status: resp.status, body: text.slice(0, 300) }, "Codex API error");
-      return null;
+      logger.error({ status: resp.status, body: text.slice(0, 300) }, "Codex API error — OpenAI fallback");
+      return generateWithOpenAIChat(systemPrompt, userMessage);
     }
 
     const sseText = await resp.text();
     const text = parseSSEText(sseText);
     if (!text) {
-      logger.error({ preview: sseText.slice(0, 200) }, "No text in Codex SSE response");
-      return null;
+      logger.error({ preview: sseText.slice(0, 200) }, "No text in Codex SSE response — OpenAI fallback");
+      return generateWithOpenAIChat(systemPrompt, userMessage);
     }
     return text;
   } catch (error) {
-    logger.error({ error }, "Codex API call failed");
-    return null;
+    logger.error({ error }, "Codex API call failed — OpenAI fallback");
+    return generateWithOpenAIChat(systemPrompt, userMessage);
   }
 }

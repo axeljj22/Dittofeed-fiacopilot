@@ -39,6 +39,8 @@ export const config = {
     transcribeApiKey: optionalEnv("OPENAI_WHISPER_API_KEY", "") || optionalEnv("OPENAI_API_KEY", ""),
     transcribeModel: optionalEnv("OPENAI_TRANSCRIBE_MODEL", "whisper-1"),
     maxAudioSeconds: parseInt(optionalEnv("MAX_AUDIO_SECONDS", "300"), 10),
+    // Chat model used as the generation fallback when Codex (ChatGPT OAuth) is down/expired.
+    chatModel: optionalEnv("OPENAI_CHAT_MODEL", "gpt-4o-mini"),
   },
 
   // Codex OAuth — message generation via ChatGPT Plus (replaces Anthropic)
