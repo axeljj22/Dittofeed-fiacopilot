@@ -541,7 +541,7 @@ DIAGNÓSTICO:
 
 BÓVEDA:
 ${vaultContext}${formatKnowledge(knowledge)}${formatCapsuleContent(capsuleHits)}${profile?.preferences?.['sofia_notes'] ? `\n\nCONTEXTO ESPECIAL DE ESTA CONVERSACIÓN:\n${profile.preferences['sofia_notes'] as string}` : ""}`.trim();
-      void logKnowledgeQuery({ userId, query: incomingText, knowledge, capsuleHits, source: "dm" });
+      void logKnowledgeQuery({ userId, query: incomingText, knowledge, capsuleHits, source: "dm", asker: profile?.name ?? null });
     } else {
       const [profile, capsuleProgress, capsules, knowledge, capsuleHits] = await Promise.all([
         getProfileWithWhatsapp(userId),
@@ -567,7 +567,7 @@ ${vaultContext}${formatKnowledge(knowledge)}${formatCapsuleContent(capsuleHits)}
       // Knowledge base + capsule chunks injected on EVERY turn — most content questions
       // come mid-conversation; without this Sofía answers "no tengo esa info".
       userContext = `PERFIL: ${profile?.name ?? "desconocido"} (${profile?.company_name ?? "—"}) · ${completedCount}${capsulaSuffix}${inProgressCapsule ? ` · cursando ${inProgressCapsule.capsule_number}${inProgressTitle ? `: ${inProgressTitle}` : ""}` : ""}${facts}${formatKnowledge(knowledge)}${formatCapsuleContent(capsuleHits)}`;
-      void logKnowledgeQuery({ userId, query: incomingText, knowledge, capsuleHits, source: "dm" });
+      void logKnowledgeQuery({ userId, query: incomingText, knowledge, capsuleHits, source: "dm", asker: profile?.name ?? null });
     }
 
     // Save user message AFTER deciding cold-start (so history.length is accurate above)
@@ -781,7 +781,7 @@ export async function generateGroupReply(opts: {
       searchKnowledge(incomingText, programSlugs),
       searchCapsuleContent(incomingText, programSlugs),
     ]);
-    void logKnowledgeQuery({ userId: contextUserId, conversationId, query: incomingText, knowledge, capsuleHits, source: "group" });
+    void logKnowledgeQuery({ userId: contextUserId, conversationId, query: incomingText, knowledge, capsuleHits, source: "group", asker: senderName });
 
     let profileCtx = "";
     if (contextUserId) {

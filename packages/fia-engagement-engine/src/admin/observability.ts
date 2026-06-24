@@ -11,6 +11,7 @@ export function getObservabilityHtml(): string {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <title>Observabilidad — FIA Engine</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -59,6 +60,11 @@ export function getObservabilityHtml(): string {
     .msg.out { background: #1e1f4e; margin-left: auto; }
     .msg .meta { font-size: 10px; color: #6b7280; margin-top: 4px; }
     #muted { color: #4b5563; padding: 30px; text-align: center; }
+    @media (max-width: 480px) {
+      .topbar { flex-wrap: wrap; gap: 8px; padding: 10px 16px; }
+      .topbar .right { margin-left: 0; width: 100%; justify-content: flex-end; }
+      .container { padding: 16px; }
+    }
   </style>
 </head>
 <body>
@@ -126,10 +132,10 @@ export function getObservabilityHtml(): string {
         const { data } = await resp.json();
         if (!data || !data.length) { document.getElementById('gaps').innerHTML = '<div id="muted">Sin gaps en el período: Sofía respondió todo con la base. 🎉</div>'; return; }
         document.getElementById('gaps').innerHTML =
-          '<table><thead><tr><th>Pregunta</th><th>Origen</th><th>Mejor similitud</th><th>Fecha</th></tr></thead><tbody>' +
+          '<table><thead><tr><th>Pregunta</th><th>Quién</th><th>Origen</th><th>Mejor similitud</th><th>Fecha</th></tr></thead><tbody>' +
           data.map(function(r){
             var sim = (r.bestSimilarity == null) ? '—' : Number(r.bestSimilarity).toFixed(2);
-            return '<tr><td>' + esc(r.query) + '</td><td>' + esc(r.source || '—') + '</td><td>' + sim + '</td><td>' + new Date(r.createdAt).toLocaleString('es-AR') + '</td></tr>';
+            return '<tr><td>' + esc(r.query) + '</td><td>' + esc(r.asker || '—') + '</td><td>' + esc(r.source || '—') + '</td><td>' + sim + '</td><td>' + new Date(r.createdAt).toLocaleString('es-AR') + '</td></tr>';
           }).join('') + '</tbody></table>';
       } catch (e) { document.getElementById('gaps').innerHTML = '<div id="muted">Error cargando gaps</div>'; }
     }

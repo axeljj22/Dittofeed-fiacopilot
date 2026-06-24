@@ -1547,7 +1547,7 @@ export async function searchCapsuleContent(
   const results = await Promise.all(
     targets.map(async (t) => ({
       sourceName: t.name,
-      chunks: await matchCapsuleChunks(embedding, t.pathId, 0.4, 5),
+      chunks: await matchCapsuleChunks(embedding, t.pathId, 0.4, 8),
     })),
   );
   return results.filter((r) => r.chunks.length > 0);
@@ -1561,7 +1561,7 @@ export function formatCapsuleContent(hits: CapsuleSourceHit[]): string {
   if (hits.length === 0) return "";
   const sections = hits.map((hit) => {
     const chunkLines = hit.chunks
-      .map((c) => `  [${c.capsule_title}] ${c.content.slice(0, 600).trim()}`)
+      .map((c) => `  [${c.capsule_title}] ${c.content.slice(0, 900).trim()}`)
       .join("\n");
     return `${hit.sourceName}:\n${chunkLines}`;
   });
@@ -1576,6 +1576,7 @@ export interface KnowledgeQueryRow {
   bestSimilarity: number | null;
   topSlug: string | null;
   source: string | null;
+  asker: string | null;
   createdAt: string;
 }
 
@@ -1591,6 +1592,7 @@ export async function logKnowledgeQuery(opts: {
   knowledge: KnowledgeEntry[];
   capsuleHits: CapsuleSourceHit[];
   source: "dm" | "group";
+  asker?: string | null;
 }): Promise<void> {
   try {
     const q = (opts.query ?? "").trim();
@@ -1610,6 +1612,7 @@ export async function logKnowledgeQuery(opts: {
       body: q.slice(0, 500),
       metadata: {
         source: opts.source,
+        asker: opts.asker ?? null,
         kb_grounded: grounded,
         kb_best_similarity: Math.round(bestSimilarity * 1000) / 1000,
         kb_top_slug: topSlug,
@@ -1649,6 +1652,7 @@ export async function getKnowledgeQueries(days: number, onlyGaps: boolean): Prom
         bestSimilarity: typeof m["kb_best_similarity"] === "number" ? (m["kb_best_similarity"] as number) : null,
         topSlug: (m["kb_top_slug"] as string | null) ?? null,
         source: (m["source"] as string | null) ?? null,
+        asker: (m["asker"] as string | null) ?? null,
         createdAt: r.created_at as string,
       };
     });
