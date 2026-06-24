@@ -488,7 +488,7 @@ export async function generateInboundReply(
           getLeadScoreForUser(userId),
           getAssessmentForUser(userId),
           searchKnowledge(incomingText, programSlugs),
-          searchCapsuleContent(incomingText),
+          searchCapsuleContent(incomingText, programSlugs),
         ]);
 
       const completedCount = capsuleProgress.filter((p) => p.status === "completed").length;
@@ -548,7 +548,7 @@ ${vaultContext}${formatKnowledge(knowledge)}${formatCapsuleContent(capsuleHits)}
         getCapsuleProgressForUser(userId),
         getCapsulesCached(),
         searchKnowledge(incomingText, programSlugs),
-        searchCapsuleContent(incomingText),
+        searchCapsuleContent(incomingText, programSlugs),
       ]);
       const completedCount = capsuleProgress.filter((p) => p.status === "completed").length;
       const inProgressCapsule = capsuleProgress.find((p) => p.status === "in_progress");
@@ -779,7 +779,7 @@ export async function generateGroupReply(opts: {
     const [sofiaPrompt, knowledge, capsuleHits] = await Promise.all([
       getSofiaSystemPrompt(),
       searchKnowledge(incomingText, programSlugs),
-      searchCapsuleContent(incomingText),
+      searchCapsuleContent(incomingText, programSlugs),
     ]);
     void logKnowledgeQuery({ userId: contextUserId, conversationId, query: incomingText, knowledge, capsuleHits, source: "group" });
 

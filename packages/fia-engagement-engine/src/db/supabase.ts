@@ -1523,44 +1523,33 @@ export interface CapsuleSourceHit {
  * Only handles match_capsule_chunks sources — knowledge_base stays with searchKnowledge().
  * Returns [] gracefully when embeddings or RPCs are unavailable.
  */
-export async function searchCapsuleContent(query: string): Promise<CapsuleSourceHit[]> {
+export async function searchCapsuleContent(
+  query: string,
+  programSlugs?: string[] | null,
+): Promise<CapsuleSourceHit[]> {
   const q = (query ?? "").trim();
   if (!q) return [];
 
   const embedding = await embedText(q);
   if (!embedding) return [];
 
-  const [routedSources, allSources] = await Promise.all([
-    matchDataSources(embedding),
-    getAllDataSources(),
-  ]);
-
-  // DataSourceResult extends DataSource — use base type so both routed and fallback work
-  let capsuleSources: DataSource[] = routedSources.filter((s) => s.query_method === "match_capsule_chunks");
-
-  // Fallback: routing scored below threshold → search ALL active capsule sources.
-  // The chunk similarity threshold still filters irrelevant content, so only the
-  // program that actually covers the query will return chunks.
-  if (capsuleSources.length === 0) {
-    capsuleSources = allSources.filter((s) => s.query_method === "match_capsule_chunks");
-    if (capsuleSources.length > 0) {
-      logger.debug({ query: q, fallbackCount: capsuleSources.length }, "capsule routing miss → fallback to all sources");
-    }
+  // Search the capsule chunks DIRECTLY (chunk-level similarity is reliable). Scope to the user's
+  // program path(s) when known; otherwise search all tracks (p_path_id=null). This avoids the
+  // fragile "route by data-source name" step, which discarded valid hits whose terms (skills,
+  // claude.md, n8n) didn't resemble the generic source name.
+  let targets: Array<{ pathId: string | null; name: string }> = [{ pathId: null, name: "Contenido del programa" }];
+  if (programSlugs && programSlugs.length) {
+    const paths = await getLearningPaths();
+    const matched = paths.filter((p) => p.program_slug && programSlugs.includes(p.program_slug));
+    if (matched.length) targets = matched.map((p) => ({ pathId: p.id, name: p.name }));
   }
 
-  if (capsuleSources.length === 0) return [];
-
   const results = await Promise.all(
-    capsuleSources.map(async (source) => {
-      const params = source.default_params ?? {};
-      const pathId = (params["p_path_id"] as string | undefined) ?? null;
-      const threshold = (params["match_threshold"] as number | undefined) ?? 0.4;
-      const count = (params["match_count"] as number | undefined) ?? 5;
-      const chunks = await matchCapsuleChunks(embedding, pathId, threshold, count);
-      return { sourceName: source.name, chunks };
-    }),
+    targets.map(async (t) => ({
+      sourceName: t.name,
+      chunks: await matchCapsuleChunks(embedding, t.pathId, 0.4, 5),
+    })),
   );
-
   return results.filter((r) => r.chunks.length > 0);
 }
 
