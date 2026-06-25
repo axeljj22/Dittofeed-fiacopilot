@@ -1565,7 +1565,7 @@ export function formatCapsuleContent(hits: CapsuleSourceHit[]): string {
       .join("\n");
     return `${hit.sourceName}:\n${chunkLines}`;
   });
-  return `\n\nCONTENIDO DEL PROGRAMA (usa esto para responder preguntas sobre las clases o cápsulas):\n${sections.join("\n\n")}`;
+  return `\n\nCONTENIDO DEL PROGRAMA (son transcripciones de las clases: lenguaje hablado, a veces fragmentado o cortado a media frase). Si esto cubre lo que preguntan, SINTETIZÁ una respuesta clara y concreta a partir de acá — no hace falta que esté textual, uní las piezas. Solo respondé que no tenés la info si acá realmente no está el tema:\n${sections.join("\n\n")}`;
 }
 
 // ─── Knowledge-gap analytics (what students ask vs. what we can answer) ──────
