@@ -32,7 +32,13 @@ import {
   searchCapsuleContent,
   formatCapsuleContent,
   logKnowledgeQuery,
+  isStaffUser,
 } from "../db/supabase";
+
+/** Appended to Sofía's system prompt when the asker is internal staff (admin/coach/owner). */
+const STAFF_MODE_ADDENDUM = `
+
+[MODO EQUIPO] Estás hablando con un miembro del equipo/dueño de FIA, NO con un alumno. Intentá responder con lo que tengas: el contenido del programa de arriba + tu conocimiento general. NUNCA derives "al equipo" ni digas "no tengo esa info, te paso con el equipo" — ellos SON el equipo. Si no estás 100% segura, dá igual tu mejor respuesta y aclará en una línea el nivel de certeza o qué te falta, pero intentá siempre.`;
 import type { UserSegment, KnowledgeEntry } from "../db/supabase";
 import type { EngagementOpportunity, VaultOutput, AssessmentSubmission } from "../db/types";
 import type { WeeklyReportContext } from "../detectors/weeklyReport";
@@ -466,7 +472,9 @@ export async function generateInboundReply(
   isAudio = false,
 ): Promise<string | null> {
   try {
-    const sofiaPrompt = await getSofiaSystemPrompt();
+    // Staff (admin/coach/owner) get "team mode": attempt with what's available, never defer to "el equipo".
+    const staffMode = await isStaffUser(userId);
+    const sofiaPrompt = (await getSofiaSystemPrompt()) + (staffMode ? STAFF_MODE_ADDENDUM : "");
     // Scope knowledge retrieval to the user's program(s) (+ global). Empty → global only.
     const programSlugs = segment.enrolledPrograms.map((p) => p.slug).filter(Boolean);
 
@@ -769,18 +777,21 @@ export async function generateGroupReply(opts: {
   contextUserId: string | null;
   segment: UserSegment | null;
   senderName: string;
+  senderRole?: string | null;
   incomingText: string;
   groupHistory: Array<{ direction: string; body: string; name: string }>;
   conversationId?: string;
 }): Promise<string | null> {
-  const { contextUserId, segment, senderName, incomingText, groupHistory, conversationId } = opts;
+  const { contextUserId, segment, senderName, senderRole, incomingText, groupHistory, conversationId } = opts;
   try {
     const programSlugs = segment?.enrolledPrograms.map((p) => p.slug).filter(Boolean) ?? null;
-    const [sofiaPrompt, knowledge, capsuleHits] = await Promise.all([
+    const staffMode = senderRole === "superadmin" || senderRole === "coach" || senderRole === "staff";
+    const [sofiaPromptBase, knowledge, capsuleHits] = await Promise.all([
       getSofiaSystemPrompt(),
       searchKnowledge(incomingText, programSlugs),
       searchCapsuleContent(incomingText, programSlugs),
     ]);
+    const sofiaPrompt = sofiaPromptBase + (staffMode ? STAFF_MODE_ADDENDUM : "");
     void logKnowledgeQuery({ userId: contextUserId, conversationId, query: incomingText, knowledge, capsuleHits, source: "group", asker: senderName });
 
     let profileCtx = "";

@@ -630,7 +630,7 @@ export async function processGroupMessage(msg: IncomingGroupMessage): Promise<vo
   const segment = contextUserId ? await getUserSegment(contextUserId) : null;
   const groupHistory = conversationId ? await getGroupHistory(conversationId, 12) : [];
 
-  const reply = await generateGroupReply({ contextUserId, segment, senderName, incomingText: text, groupHistory, conversationId });
+  const reply = await generateGroupReply({ contextUserId, segment, senderName, senderRole: senderMember?.role ?? null, incomingText: text, groupHistory, conversationId });
   if (!reply) {
     logger.warn({ groupJid }, "No group reply generated — staying silent");
     return;

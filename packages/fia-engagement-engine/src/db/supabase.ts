@@ -1098,6 +1098,21 @@ export async function updatePendingAction(id: string, patch: Partial<Pick<Pendin
   await getSupabaseClient().from("sofia_pending_actions").update({ ...patch, updated_at: new Date().toISOString() }).eq("id", id);
 }
 
+/** True if the user is internal staff (admin/coach) — used to switch Sofía into "team mode". */
+export async function isStaffUser(userId: string): Promise<boolean> {
+  try {
+    const { data } = await getSupabaseClient()
+      .from("profiles")
+      .select("is_admin, is_coach")
+      .eq("id", userId)
+      .maybeSingle();
+    const p = (data ?? {}) as { is_admin?: boolean; is_coach?: boolean };
+    return Boolean(p.is_admin || p.is_coach);
+  } catch {
+    return false;
+  }
+}
+
 // ─── Sofía groups (group_jid → conversation thread + optional student) ───
 
 export interface SofiaGroup {

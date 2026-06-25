@@ -14,6 +14,7 @@ import {
   getLatestPendingAction,
   updatePendingAction,
   logConversation,
+  getEngineConfig,
   type PendingAction,
 } from "../db/supabase";
 import { buildInternalReportContext } from "../detectors/internalReport";
@@ -117,6 +118,36 @@ async function executeAction(action: PendingAction, groupJid: string): Promise<s
   return `✅ Enviado a *${sent}* alumno(s)${failed ? ` · ${failed} no se pudieron enviar` : ""}.`;
 }
 
+async function getControlPrograms(): Promise<string[]> {
+  try {
+    const raw = await getEngineConfig("internal_report_programs");
+    if (raw) { const p = JSON.parse(raw); if (Array.isArray(p) && p.length) return p.map(String); }
+  } catch { /* default */ }
+  return ["fia-agentica"];
+}
+
+/** Classifies a control-group message: "accion" (send to students) vs "consulta" (data/analytics). */
+async function classifyControlIntent(text: string): Promise<"accion" | "consulta"> {
+  // Fast-path: clear send verbs → action.
+  if (/\b(mand[aá]|envi[aá]|record[aá]|escrib[ií]|avis[aá]|notific[aá]|contact[aá])\b/.test(norm(text))) return "accion";
+  const sys = "Clasificá el mensaje del equipo de FIA en UNA sola palabra: 'accion' si pide ENVIAR/mandar un mensaje a alumnos; 'consulta' si es una pregunta o pedido de datos/análisis sobre los alumnos. Respondé solo: accion o consulta.";
+  const r = await generateWithCodex(sys, text).catch(() => null);
+  return norm(r || "").includes("accion") ? "accion" : "consulta";
+}
+
+/** Answers a data/analytics question about students using the report context (read-only). */
+async function answerControlQuery(question: string, programSlugs: string[]): Promise<string> {
+  const ctx = await buildInternalReportContext(programSlugs);
+  const t = ctx.totals;
+  const rows = ctx.all
+    .map((s) => `${s.name} | ${s.status} | cápsulas:${s.completedTotal} (+${s.completedThisWeek} esta sem) | ${s.daysInactive < 0 ? "sin actividad" : s.daysInactive + "d inactivo"} | score:${s.score ?? "-"} | grupo:${s.groupMsgs7d} msj`)
+    .join("\n");
+  const data = `TOTALES: ${t.students} alumnos · ${t.activos} activos · ${t.inactivos} inactivos · ${t.sinActividad} sin arrancar · ${t.graduados} graduados.\n\nALUMNOS (nombre | estado | cápsulas(+esta semana) | inactividad | score | actividad en su grupo):\n${rows}`;
+  const sys = "Sos el analista de FIA hablando con el equipo. Te paso la tabla de alumnos y una pregunta. Respondé concreto y accionable SOLO con estos datos (rankings, listas, conteos). Español rioplatense, formato WhatsApp (negrita con *). Si piden un dato que NO está en la tabla, aclaralo en una línea y ofrecé lo más cercano que sí tengas. No inventes.";
+  const r = await generateWithCodex(sys, `${data}\n\nPREGUNTA DEL EQUIPO: ${question}`).catch(() => null);
+  return r || "No pude armar el análisis ahora, probá de nuevo en un momento.";
+}
+
 /**
  * Entry point for messages in the control group. Returns a reply to post, or null to stay silent.
  * Only staff (superadmin/coach) drive it; only superadmin can approve execution.
@@ -140,6 +171,16 @@ export async function handleControlMessage(opts: {
 
   // New command or refinement: needs to be directed at Sofía (tagged/named) or a change to a pending plan
   if (!mentioned && !(pending && isChangeRequest(text))) return null;
+
+  // If it's a fresh tagged message (not refining a pending plan), it may be a DATA QUERY rather
+  // than an action. Classify and answer analytics directly; otherwise fall through to the action loop.
+  const refining = Boolean(pending && isChangeRequest(text));
+  if (mentioned && !refining) {
+    const intent = await classifyControlIntent(text);
+    if (intent === "consulta") {
+      return answerControlQuery(text, await getControlPrograms());
+    }
+  }
 
   const programSlug = (pending?.program_slug) || "fia-agentica";
   const interp = await interpretCommand(text, pending ?? null);
