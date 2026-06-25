@@ -74,6 +74,10 @@ export async function buildInternalReportContext(programSlugs: string[]): Promis
   const snapshots: StudentSnapshot[] = [];
   for (const userId of userIds) {
     const profile = profiles.get(userId);
+    // Exclude internal staff (admin/coach, e.g. Axel & Lautaro) — they enroll to test but aren't
+    // students. Keeps them out of the report, analytics and action recipients.
+    const pf = (profile ?? {}) as { is_admin?: boolean; is_coach?: boolean };
+    if (pf.is_admin || pf.is_coach) continue;
     const progress = progressMap.get(userId) ?? [];
     const completedTotal = progress.filter((p) => p.status === "completed").length;
     const completedThisWeek = progress.filter((p) => p.status === "completed" && p.completed_at && p.completed_at >= weekAgoIso).length;
