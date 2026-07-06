@@ -24,7 +24,7 @@ export const config = {
   // Claude API — message generation (optional: falls back to templates)
   anthropic: {
     apiKey: optionalEnv("ANTHROPIC_API_KEY", ""),
-    model: optionalEnv("ANTHROPIC_MODEL", "claude-sonnet-4-20250514"),
+    model: optionalEnv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001"),
     maxTokens: parseInt(optionalEnv("ANTHROPIC_MAX_TOKENS", "1024"), 10),
   },
 
@@ -129,6 +129,9 @@ export const config = {
     internalReport: optionalEnv("CRON_INTERNAL_REPORT", "0 18 * * 0"),
     // Retry failed messages — every 30 minutes (set to "0 0 31 2 *" to disable)
     retryFailed: optionalEnv("CRON_RETRY_FAILED", "*/30 * * * *"),
+    // Poll for new FIA Agéntica self-paced purchases → alert the internal group.
+    // Every 10 minutes (low volume; set to "0 0 31 2 *" to disable).
+    agenticaAlerts: optionalEnv("CRON_AGENTICA_ALERTS", "*/10 * * * *"),
   },
 
   // Classify inbound conversations (AI labeling for the observability dashboard) — daily 6 AM
