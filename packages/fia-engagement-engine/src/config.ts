@@ -43,6 +43,13 @@ export const config = {
     chatModel: optionalEnv("OPENAI_CHAT_MODEL", "gpt-4o-mini"),
   },
 
+  // Google Gemini — message generation (3rd fallback after Codex + Claude)
+  gemini: {
+    apiKey: optionalEnv("GEMINI_API_KEY", ""),
+    model: optionalEnv("GEMINI_MODEL", "gemini-2.0-flash-lite"),
+    maxTokens: parseInt(optionalEnv("GEMINI_MAX_TOKENS", "400"), 10),
+  },
+
   // Codex OAuth — message generation via ChatGPT Plus (replaces Anthropic)
   codex: {
     // Path to ~/.codex/auth.json created by `npx @openai/codex login`

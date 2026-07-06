@@ -49,7 +49,7 @@ export interface GeneratedMessage {
   journeyName: string;
   deepLink: string;
   /** Which path produced the text — surfaced to the conversation log for observability. */
-  source?: "codex" | "claude" | "template";
+  source?: "codex" | "claude" | "gemini" | "template";
   truncated?: boolean;
 }
 
@@ -214,7 +214,38 @@ async function generateWithClaude(
   }
 }
 
-/** Deterministic fallback when both AI providers are unavailable. */
+async function generateWithGemini(
+  systemPrompt: string,
+  userMessage: string,
+): Promise<string | null> {
+  try {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${config.gemini.model}:generateContent?key=${config.gemini.apiKey}`;
+    const body = {
+      system_instruction: { parts: [{ text: systemPrompt }] },
+      contents: [{ role: "user", parts: [{ text: userMessage }] }],
+      generationConfig: { maxOutputTokens: config.gemini.maxTokens },
+    };
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      logger.warn({ status: res.status }, "Gemini API error");
+      return null;
+    }
+    const json = (await res.json()) as {
+      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+    };
+    const text = json.candidates?.[0]?.content?.parts?.[0]?.text?.trim() ?? null;
+    return text || null;
+  } catch (error) {
+    logger.error({ error }, "generateWithGemini threw");
+    return null;
+  }
+}
+
+/** Deterministic fallback when all AI providers are unavailable. */
 async function generateWeeklyFallback(
   opportunity: EngagementOpportunity,
 ): Promise<GeneratedMessage> {
@@ -425,6 +456,10 @@ export function detectBusySignal(text: string): number {
 const useClaudeAI =
   config.anthropic.apiKey !== "placeholder" &&
   config.anthropic.apiKey !== "";
+
+const useGeminiAI =
+  config.gemini.apiKey !== "placeholder" &&
+  config.gemini.apiKey !== "";
 
 function resolveSegmentInfo(segment: UserSegment): { name: string; objective: string } {
   if (segment.isFiaEmpresas) {
@@ -648,6 +683,12 @@ ${vaultContext}${formatKnowledge(knowledge)}${formatCapsuleContent(capsuleHits)}
         }
       }
 
+      // 3. Fallback to Gemini
+      if (!reply && useGeminiAI) {
+        reply = await generateWithGemini(sofiaPrompt, fullUserMessage);
+        if (reply) logger.info({ userId }, "Inbound reply generated with Gemini");
+      }
+
       if (!reply) recordAiFailure(userId);
     }
 
@@ -763,7 +804,20 @@ export async function generateMessage(
     }
   }
 
-  // 3. Deterministic fallback
+  // 3. Try Gemini if Claude also unavailable
+  if (useGeminiAI) {
+    const sofiaPromptGemini = await getSofiaSystemPrompt();
+    const geminiText = await generateWithGemini(
+      sofiaPromptGemini,
+      `${journeyPrompt}\n\n${fullContext}\n\nGenera SOLO el texto del mensaje de WhatsApp, sin explicaciones ni prefijos.`,
+    );
+    if (geminiText) {
+      logger.info({ userId: opportunity.userId, journey: opportunity.journeyName, mode: "gemini" }, "Message generated with Gemini");
+      return finalizeMessage({ text: geminiText, journeyName: opportunity.journeyName, deepLink: opportunity.deepLink, source: "gemini" });
+    }
+  }
+
+  // 4. Deterministic fallback
   logger.info({ userId: opportunity.userId, journey: opportunity.journeyName, mode: "template" }, "Message generated from template");
   return finalizeMessage(await generateWeeklyFallback(opportunity));
 }
@@ -815,7 +869,7 @@ export async function generateGroupReply(opts: {
 
     const userMessage = `${groupInstruction}${profileCtx}${formatKnowledge(knowledge)}${formatCapsuleContent(capsuleHits)}${historyText}\n\nMensaje de ${senderName} (te mencionó): ${incomingText}\n\nRespondé SOLO con el texto del mensaje, sin prefijos ni comillas.`;
 
-    // 1. Codex → 2. Claude
+    // 1. Codex → 2. Claude → 3. Gemini
     let reply = await generateWithCodex(sofiaPrompt, userMessage);
     if (!reply && useClaudeAI) {
       try {
@@ -832,6 +886,10 @@ export async function generateGroupReply(opts: {
       } catch (error) {
         logger.error({ error }, "Claude group reply failed");
       }
+    }
+    if (!reply && useGeminiAI) {
+      reply = await generateWithGemini(sofiaPrompt, userMessage);
+      if (reply) logger.info({}, "Group reply generated with Gemini");
     }
     if (!reply) return null;
     return stripForeignUrls(smartTrim(reply, MAX_MESSAGE_CHARS));
