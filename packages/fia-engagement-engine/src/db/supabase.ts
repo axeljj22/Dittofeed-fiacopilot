@@ -474,6 +474,82 @@ export async function getRecentEventsByType(
   return (data ?? []) as UserEvent[];
 }
 
+// ─── READ: FIA Agéntica self-paced purchases (→ internal-group alert) ───
+
+export interface AgenticaPurchaseEvent {
+  id: string;
+  subscriptionId: string | null;
+  leadId: string;
+  createdAt: string;
+  studentName: string;
+  studentEmail: string | null;
+  studentPhone: string;
+}
+
+/**
+ * New FIA Agéntica self-paced purchases from the shared `events` table, created at/after `sinceIso`.
+ * FIA Copilot writes one row per purchase: event_type='booking_requested', top-level lead_id=user_id,
+ * metadata.type='agentica_selfpaced_purchase', metadata.{subscription_id,student_name,student_email,
+ * student_phone}. Chronological so alerts fire in purchase order. Note: student_phone is un-normalized
+ * (comes straight from profiles.phone) and may be the placeholder '—' when the profile has no phone.
+ */
+export async function getAgenticaPurchaseEvents(sinceIso: string): Promise<AgenticaPurchaseEvent[]> {
+  const { data, error } = await getSupabaseClient()
+    .from("events")
+    .select("id, lead_id, created_at, metadata")
+    .eq("event_type", "booking_requested")
+    .eq("metadata->>type", "agentica_selfpaced_purchase")
+    .gte("created_at", sinceIso)
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    logger.warn({ error: error.message, sinceIso }, "Failed to fetch Agéntica purchase events");
+    return [];
+  }
+
+  return ((data ?? []) as Array<{ id: string; lead_id: string; created_at: string; metadata: Record<string, unknown> | null }>).map((row) => {
+    const m = row.metadata ?? {};
+    return {
+      id: row.id,
+      subscriptionId: (m["subscription_id"] as string | undefined) ?? null,
+      leadId: row.lead_id, // top-level column, NOT metadata
+      createdAt: row.created_at,
+      studentName: String(m["student_name"] ?? "").trim(),
+      studentEmail: (m["student_email"] as string | undefined) ?? null,
+      studentPhone: String(m["student_phone"] ?? "").trim(),
+    };
+  });
+}
+
+/**
+ * Set of dedup tokens (subscription_id AND event_id) already announced to the internal group
+ * (kind='agentica_purchase_alert') at/after `sinceIso`. Collecting both lets the caller dedup by the
+ * stable Stripe subscription_id — which is identical across the two provisioning paths, so a rare
+ * concurrent race that inserts two event rows for the same purchase is caught — with event_id as the
+ * fallback for historical rows that predate subscription_id. Idempotent across restarts.
+ */
+export async function getAlertedPurchaseKeys(sinceIso: string): Promise<Set<string>> {
+  const { data, error } = await getSupabaseClient()
+    .from("sofia_conversations")
+    .select("metadata")
+    .eq("kind", "agentica_purchase_alert")
+    .gte("created_at", sinceIso);
+
+  if (error) {
+    logger.warn({ error: error.message, sinceIso }, "Failed to fetch alerted purchase keys");
+    return new Set();
+  }
+
+  const keys = new Set<string>();
+  for (const row of (data ?? []) as Array<{ metadata: Record<string, unknown> | null }>) {
+    const md = row.metadata ?? {};
+    for (const token of [md["subscription_id"], md["event_id"]]) {
+      if (typeof token === "string" && token) keys.add(token);
+    }
+  }
+  return keys;
+}
+
 // ─── READ: Assessment Submissions ───
 
 export async function getAssessmentForUser(

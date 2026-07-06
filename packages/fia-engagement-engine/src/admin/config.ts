@@ -18,6 +18,7 @@ export function getConfigEditorHtml(_baseUrl: string): string {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <title>Config Editor — FIA Engine</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -139,6 +140,11 @@ export function getConfigEditorHtml(_baseUrl: string): string {
     }
     .nav a:hover {
       text-decoration: underline;
+    }
+    @media (max-width: 600px) {
+      body { padding: 12px; }
+      .container { overflow-x: hidden; }
+      textarea, input[type="text"] { word-break: break-word; }
     }
   </style>
 </head>

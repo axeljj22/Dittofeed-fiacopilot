@@ -15,7 +15,7 @@ import cron from "node-cron";
 import { config } from "./config";
 import { logger } from "./logger";
 import { startServer } from "./server";
-import { runWeeklyReport } from "./orchestrator";
+import { runWeeklyReport, runAgenticaPurchaseAlerts } from "./orchestrator";
 import { retryFailedMessages } from "./senders/whatsapp";
 import { rescheduleWeeklyReport, rescheduleInternalReport } from "./reportScheduler";
 import { classifyRecentConversations } from "./jobs/classifyConversations";
@@ -35,6 +35,16 @@ async function startScheduler(): Promise<void> {
       await retryFailedMessages();
     } catch (error) {
       logger.error({ error }, "Failed message retry cycle failed");
+    }
+  });
+
+  // Poll for new FIA Agéntica self-paced purchases → alert the internal group
+  // (set CRON_AGENTICA_ALERTS to a never-fire expr to disable)
+  cron.schedule(config.cron.agenticaAlerts, async () => {
+    try {
+      await runAgenticaPurchaseAlerts();
+    } catch (error) {
+      logger.error({ error }, "Agéntica purchase-alert cycle failed");
     }
   });
 

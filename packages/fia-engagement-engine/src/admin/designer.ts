@@ -160,6 +160,7 @@ export function getVisualDesignerHtml(): string {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <title>Visual Designer — FIA Engine</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -440,6 +441,21 @@ export function getVisualDesignerHtml(): string {
       color: #9394a5;
     }
     #loading-overlay.hidden { display: none; }
+
+    /* ── Responsive ── */
+    @media (max-width: 900px) {
+      html, body { height: auto; overflow: auto; }
+      body {
+        grid-template-columns: 1fr;
+        grid-template-rows: 48px auto 1fr;
+        height: auto;
+        min-height: 100vh;
+      }
+      .sidebar { max-height: 220px; overflow-y: auto; border-right: none; border-bottom: 1px solid #1e1f2e; }
+      .preview-pane { display: none; }
+      .editor-pane { min-height: 60vh; }
+      .topbar .status-text { display: none; }
+    }
   </style>
 </head>
 <body>

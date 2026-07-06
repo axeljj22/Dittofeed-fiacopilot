@@ -320,6 +320,27 @@ async function handleInternalReportTrigger(
 }
 
 /**
+ * POST /api/trigger/agentica-alerts — poll for new FIA Agéntica self-paced purchases and post the
+ * per-purchase alert to the internal group now (admin only).
+ * Body: { dryRun?: true } → returns candidate purchases + texts without sending or touching the floor.
+ */
+async function handleAgenticaAlertsTrigger(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+): Promise<void> {
+  if (!requireAdminAuth(req, res)) return;
+  try {
+    const body = await parseBody(req).then((b) => (b ? JSON.parse(b) : {})).catch(() => ({})) as { dryRun?: boolean };
+    const { runAgenticaPurchaseAlerts } = await import("./orchestrator");
+    const result = await runAgenticaPurchaseAlerts({ dryRun: body.dryRun === true });
+    jsonResponse(res, 200, { status: body.dryRun ? "preview" : (result.ok ? "processed" : "not_sent"), ...result });
+  } catch (error) {
+    logger.error({ error }, "Agéntica alerts trigger failed");
+    jsonResponse(res, 500, { error: "Agéntica alerts failed" });
+  }
+}
+
+/**
  * POST /api/test/message — send a test weekly report through the full Sofía pipeline (admin only)
  * Body: { userId: "uuid" }                              (builds the real weekly-report context)
  * Or:   { phone: "5491125120212", text: "hardcoded text" }  (raw send, no AI)
@@ -1089,6 +1110,10 @@ async function router(
     return handleInternalReportTrigger(req, res);
   }
 
+  if (url === "/api/trigger/agentica-alerts" && method === "POST") {
+    return handleAgenticaAlertsTrigger(req, res);
+  }
+
   if (url === "/api/test/message" && method === "POST") {
     return handleTestMessage(req, res);
   }
@@ -1159,6 +1184,7 @@ async function router(
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <title>Codex OAuth — FIA Engine</title>
 <style>
 body{font-family:system-ui,sans-serif;background:#0a0b10;color:#e4e4ef;display:flex;flex-direction:column;align-items:center;padding:40px 16px;margin:0;gap:20px}
@@ -1613,6 +1639,17 @@ function showMsg(text, ok) {
       logger.error({ error }, "Failed to serve visual designer");
       jsonResponse(res, 500, { error: "Failed to load visual designer" });
     }
+    return;
+  }
+
+  // Favicon
+  if (url === "/favicon.svg" && method === "GET") {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <rect width="32" height="32" rx="8" fill="#6366f1"/>
+  <text x="16" y="22" text-anchor="middle" font-family="system-ui,-apple-system,sans-serif" font-size="18" font-weight="700" fill="#fff">S</text>
+</svg>`;
+    res.writeHead(200, { "Content-Type": "image/svg+xml; charset=utf-8", "Cache-Control": "public,max-age=86400" });
+    res.end(svg);
     return;
   }
 

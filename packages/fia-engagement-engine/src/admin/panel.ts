@@ -10,6 +10,7 @@ export function getAdminPanelHtml(_baseUrl: string): string {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <title>FIA Copilot — Data Dashboard</title>
 <style>
 :root{--bg:#0a0b10;--bg2:#12131a;--bg3:#1a1b25;--bg4:#24253a;--border:#2a2b3d;--text:#e4e4ef;--text2:#9394a5;--text3:#5d5e72;--accent:#6366f1;--accent2:#818cf8;--green:#22c55e;--green2:#4ade80;--yellow:#eab308;--yellow2:#facc15;--red:#ef4444;--red2:#f87171;--blue:#3b82f6;--blue2:#60a5fa;--purple:#a855f7;--purple2:#c084fc;--cyan:#06b6d4;--orange:#f97316}
