@@ -180,6 +180,12 @@ export interface CapsuleChunkResult {
   capsule_id: string;
   capsule_slug: string;
   capsule_title: string;
+  capsule_number: number | null;
+  capsule_week: number | null;
+  class_date: string | null;
+  capsule_summary: string | null;
+  sofia_notes: string | null;
+  skool_url: string | null;
   chunk_index: number;
   content: string;
   similarity: number;

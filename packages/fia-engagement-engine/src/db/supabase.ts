@@ -1646,17 +1646,47 @@ export async function searchCapsuleContent(
 
 /**
  * Formats capsule source hits for prompt injection.
- * Keeps each chunk under 600 chars to stay within context budget.
+ * Groups chunks by capsule so metadata (week, summary, resources) appears once per class,
+ * followed by the relevant transcript fragments. This lets Sofía answer "which class/week"
+ * and reference structured info like skool_url or sofia_notes alongside raw transcript context.
  */
 export function formatCapsuleContent(hits: CapsuleSourceHit[]): string {
   if (hits.length === 0) return "";
+
   const sections = hits.map((hit) => {
-    const chunkLines = hit.chunks
-      .map((c) => `  [${c.capsule_title}] ${c.content.slice(0, 900).trim()}`)
-      .join("\n");
-    return `${hit.sourceName}:\n${chunkLines}`;
+    // Group chunks by capsule so metadata is shown once per capsule
+    const byCapsuled = new Map<string, { meta: CapsuleChunkResult; chunks: CapsuleChunkResult[] }>();
+    for (const c of hit.chunks) {
+      const entry = byCapsuled.get(c.capsule_id);
+      if (entry) {
+        entry.chunks.push(c);
+      } else {
+        byCapsuled.set(c.capsule_id, { meta: c, chunks: [c] });
+      }
+    }
+
+    const capsuleBlocks = Array.from(byCapsuled.values()).map(({ meta, chunks }) => {
+      const weekLabel = meta.capsule_week != null ? `Semana ${meta.capsule_week}` : null;
+      const classLabel = meta.capsule_number != null ? `Clase ${meta.capsule_number}` : null;
+      const header = [weekLabel, classLabel, meta.capsule_title].filter(Boolean).join(" / ");
+
+      const lines: string[] = [`📚 ${header}`];
+      if (meta.capsule_summary) lines.push(`Resumen: ${meta.capsule_summary.slice(0, 500).trim()}`);
+      if (meta.sofia_notes) lines.push(`Notas: ${meta.sofia_notes.trim()}`);
+      if (meta.skool_url) lines.push(`Link de la clase: ${meta.skool_url}`);
+
+      lines.push("Fragmentos de transcripción:");
+      for (const chunk of chunks) {
+        lines.push(`  • ${chunk.content.slice(0, 600).trim()}`);
+      }
+
+      return lines.join("\n");
+    });
+
+    return `${hit.sourceName}:\n${capsuleBlocks.join("\n\n")}`;
   });
-  return `\n\nCONTENIDO DEL PROGRAMA (son transcripciones de las clases: lenguaje hablado, a veces fragmentado o cortado a media frase). Si esto cubre lo que preguntan, SINTETIZÁ una respuesta clara y concreta a partir de acá — no hace falta que esté textual, uní las piezas. Solo respondé que no tenés la info si acá realmente no está el tema:\n${sections.join("\n\n")}`;
+
+  return `\n\nCONTENIDO DEL PROGRAMA (clases con semana, resumen y fragmentos de transcripción). Usá esto para responder con precisión: indicá semana, número de clase y link si los tenés. Los fragmentos son audio transcripto — a veces cortados —, sintetizá la respuesta en lugar de copiar textual:\n${sections.join("\n\n")}`;
 }
 
 // ─── Knowledge-gap analytics (what students ask vs. what we can answer) ──────
