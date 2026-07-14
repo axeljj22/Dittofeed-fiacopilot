@@ -44,6 +44,28 @@ export const SKILL_DEFAULTS: Skill[] = [
     ],
   },
   {
+    key: "accountability",
+    name: "Seguimiento",
+    routerDescription:
+      "La persona pregunta por SU avance/progreso o pide seguimiento: cómo viene, cuánto lleva, si está atrasada, qué le falta, en qué semana/cápsula está. Foco en motivación y próxima acción, no en explicar el contenido.",
+    exampleUtterances: [
+      "cómo vengo",
+      "cuánto me falta",
+      "estoy muy atrasado?",
+      "en qué cápsula voy",
+      "cuántas cápsulas llevo",
+    ],
+    contextLoaders: ["profile", "progress"],
+    tools: [],
+    requiresProgram: false,
+    priority: 105,
+    keywords: [
+      "cómo vengo", "como vengo", "cómo voy", "como voy", "mi progreso", "cuánto me falta", "cuanto me falta",
+      "cuánto llevo", "cuanto llevo", "en qué voy", "en que voy", "avance", "atrasado", "atrasada", "me atrasé",
+      "me atrase", "al día", "al dia", "cuántas cápsulas", "cuantas capsulas", "qué me falta", "que me falta",
+    ],
+  },
+  {
     key: "admin_support",
     name: "Soporte administrativo",
     routerDescription:

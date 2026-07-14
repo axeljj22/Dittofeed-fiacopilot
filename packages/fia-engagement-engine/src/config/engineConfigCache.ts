@@ -235,9 +235,14 @@ export const SKILL_PROMPT_ADMIN_SUPPORT_DEFAULT = `
 
 [SKILL: SOPORTE ADMINISTRATIVO] La persona tiene una duda OPERATIVA/administrativa (accesos, links, grabaciones, calendario, pagos, Skool, login), NO de contenido. Si en el contexto hay LINKS ADMINISTRATIVOS, respondé con el que corresponda. No expliques contenido de la formación. Si no tenés el dato o el link a mano, decilo y derivá a soporte o al coach. Breve y concreta.`;
 
+export const SKILL_PROMPT_ACCOUNTABILITY_DEFAULT = `
+
+[SKILL: SEGUIMIENTO] La persona pregunta por su avance o pide seguimiento. Usá los datos de progreso del contexto (cápsulas completadas, en curso, próxima). Devolvé una lectura corta y motivadora de cómo viene y UNA próxima acción concreta (la cápsula/paso que sigue). No la regañes si está atrasada: invitala con calidez. No expliques el contenido en sí, enfocate en el avance.`;
+
 export const SKILL_PROMPT_DEFAULTS: Record<string, string> = {
   general: SKILL_PROMPT_GENERAL_DEFAULT,
   content_qa: SKILL_PROMPT_CONTENT_QA_DEFAULT,
+  accountability: SKILL_PROMPT_ACCOUNTABILITY_DEFAULT,
   admin_support: SKILL_PROMPT_ADMIN_SUPPORT_DEFAULT,
 };
 
@@ -330,6 +335,7 @@ export const CONFIG_DEFAULTS: Record<string, string> = {
   "journey_prompt.reporte_semanal": JOURNEY_PROMPTS_DEFAULT["reporte_semanal"] ?? "",
   "skill_prompt.general": SKILL_PROMPT_GENERAL_DEFAULT,
   "skill_prompt.content_qa": SKILL_PROMPT_CONTENT_QA_DEFAULT,
+  "skill_prompt.accountability": SKILL_PROMPT_ACCOUNTABILITY_DEFAULT,
   "skill_prompt.admin_support": SKILL_PROMPT_ADMIN_SUPPORT_DEFAULT,
   activation_welcome_message: ACTIVATION_WELCOME_DEFAULT,
   opt_out_footer: OPT_OUT_FOOTER_DEFAULT,

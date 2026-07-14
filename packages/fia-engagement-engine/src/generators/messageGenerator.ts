@@ -17,6 +17,7 @@ import {
 } from "../config/engineConfigCache";
 import { resolveProgramProfile } from "../config/programProfiles";
 import { routeSkill } from "../router/skillRouter";
+import { resolveActiveTrack } from "../router/activeTrack";
 import {
   getProfileWithWhatsapp,
   getVaultOutputsForUser,
@@ -481,19 +482,24 @@ export async function generateInboundReply(
     // Staff (admin/coach/owner) get "team mode": attempt with what's available, never defer to "el equipo".
     const staffMode = await isStaffUser(userId);
     const sofiaPromptBase = (await getSofiaSystemPrompt()) + (staffMode ? STAFF_MODE_ADDENDUM : "");
-    // Resolve the user's program profile (data-driven; falls back to v1 texts if the table is absent).
-    const programProfile = await resolveProgramProfile(segment, null);
-    // Scope knowledge retrieval: the profile's knowledge_scope (if set) isolates content to that
-    // program; otherwise use every program the user is enrolled in (+ global). Empty → global only.
-    const programSlugs = segment.enrolledPrograms.map((p) => p.slug).filter(Boolean);
-    const scopedSlugs = programProfile.knowledgeScope.length > 0 ? programProfile.knowledgeScope : programSlugs;
 
     const [history, state] = await Promise.all([
       getConversationHistory(userId, 10),
       getConversationState(userId),
     ]);
-
     const isColdStart = history.length === 0;
+
+    // Active track (Phase 2): for multi-program students, one active track scopes content isolation.
+    const enrolledSlugs = segment.enrolledPrograms.map((p) => p.slug).filter(Boolean);
+    const persistedSetAtMs = state.activeProgramSetAt ? new Date(state.activeProgramSetAt).getTime() : null;
+    const persistedActive = resolveActiveTrack({
+      persistedSlug: state.activeProgramSlug, persistedSetAtMs, enrolledSlugs, inferredSlug: null, nowMs: Date.now(),
+    }).activeSlug;
+
+    // Resolve the program profile (data-driven; falls back to v1 texts if the table is absent).
+    let programProfile = await resolveProgramProfile(segment, persistedActive);
+    // Scope knowledge retrieval to the profile's knowledge_scope (isolation) or all enrolled programs.
+    let scopedSlugs = programProfile.knowledgeScope.length > 0 ? programProfile.knowledgeScope : enrolledSlugs;
 
     // Skill routing (Phase 1) — flag-gated. OFF → 'general' (empty addendum) → byte-for-byte v1.
     const recentTurns = history.slice(-3).map((m) => `${m.role === "user" ? "usuario" : "sofía"}: ${m.content}`).join("\n");
@@ -502,6 +508,17 @@ export async function generateInboundReply(
       recentTurns,
       enabledSkills: programProfile.enabledSkills,
     });
+
+    // If the router inferred a different valid program, switch the active track this turn + persist it.
+    const track = resolveActiveTrack({
+      persistedSlug: state.activeProgramSlug, persistedSetAtMs, enrolledSlugs, inferredSlug: routed.programSlug, nowMs: Date.now(),
+    });
+    if (track.changed && track.activeSlug) {
+      programProfile = await resolveProgramProfile(segment, track.activeSlug);
+      scopedSlugs = programProfile.knowledgeScope.length > 0 ? programProfile.knowledgeScope : enrolledSlugs;
+      void upsertConversationState(userId, { activeProgramSlug: track.activeSlug, activeProgramSetAt: new Date().toISOString() });
+    }
+
     const skillAddendum = routed.skill !== "general" ? await getSkillPromptAddendum(routed.skill) : "";
     const sofiaPrompt = sofiaPromptBase + skillAddendum;
     const adminLinksCtx = routed.skill === "admin_support" ? formatAdminLinks(programProfile.adminLinks) : "";

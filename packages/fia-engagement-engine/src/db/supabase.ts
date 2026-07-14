@@ -2059,6 +2059,10 @@ export interface ConversationState {
   pausedUntil: string | null;
   /** Recent AI reply timestamps (for hourly rate limiting). Stored as ISO array, max 20. */
   aiReplyTimestamps: string[];
+  /** Active program track for multi-program users (Phase 2). Scopes content isolation. */
+  activeProgramSlug: string | null;
+  /** ISO timestamp the active track was last set (used for TTL). */
+  activeProgramSetAt: string | null;
 }
 
 export async function getConversationState(userId: string): Promise<ConversationState> {
@@ -2074,13 +2078,15 @@ export async function getConversationState(userId: string): Promise<Conversation
     userFacts: [],
     pausedUntil: null,
     aiReplyTimestamps: [],
+    activeProgramSlug: null,
+    activeProgramSetAt: null,
   };
   if (!data) return empty;
 
   const row = data as {
     consecutive_low_engagement: number;
     last_ai_reply_at: string | null;
-    metadata?: { userFacts?: string[]; pausedUntil?: string | null; aiReplyTimestamps?: string[] } | null;
+    metadata?: { userFacts?: string[]; pausedUntil?: string | null; aiReplyTimestamps?: string[]; activeProgramSlug?: string | null; activeProgramSetAt?: string | null } | null;
   };
   return {
     consecutiveLowEngagement: row.consecutive_low_engagement,
@@ -2088,6 +2094,8 @@ export async function getConversationState(userId: string): Promise<Conversation
     userFacts: row.metadata?.userFacts ?? [],
     pausedUntil: row.metadata?.pausedUntil ?? null,
     aiReplyTimestamps: row.metadata?.aiReplyTimestamps ?? [],
+    activeProgramSlug: row.metadata?.activeProgramSlug ?? null,
+    activeProgramSetAt: row.metadata?.activeProgramSetAt ?? null,
   };
 }
 
@@ -2106,6 +2114,8 @@ export async function upsertConversationState(
     userFacts?: string[];
     pausedUntil?: string | null;
     aiReplyTimestamps?: string[];
+    activeProgramSlug?: string | null;
+    activeProgramSetAt?: string | null;
   },
 ): Promise<void> {
   // Serialize per user — chain new updates after the previous one finishes.
@@ -2116,7 +2126,10 @@ export async function upsertConversationState(
     if (updates.lastAiReplyAt !== undefined) row["last_ai_reply_at"] = updates.lastAiReplyAt;
 
     // Merge metadata fields — read existing first to avoid clobbering OTHER metadata fields
-    if (updates.userFacts !== undefined || updates.pausedUntil !== undefined || updates.aiReplyTimestamps !== undefined) {
+    if (
+      updates.userFacts !== undefined || updates.pausedUntil !== undefined || updates.aiReplyTimestamps !== undefined ||
+      updates.activeProgramSlug !== undefined || updates.activeProgramSetAt !== undefined
+    ) {
       const { data: existing } = await getSupabaseClient()
         .from("wa_conversation_state")
         .select("metadata")
@@ -2128,6 +2141,8 @@ export async function upsertConversationState(
         ...(updates.userFacts !== undefined ? { userFacts: updates.userFacts } : {}),
         ...(updates.pausedUntil !== undefined ? { pausedUntil: updates.pausedUntil } : {}),
         ...(updates.aiReplyTimestamps !== undefined ? { aiReplyTimestamps: updates.aiReplyTimestamps } : {}),
+        ...(updates.activeProgramSlug !== undefined ? { activeProgramSlug: updates.activeProgramSlug } : {}),
+        ...(updates.activeProgramSetAt !== undefined ? { activeProgramSetAt: updates.activeProgramSetAt } : {}),
       };
     }
 
