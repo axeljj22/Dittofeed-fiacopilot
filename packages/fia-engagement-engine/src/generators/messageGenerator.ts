@@ -21,6 +21,7 @@ import { routeSkill } from "../router/skillRouter";
 import { resolveActiveTrack } from "../router/activeTrack";
 import { runToolLoop } from "./toolLoop";
 import { getSkillToolKeys } from "../skills/registry";
+import { toolsAllowedForPhone } from "../tools/toolsGate";
 import {
   getProfileWithWhatsapp,
   getVaultOutputsForUser,
@@ -480,6 +481,7 @@ export async function generateInboundReply(
   incomingText: string,
   segment: UserSegment,
   isAudio = false,
+  senderPhone = "",
 ): Promise<string | null> {
   try {
     // Staff (admin/coach/owner) get "team mode": attempt with what's available, never defer to "el equipo".
@@ -655,7 +657,8 @@ ${vaultContext}${formatKnowledge(knowledge)}${formatCapsuleContent(capsuleHits)}
       // 0. Tool loop (Phase 3, flag-gated): skills with tools query the DB via Codex tools. Returns
       //    null (→ falls through to plain generation) when tools are off, the skill has none, or Codex
       //    is unavailable, so Sofía never goes silent because of tools.
-      const toolKeys = config.engine.toolsEnabled ? getSkillToolKeys(routed.skill) : [];
+      const toolsOk = toolsAllowedForPhone(config.engine.toolsEnabled, config.engine.toolsWhitelistPhones, senderPhone);
+      const toolKeys = toolsOk ? getSkillToolKeys(routed.skill) : [];
       if (toolKeys.length > 0) {
         reply = await runToolLoop({
           systemPrompt: sofiaPrompt + (await getToolsGroundingAddendum()),

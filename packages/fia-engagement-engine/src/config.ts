@@ -131,6 +131,9 @@ export const config = {
     // tool loop (read-only) instead of plain generation, degrading to context injection on failure.
     // Requires skillsRouterEnabled to have any effect. Flip to "true" to enable.
     toolsEnabled: optionalEnv("SOFIA_TOOLS_ENABLED", "") === "true",
+    // Controlled tool rollout: if set, tool use runs ONLY for these phones (substring match). Empty =
+    // all users (once toolsEnabled). Use to test tools on your own number before going global.
+    toolsWhitelistPhones: optionalEnv("SOFIA_TOOLS_WHITELIST_PHONES", "").split(",").map((p) => p.trim().replace(/\D/g, "")).filter(Boolean),
   },
 
   // Scheduler cron expressions

@@ -378,7 +378,7 @@ export async function processIncomingResponse(
   const segment = await getUserSegment(userId);
 
   // ── 10. Generate AI reply ────────────────────────────────────────────────
-  const aiReply = await generateInboundReply(userId, message.body, segment, message.isAudio ?? false);
+  const aiReply = await generateInboundReply(userId, message.body, segment, message.isAudio ?? false, normalizedFrom);
 
   if (aiReply) {
     action = { ...action, replyText: await wrapLinksWithTracking(aiReply, userId, normalizedFrom) };
