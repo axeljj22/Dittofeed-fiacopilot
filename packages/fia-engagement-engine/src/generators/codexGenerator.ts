@@ -8,6 +8,7 @@
 import fs from "fs";
 import { config } from "../config";
 import { logger } from "../logger";
+import { parseCodexToolEvents, type CodexToolTurn } from "./codexToolParse";
 
 interface CodexAuth {
   auth_mode: string;
@@ -236,6 +237,49 @@ export async function generateWithCodexConversation(
   } catch (error) {
     logger.error({ error }, "Codex conversation API call failed — OpenAI fallback");
     return generateWithOpenAIChat(systemPrompt, newMessage, history);
+  }
+}
+
+/**
+ * Tool-use turn over the Codex Responses API (Sofía 2.0, Phase 3). Sends `input` (message + prior
+ * function_call/output items) plus `tools`, returns the accumulated text + any finalized tool calls.
+ * Returns null when Codex is unavailable or the request fails — the caller then degrades (context
+ * injection or plain generation). Does NOT touch the existing text-only generators.
+ */
+export async function generateWithCodexTools(
+  systemPrompt: string,
+  input: Array<Record<string, unknown>>,
+  tools: Array<Record<string, unknown>>,
+): Promise<CodexToolTurn | null> {
+  const auth = await getValidAuth();
+  if (!auth) return null;
+
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${auth.tokens.access_token}`,
+    "Content-Type": "application/json",
+    "ChatGPT-Account-Id": auth.tokens.account_id,
+  };
+
+  const body = {
+    model: config.codex.model,
+    stream: true,
+    store: false,
+    instructions: systemPrompt,
+    input,
+    tools,
+    tool_choice: "auto",
+  };
+
+  try {
+    const resp = await fetch(CODEX_ENDPOINT, { method: "POST", headers, body: JSON.stringify(body) });
+    if (!resp.ok) {
+      logger.error({ status: resp.status, body: (await resp.text()).slice(0, 300) }, "Codex tools API error");
+      return null;
+    }
+    return parseCodexToolEvents(await resp.text());
+  } catch (error) {
+    logger.error({ error }, "Codex tools API call failed");
+    return null;
   }
 }
 

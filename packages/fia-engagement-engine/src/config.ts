@@ -127,6 +127,10 @@ export const config = {
     // Sofía 2.0 — skill router. OFF (default) = byte-for-byte v1 behavior; ON routes inbound DMs to a
     // skill (general | content_qa | admin_support) and logs the decision. Flip to "true" to enable.
     skillsRouterEnabled: optionalEnv("SKILLS_ROUTER_ENABLED", "") === "true",
+    // Sofía 2.0 — tool use (Phase 3). OFF (default) = no tools. ON lets skills with tools run the Codex
+    // tool loop (read-only) instead of plain generation, degrading to context injection on failure.
+    // Requires skillsRouterEnabled to have any effect. Flip to "true" to enable.
+    toolsEnabled: optionalEnv("SOFIA_TOOLS_ENABLED", "") === "true",
   },
 
   // Scheduler cron expressions

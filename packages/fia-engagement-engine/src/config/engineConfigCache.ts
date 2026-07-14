@@ -251,6 +251,18 @@ export async function getSkillPromptAddendum(skillKey: string): Promise<string> 
   return getCachedConfig(`skill_prompt.${skillKey}`, SKILL_PROMPT_DEFAULTS[skillKey] ?? "");
 }
 
+// ─── Tool-use grounding (Sofía 2.0, Phase 3) ───
+// Appended to the system prompt ONLY when the tool loop runs. Overrides the default grounding rule
+// that says Sofía can't query the DB — with tools she can. Editable via engine_config.
+
+export const SOFIA_GROUNDING_RULES_TOOLS_DEFAULT = `
+
+[MODO HERRAMIENTAS] Tenés herramientas para consultar en tiempo real (contenido de cápsulas, base de conocimiento, progreso del alumno, links administrativos). Esto REEMPLAZA cualquier regla anterior que diga que no podés consultar la base: acá SÍ podés, usando tus herramientas. Reglas: usá una herramienta cuando necesites un dato que no tengas; si una herramienta no devuelve nada, decilo con naturalidad y no lo inventes; nunca inventes resultados; respondé corto por WhatsApp una vez que tengas la info.`;
+
+export async function getToolsGroundingAddendum(): Promise<string> {
+  return getCachedConfig("sofia_grounding_rules_tools", SOFIA_GROUNDING_RULES_TOOLS_DEFAULT);
+}
+
 const ACTIVATION_WELCOME_DEFAULT = `Hola {{nombre}}, soy Sofía, tu asistente de FIA Copilot 🙋‍♀️
 Ya estoy activa y podés escribirme cuando quieras. Te ayudo con tus cápsulas, con la bóveda, o con cualquier duda del programa.
 Respondé AYUDA si querés ver qué puedo hacer.`;
@@ -337,6 +349,7 @@ export const CONFIG_DEFAULTS: Record<string, string> = {
   "skill_prompt.content_qa": SKILL_PROMPT_CONTENT_QA_DEFAULT,
   "skill_prompt.accountability": SKILL_PROMPT_ACCOUNTABILITY_DEFAULT,
   "skill_prompt.admin_support": SKILL_PROMPT_ADMIN_SUPPORT_DEFAULT,
+  sofia_grounding_rules_tools: SOFIA_GROUNDING_RULES_TOOLS_DEFAULT,
   activation_welcome_message: ACTIVATION_WELCOME_DEFAULT,
   opt_out_footer: OPT_OUT_FOOTER_DEFAULT,
   report_schedule: REPORT_SCHEDULE_DEFAULT,

@@ -14,10 +14,13 @@ import {
   getOptOutFooter,
   getJourneyPrompt,
   getSkillPromptAddendum,
+  getToolsGroundingAddendum,
 } from "../config/engineConfigCache";
 import { resolveProgramProfile } from "../config/programProfiles";
 import { routeSkill } from "../router/skillRouter";
 import { resolveActiveTrack } from "../router/activeTrack";
+import { runToolLoop } from "./toolLoop";
+import { getSkillToolKeys } from "../skills/registry";
 import {
   getProfileWithWhatsapp,
   getVaultOutputsForUser,
@@ -649,8 +652,23 @@ ${vaultContext}${formatKnowledge(knowledge)}${formatCapsuleContent(capsuleHits)}
     if (isInAiCooldown(userId)) {
       logger.warn({ userId }, "AI in cooldown for this user — using fallback without calling provider");
     } else {
+      // 0. Tool loop (Phase 3, flag-gated): skills with tools query the DB via Codex tools. Returns
+      //    null (→ falls through to plain generation) when tools are off, the skill has none, or Codex
+      //    is unavailable, so Sofía never goes silent because of tools.
+      const toolKeys = config.engine.toolsEnabled ? getSkillToolKeys(routed.skill) : [];
+      if (toolKeys.length > 0) {
+        reply = await runToolLoop({
+          systemPrompt: sofiaPrompt + (await getToolsGroundingAddendum()),
+          message: fullUserMessage,
+          history: history as Array<{ role: "user" | "assistant"; content: string }>,
+          toolKeys,
+          ctx: { userId, segment, scopedSlugs, adminLinks: programProfile.adminLinks },
+        });
+        if (reply) logger.info({ userId, skill: routed.skill }, "Inbound reply via Codex tool loop");
+      }
+
       // 1. Try Codex with conversation history
-      reply = await generateWithCodexConversation(
+      if (!reply) reply = await generateWithCodexConversation(
         sofiaPrompt,
         history as Array<{ role: "user" | "assistant"; content: string }>,
         fullUserMessage,

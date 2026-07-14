@@ -34,7 +34,7 @@ export const SKILL_DEFAULTS: Skill[] = [
       "cuál es el entregable de esta semana",
     ],
     contextLoaders: ["profile", "progress", "knowledge_rag", "capsule_rag"],
-    tools: [],
+    tools: ["search_capsules", "search_knowledge"],
     requiresProgram: true,
     priority: 100,
     keywords: [
@@ -56,7 +56,7 @@ export const SKILL_DEFAULTS: Skill[] = [
       "cuántas cápsulas llevo",
     ],
     contextLoaders: ["profile", "progress"],
-    tools: [],
+    tools: ["get_student_progress"],
     requiresProgram: false,
     priority: 105,
     keywords: [
@@ -81,7 +81,7 @@ export const SKILL_DEFAULTS: Skill[] = [
       "dónde está el calendario",
     ],
     contextLoaders: ["admin_links"],
-    tools: [],
+    tools: ["get_admin_links"],
     requiresProgram: false,
     priority: 110,
     keywords: [
@@ -106,6 +106,14 @@ function rowToSkill(row: Awaited<ReturnType<typeof getSkillRows>>[number]): Skil
     priority: row.priority ?? 100,
     keywords: Array.isArray(kw) ? kw : [],
   };
+}
+
+/**
+ * Tool keys bound to a skill. Sourced from the IN-CODE registry (tools require a code handler, so this
+ * is authoritative regardless of DB rows). Empty for unknown skills or skills without tools.
+ */
+export function getSkillToolKeys(skillKey: string): string[] {
+  return SKILL_DEFAULTS.find((s) => s.key === skillKey)?.tools ?? [];
 }
 
 /**
