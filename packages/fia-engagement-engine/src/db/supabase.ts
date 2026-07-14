@@ -15,6 +15,7 @@ import type {
   EngagementLogInsert,
   EngagementLog,
   SofiaFeature,
+  SofiaProgramProfile,
   DataSource,
   DataSourceResult,
   CapsuleChunkResult,
@@ -226,6 +227,54 @@ async function _buildPathsFromFallbackConfig(): Promise<LearningPath[]> {
 export function invalidatePathsCache(): void {
   _pathsCache = null;
   _pathsCacheExpiry = 0;
+}
+
+// ─── READ: Sofía program profiles (Phase 0, data-driven audience resolution) ───
+
+let _programProfilesCache: SofiaProgramProfile[] | null = null;
+let _programProfilesCacheExpiry = 0;
+const PROGRAM_PROFILES_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * Returns all active program profiles ordered by routing_priority desc.
+ * Cached 5 min. Returns [] (never throws) when the sofia_program_profiles table is absent —
+ * callers then fall back to hardcoded defaults (zero-downtime; deploy code before the migration).
+ */
+export async function getProgramProfiles(): Promise<SofiaProgramProfile[]> {
+  if (_programProfilesCache && Date.now() < _programProfilesCacheExpiry) return _programProfilesCache;
+  try {
+    const { data, error } = await getSupabaseClient()
+      .from("sofia_program_profiles")
+      .select("*")
+      .eq("is_active", true)
+      .order("routing_priority", { ascending: false });
+    if (error) {
+      logger.warn({ error: error.message }, "sofia_program_profiles unavailable — using hardcoded fallback");
+      _programProfilesCache = [];
+    } else {
+      _programProfilesCache = (data ?? []) as SofiaProgramProfile[];
+    }
+  } catch (error) {
+    logger.warn({ error: (error as Error).message }, "getProgramProfiles threw — using hardcoded fallback");
+    _programProfilesCache = [];
+  }
+  _programProfilesCacheExpiry = Date.now() + PROGRAM_PROFILES_TTL_MS;
+  return _programProfilesCache;
+}
+
+/** Upserts a program profile (admin editor). Invalidates the cache. */
+export async function upsertProgramProfile(profile: Partial<SofiaProgramProfile> & { profile_key: string }): Promise<void> {
+  await getSupabaseClient()
+    .from("sofia_program_profiles")
+    .upsert({ ...profile, updated_at: new Date().toISOString() }, { onConflict: "profile_key" });
+  _programProfilesCache = null;
+  _programProfilesCacheExpiry = 0;
+}
+
+/** Invalidates the in-memory program-profiles cache. */
+export function invalidateProgramProfilesCache(): void {
+  _programProfilesCache = null;
+  _programProfilesCacheExpiry = 0;
 }
 
 /**
@@ -1874,7 +1923,7 @@ export interface UserSegment {
   planId: string | null;
   trialOfferExpiresAt: string | null;
   /** Data-driven list of programs the user is enrolled in (from user_program_access + learning_paths). */
-  enrolledPrograms: Array<{ slug: string; name: string; pathId: string; isPaid: boolean; enrolledAt: string | null }>;
+  enrolledPrograms: Array<{ slug: string; name: string; pathId: string; isPaid: boolean; enrolledAt: string | null; tier: string | null; cohortStartDate: string | null }>;
 }
 
 /**
@@ -1886,7 +1935,7 @@ export async function getUserSegment(userId: string): Promise<UserSegment> {
   const [programAccess, subscription, profile, paths] = await Promise.all([
     getSupabaseClient()
       .from("user_program_access")
-      .select("program_slug, granted_at")
+      .select("program_slug, granted_at, tier, cohort_start_date")
       .eq("user_id", userId)
       .eq("status", "active"),
     getSupabaseClient()
@@ -1905,9 +1954,11 @@ export async function getUserSegment(userId: string): Promise<UserSegment> {
     getLearningPaths(),
   ]);
 
-  const accessRows = (programAccess.data ?? []) as Array<{ program_slug: string; granted_at: string | null }>;
+  const accessRows = (programAccess.data ?? []) as Array<{ program_slug: string; granted_at: string | null; tier: string | null; cohort_start_date: string | null }>;
   const slugs = accessRows.map((r) => r.program_slug);
   const grantedBySlug = new Map(accessRows.map((r) => [r.program_slug, r.granted_at ?? null]));
+  const tierBySlug = new Map(accessRows.map((r) => [r.program_slug, r.tier ?? null]));
+  const cohortStartBySlug = new Map(accessRows.map((r) => [r.program_slug, r.cohort_start_date ?? null]));
   const sub = subscription.data as { plan_id: string; status: string } | null;
   const prof = profile.data as { org_role: string | null; trial_offer_expires_at: string | null } | null;
 
@@ -1915,7 +1966,7 @@ export async function getUserSegment(userId: string): Promise<UserSegment> {
   const hasOrgEmpresasAccess = prof?.org_role === "sponsor" || prof?.org_role === "implementador";
 
   // Build enrolledPrograms by crossing slugs with learning_paths (data-driven)
-  const enrolledPrograms: Array<{ slug: string; name: string; pathId: string; isPaid: boolean; enrolledAt: string | null }> = [];
+  const enrolledPrograms: UserSegment["enrolledPrograms"] = [];
   for (const path of paths) {
     if (!path.program_slug) continue; // skip free method (no slug needed)
     const hasAccess = slugs.includes(path.program_slug) ||
@@ -1927,6 +1978,8 @@ export async function getUserSegment(userId: string): Promise<UserSegment> {
         pathId: path.id,
         isPaid: path.is_paid,
         enrolledAt: grantedBySlug.get(path.program_slug) ?? null,
+        tier: tierBySlug.get(path.program_slug) ?? null,
+        cohortStartDate: cohortStartBySlug.get(path.program_slug) ?? null,
       });
     }
   }

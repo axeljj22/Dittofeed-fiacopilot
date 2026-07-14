@@ -1422,6 +1422,40 @@ function showMsg(text, ok) {
     return;
   }
 
+  // ─── Program profiles (Sofía 2.0 — data-driven audience resolution) ───
+
+  // GET /api/program-profiles — list all profiles (admin only)
+  if (url === "/api/program-profiles" && method === "GET") {
+    if (!requireAdminAuth(req, res)) return;
+    try {
+      const { getProgramProfiles } = await import("./db/supabase");
+      const data = await getProgramProfiles();
+      jsonResponse(res, 200, { data });
+    } catch (error) {
+      logger.error({ error }, "Failed to fetch program profiles");
+      jsonResponse(res, 500, { error: "Failed to fetch program profiles" });
+    }
+    return;
+  }
+
+  // PUT /api/program-profiles/:key — upsert one profile (admin only). :key may contain ':' (url-encoded).
+  const putProfileMatch = url.match(/^\/api\/program-profiles\/([a-zA-Z0-9._:%-]+)$/);
+  if (putProfileMatch && method === "PUT") {
+    if (!requireAdminAuth(req, res)) return;
+    try {
+      const body = JSON.parse(await parseBody(req)) as Partial<import("./db/types").SofiaProgramProfile>;
+      const profile_key = decodeURIComponent(putProfileMatch[1]);
+      const { upsertProgramProfile } = await import("./db/supabase");
+      await upsertProgramProfile({ ...body, profile_key });
+      logger.info({ profile_key }, "Program profile upserted via API");
+      jsonResponse(res, 200, { status: "updated", profile_key });
+    } catch (error) {
+      logger.error({ error }, "Failed to upsert program profile");
+      jsonResponse(res, 500, { error: "Failed to upsert program profile" });
+    }
+    return;
+  }
+
   // ─── Weekly report cadence (replaces the old broadcast scheduler) ───
 
   // GET /api/schedule — current weekly-report cron expression (admin only)

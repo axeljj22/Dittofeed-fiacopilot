@@ -219,6 +219,27 @@ export interface SofiaFeatureInsert {
   metadata?: Record<string, unknown>;
 }
 
+// ─── Sofia program profiles (data-driven audience resolution, Phase 0) ───
+
+export interface SofiaProgramProfile {
+  id: string;
+  profile_key: string;              // 'fia-agentica:selfpaced' | 'fia-ventas' | '__pro__' | '__lead__'
+  program_slug: string | null;      // null for synthetic profiles
+  tier_match: string | null;        // null = any tier; else 'standard'|'vip'|'selfpaced'|...
+  display_name: string;
+  sofia_objective: string;
+  tone_overrides: string | null;
+  catalog_blurb: string | null;
+  knowledge_scope: string[];        // slugs for RAG; [] = use the user's enrolledPrograms
+  enabled_skills: string[];
+  enabled_journeys: string[];
+  admin_links: Record<string, string>;
+  support_level: "standard" | "vip" | "one_on_one";
+  routing_priority: number;
+  is_active: boolean;
+  updated_at: string;
+}
+
 // ─── Detector output ───
 
 /** Only one journey remains: the personalized weekly report. */

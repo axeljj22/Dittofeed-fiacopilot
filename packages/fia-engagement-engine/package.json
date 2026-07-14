@@ -6,7 +6,8 @@
     "build": "tsc --build tsconfig.build.json",
     "start": "ts-node src/index.ts",
     "check": "tsc --build",
-    "dev": "ts-node --watch src/index.ts"
+    "dev": "ts-node --watch src/index.ts",
+    "test": "node ../../node_modules/typescript/bin/tsc --build tsconfig.build.json && node test/verify-phase0.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.30.0",

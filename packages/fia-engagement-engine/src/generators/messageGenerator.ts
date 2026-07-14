@@ -14,6 +14,7 @@ import {
   getOptOutFooter,
   getJourneyPrompt,
 } from "../config/engineConfigCache";
+import { resolveProgramProfile } from "../config/programProfiles";
 import {
   getProfileWithWhatsapp,
   getVaultOutputsForUser,
@@ -461,45 +462,6 @@ const useGeminiAI =
   config.gemini.apiKey !== "placeholder" &&
   config.gemini.apiKey !== "";
 
-function resolveSegmentInfo(segment: UserSegment): { name: string; objective: string } {
-  if (segment.isFiaEmpresas) {
-    if (segment.orgRole === "sponsor") {
-      return {
-        name: "FIA Empresas - Sponsor",
-        objective:
-          "El usuario es Sponsor de FIA Empresas (dueño o decisor). Puede preguntarte sobre el progreso de su equipo, los implementadores, o la hoja de ruta. Tu objetivo: mantenerlo informado y motivado. Si pregunta algo técnico de implementación, derivá al equipo.",
-      };
-    }
-    return {
-      name: "FIA Empresas - Implementador",
-      objective:
-        "El usuario está implementando FIA Empresas en su empresa (rol implementador, 4–8h/semana). Tu objetivo: ayudarlo a avanzar en la fase que corresponde, resolver dudas sobre el proceso, guiarlo en documentación de SOPs o creación de asistentes IA. Conocé bien las 3 fases del programa.",
-    };
-  }
-  if (segment.isFiaVentas) {
-    return {
-      name: "FIA Ventas - Alumno",
-      objective:
-        "El usuario es alumno de FIA Ventas. Tu objetivo: ayudarlo a avanzar en las 10 semanas. Conocé bien el contenido de cada semana. Si pregunta sobre contenido, explicalo con las herramientas del programa. Si está atascado en una semana específica, ayudalo a desbloquear.",
-    };
-  }
-  if (segment.isPaid) {
-    return {
-      name: "FIA Copilot Pro",
-      objective:
-        "El usuario tiene plan Pro activo. Tu objetivo: que aproveche los Workers y avance en las cápsulas. Podés guiarlo a la cápsula siguiente, sugerirle el Worker más útil para su situación, o ayudarlo a entender qué construyó en su Bóveda.",
-    };
-  }
-  const trialLine = segment.trialOfferExpiresAt
-    ? ` Si tiene sentido en la conversación, mencioná una vez que tiene una oferta de prueba disponible: ${config.engine.appBaseUrl}/upgrade`
-    : "";
-  return {
-    name: "Lead / Sin plan activo",
-    objective:
-      `El usuario no tiene un plan activo. Tu objetivo: mostrarle el valor de FIA Copilot de forma natural, basándote en su negocio y sus áreas de dolor. No presionés. Si el tema fluye, podés mencionar que las primeras 3 cápsulas son gratis.${trialLine}`,
-  };
-}
-
 export async function generateInboundReply(
   userId: string,
   incomingText: string,
@@ -510,8 +472,12 @@ export async function generateInboundReply(
     // Staff (admin/coach/owner) get "team mode": attempt with what's available, never defer to "el equipo".
     const staffMode = await isStaffUser(userId);
     const sofiaPrompt = (await getSofiaSystemPrompt()) + (staffMode ? STAFF_MODE_ADDENDUM : "");
-    // Scope knowledge retrieval to the user's program(s) (+ global). Empty → global only.
+    // Resolve the user's program profile (data-driven; falls back to v1 texts if the table is absent).
+    const programProfile = await resolveProgramProfile(segment, null);
+    // Scope knowledge retrieval: the profile's knowledge_scope (if set) isolates content to that
+    // program; otherwise use every program the user is enrolled in (+ global). Empty → global only.
     const programSlugs = segment.enrolledPrograms.map((p) => p.slug).filter(Boolean);
+    const scopedSlugs = programProfile.knowledgeScope.length > 0 ? programProfile.knowledgeScope : programSlugs;
 
     const [history, state] = await Promise.all([
       getConversationHistory(userId, 10),
@@ -530,8 +496,8 @@ export async function generateInboundReply(
           getCapsulesCached(),
           getLeadScoreForUser(userId),
           getAssessmentForUser(userId),
-          searchKnowledge(incomingText, programSlugs),
-          searchCapsuleContent(incomingText, programSlugs),
+          searchKnowledge(incomingText, scopedSlugs),
+          searchCapsuleContent(incomingText, scopedSlugs),
         ]);
 
       const completedCount = capsuleProgress.filter((p) => p.status === "completed").length;
@@ -549,7 +515,7 @@ export async function generateInboundReply(
       const painAreas = assessment?.pain_areas ?? [];
       const companySize = resolveCompanySize(assessment);
 
-      const { name: segmentName, objective: segmentObjective } = resolveSegmentInfo(segment);
+      const { name: segmentName, objective: segmentObjective } = { name: programProfile.name, objective: programProfile.objective };
 
       const pathTotalsInbound = await getPathTotals();
       const userPathsInbound = resolveUserPaths(capsuleProgress, pathTotalsInbound);
@@ -590,8 +556,8 @@ ${vaultContext}${formatKnowledge(knowledge)}${formatCapsuleContent(capsuleHits)}
         getProfileWithWhatsapp(userId),
         getCapsuleProgressForUser(userId),
         getCapsulesCached(),
-        searchKnowledge(incomingText, programSlugs),
-        searchCapsuleContent(incomingText, programSlugs),
+        searchKnowledge(incomingText, scopedSlugs),
+        searchCapsuleContent(incomingText, scopedSlugs),
       ]);
       const completedCount = capsuleProgress.filter((p) => p.status === "completed").length;
       const inProgressCapsule = capsuleProgress.find((p) => p.status === "in_progress");
@@ -839,11 +805,13 @@ export async function generateGroupReply(opts: {
   const { contextUserId, segment, senderName, senderRole, incomingText, groupHistory, conversationId } = opts;
   try {
     const programSlugs = segment?.enrolledPrograms.map((p) => p.slug).filter(Boolean) ?? null;
+    const programProfile = segment ? await resolveProgramProfile(segment, null) : null;
+    const scopedSlugs = programProfile && programProfile.knowledgeScope.length > 0 ? programProfile.knowledgeScope : programSlugs;
     const staffMode = senderRole === "superadmin" || senderRole === "coach" || senderRole === "staff";
     const [sofiaPromptBase, knowledge, capsuleHits] = await Promise.all([
       getSofiaSystemPrompt(),
-      searchKnowledge(incomingText, programSlugs),
-      searchCapsuleContent(incomingText, programSlugs),
+      searchKnowledge(incomingText, scopedSlugs),
+      searchCapsuleContent(incomingText, scopedSlugs),
     ]);
     const sofiaPrompt = sofiaPromptBase + (staffMode ? STAFF_MODE_ADDENDUM : "");
     void logKnowledgeQuery({ userId: contextUserId, conversationId, query: incomingText, knowledge, capsuleHits, source: "group", asker: senderName });
@@ -851,11 +819,10 @@ export async function generateGroupReply(opts: {
     let profileCtx = "";
     if (contextUserId) {
       const profile = await getProfileWithWhatsapp(contextUserId);
-      const seg = segment ? resolveSegmentInfo(segment) : null;
       const enrolled = segment && segment.enrolledPrograms.length > 0
         ? ` Programas: ${segment.enrolledPrograms.map((p) => p.name).join(", ")}.`
         : "";
-      profileCtx = `\nALUMNO DEL GRUPO: ${profile?.name ?? "desconocido"}${profile?.company_name ? ` (${profile.company_name})` : ""}.${enrolled}${seg ? ` ${seg.objective}` : ""}`;
+      profileCtx = `\nALUMNO DEL GRUPO: ${profile?.name ?? "desconocido"}${profile?.company_name ? ` (${profile.company_name})` : ""}.${enrolled}${programProfile ? ` ${programProfile.objective}` : ""}`;
     }
 
     const historyText = groupHistory.length > 0
