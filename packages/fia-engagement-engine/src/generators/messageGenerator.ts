@@ -13,8 +13,10 @@ import {
   getSofiaSystemPrompt,
   getOptOutFooter,
   getJourneyPrompt,
+  getSkillPromptAddendum,
 } from "../config/engineConfigCache";
 import { resolveProgramProfile } from "../config/programProfiles";
+import { routeSkill } from "../router/skillRouter";
 import {
   getProfileWithWhatsapp,
   getVaultOutputsForUser,
@@ -462,6 +464,13 @@ const useGeminiAI =
   config.gemini.apiKey !== "placeholder" &&
   config.gemini.apiKey !== "";
 
+/** Formats the program profile's admin links for injection when the admin_support skill is active. */
+function formatAdminLinks(links: Record<string, string>): string {
+  const entries = Object.entries(links ?? {}).filter(([, v]) => v);
+  if (entries.length === 0) return "";
+  return `\n\nLINKS ADMINISTRATIVOS DISPONIBLES (usá el que corresponda):\n${entries.map(([k, v]) => `- ${k}: ${v}`).join("\n")}`;
+}
+
 export async function generateInboundReply(
   userId: string,
   incomingText: string,
@@ -471,7 +480,7 @@ export async function generateInboundReply(
   try {
     // Staff (admin/coach/owner) get "team mode": attempt with what's available, never defer to "el equipo".
     const staffMode = await isStaffUser(userId);
-    const sofiaPrompt = (await getSofiaSystemPrompt()) + (staffMode ? STAFF_MODE_ADDENDUM : "");
+    const sofiaPromptBase = (await getSofiaSystemPrompt()) + (staffMode ? STAFF_MODE_ADDENDUM : "");
     // Resolve the user's program profile (data-driven; falls back to v1 texts if the table is absent).
     const programProfile = await resolveProgramProfile(segment, null);
     // Scope knowledge retrieval: the profile's knowledge_scope (if set) isolates content to that
@@ -485,6 +494,17 @@ export async function generateInboundReply(
     ]);
 
     const isColdStart = history.length === 0;
+
+    // Skill routing (Phase 1) — flag-gated. OFF → 'general' (empty addendum) → byte-for-byte v1.
+    const recentTurns = history.slice(-3).map((m) => `${m.role === "user" ? "usuario" : "sofía"}: ${m.content}`).join("\n");
+    const routed = await routeSkill(incomingText, {
+      enabled: config.engine.skillsRouterEnabled,
+      recentTurns,
+      enabledSkills: programProfile.enabledSkills,
+    });
+    const skillAddendum = routed.skill !== "general" ? await getSkillPromptAddendum(routed.skill) : "";
+    const sofiaPrompt = sofiaPromptBase + skillAddendum;
+    const adminLinksCtx = routed.skill === "admin_support" ? formatAdminLinks(programProfile.adminLinks) : "";
 
     let userContext: string;
     if (isColdStart) {
@@ -605,7 +625,7 @@ ${vaultContext}${formatKnowledge(knowledge)}${formatCapsuleContent(capsuleHits)}
     const newFacts = extractFacts(incomingText);
     const updatedFacts = mergeFacts(state.userFacts, newFacts);
 
-    const fullUserMessage = `${userContext}\n\nMensaje del usuario: ${incomingText}\n\nRespondé SOLO con el texto del mensaje, sin prefijos ni comillas.`;
+    const fullUserMessage = `${userContext}${adminLinksCtx}\n\nMensaje del usuario: ${incomingText}\n\nRespondé SOLO con el texto del mensaje, sin prefijos ni comillas.`;
 
     let reply: string | null = null;
 
@@ -674,7 +694,13 @@ ${vaultContext}${formatKnowledge(knowledge)}${formatCapsuleContent(capsuleHits)}
 
     const finalReply = stripForeignUrls(smartTrim(reply, MAX_MESSAGE_CHARS));
 
-    await appendConversationMessages(userId, [{ role: "assistant", content: finalReply }]);
+    await appendConversationMessages(userId, [{ role: "assistant", content: finalReply }], {
+      skill: routed.skill,
+      confidence: routed.confidence,
+      router_source: routed.source,
+      program_profile: programProfile.profileKey,
+      ...(routed.programSlug ? { program_slug: routed.programSlug } : {}),
+    });
     const newTimestamps = [...recentReplies, new Date().toISOString()].slice(-20);
     await upsertConversationState(userId, {
       userFacts: updatedFacts,
@@ -682,7 +708,7 @@ ${vaultContext}${formatKnowledge(knowledge)}${formatCapsuleContent(capsuleHits)}
       lastAiReplyAt: new Date().toISOString(),
     });
 
-    logger.info({ userId, historyLength: history.length, factsCount: updatedFacts.length, isColdStart }, "Inbound AI reply generated");
+    logger.info({ userId, historyLength: history.length, factsCount: updatedFacts.length, isColdStart, skill: routed.skill, routerSource: routed.source, confidence: routed.confidence }, "Inbound AI reply generated");
     return finalReply;
   } catch (error) {
     logger.error({ error, userId }, "generateInboundReply failed");

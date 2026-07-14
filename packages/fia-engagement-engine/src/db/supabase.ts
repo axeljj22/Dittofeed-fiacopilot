@@ -277,6 +277,58 @@ export function invalidateProgramProfilesCache(): void {
   _programProfilesCacheExpiry = 0;
 }
 
+// ─── READ: Sofía skills (Phase 1, router registry) ───
+
+export interface SofiaSkillRow {
+  key: string;
+  name: string;
+  router_description: string;
+  example_utterances: string[];
+  prompt_config_key: string | null;
+  context_loaders: string[];
+  tools: string[];
+  requires_program: boolean;
+  priority: number;
+  is_active: boolean;
+  metadata: Record<string, unknown>;
+}
+
+let _skillRowsCache: SofiaSkillRow[] | null = null;
+let _skillRowsCacheExpiry = 0;
+const SKILL_ROWS_TTL_MS = 5 * 60 * 1000;
+
+/**
+ * Returns active skill rows ordered by priority desc. Cached 5 min. Returns [] (never throws) when the
+ * sofia_skills table is absent — the router then uses its in-code SKILL_DEFAULTS registry (zero-downtime).
+ */
+export async function getSkillRows(): Promise<SofiaSkillRow[]> {
+  if (_skillRowsCache && Date.now() < _skillRowsCacheExpiry) return _skillRowsCache;
+  try {
+    const { data, error } = await getSupabaseClient()
+      .from("sofia_skills")
+      .select("key, name, router_description, example_utterances, prompt_config_key, context_loaders, tools, requires_program, priority, is_active, metadata")
+      .eq("is_active", true)
+      .order("priority", { ascending: false });
+    if (error) {
+      logger.warn({ error: error.message }, "sofia_skills unavailable — using in-code SKILL_DEFAULTS");
+      _skillRowsCache = [];
+    } else {
+      _skillRowsCache = (data ?? []) as SofiaSkillRow[];
+    }
+  } catch (error) {
+    logger.warn({ error: (error as Error).message }, "getSkillRows threw — using in-code SKILL_DEFAULTS");
+    _skillRowsCache = [];
+  }
+  _skillRowsCacheExpiry = Date.now() + SKILL_ROWS_TTL_MS;
+  return _skillRowsCache;
+}
+
+/** Invalidates the in-memory skill-rows cache. */
+export function invalidateSkillRowsCache(): void {
+  _skillRowsCache = null;
+  _skillRowsCacheExpiry = 0;
+}
+
 /**
  * Builds a map from path_id → { name, total, isPaid, programSlug }
  * by joining all capsules with the paths list.

@@ -221,6 +221,31 @@ export async function getCommandReply(command: string): Promise<string | null> {
   return getCachedConfig(`cmd_reply.${command.toLowerCase()}`, "");
 }
 
+// ─── Skill prompt addenda (Sofía 2.0, Phase 1) ───
+// Appended to the system prompt when the router selects a non-general skill. 'general' is empty so
+// flag-off / general routing is byte-for-byte v1. Editable via engine_config key 'skill_prompt.<key>'.
+
+export const SKILL_PROMPT_GENERAL_DEFAULT = "";
+
+export const SKILL_PROMPT_CONTENT_QA_DEFAULT = `
+
+[SKILL: DUDAS DE CONTENIDO] La persona pregunta por el contenido de SU formación. Respondé SOLO con el material del programa que viene en el contexto (cápsulas/conocimiento). Si el detalle puntual no está en el contexto, decilo con naturalidad y sugerí dónde verlo (la plataforma o el coach) — no lo inventes. Nunca mezcles contenido de otra formación que la persona no esté cursando.`;
+
+export const SKILL_PROMPT_ADMIN_SUPPORT_DEFAULT = `
+
+[SKILL: SOPORTE ADMINISTRATIVO] La persona tiene una duda OPERATIVA/administrativa (accesos, links, grabaciones, calendario, pagos, Skool, login), NO de contenido. Si en el contexto hay LINKS ADMINISTRATIVOS, respondé con el que corresponda. No expliques contenido de la formación. Si no tenés el dato o el link a mano, decilo y derivá a soporte o al coach. Breve y concreta.`;
+
+export const SKILL_PROMPT_DEFAULTS: Record<string, string> = {
+  general: SKILL_PROMPT_GENERAL_DEFAULT,
+  content_qa: SKILL_PROMPT_CONTENT_QA_DEFAULT,
+  admin_support: SKILL_PROMPT_ADMIN_SUPPORT_DEFAULT,
+};
+
+/** The system-prompt addendum for a skill (editable via engine_config 'skill_prompt.<key>'). */
+export async function getSkillPromptAddendum(skillKey: string): Promise<string> {
+  return getCachedConfig(`skill_prompt.${skillKey}`, SKILL_PROMPT_DEFAULTS[skillKey] ?? "");
+}
+
 const ACTIVATION_WELCOME_DEFAULT = `Hola {{nombre}}, soy Sofía, tu asistente de FIA Copilot 🙋‍♀️
 Ya estoy activa y podés escribirme cuando quieras. Te ayudo con tus cápsulas, con la bóveda, o con cualquier duda del programa.
 Respondé AYUDA si querés ver qué puedo hacer.`;
@@ -303,6 +328,9 @@ export const CONFIG_DEFAULTS: Record<string, string> = {
   sofia_programs_catalog: SOFIA_PROGRAMS_CATALOG_DEFAULT,
   sofia_grounding_rules: SOFIA_GROUNDING_RULES_DEFAULT,
   "journey_prompt.reporte_semanal": JOURNEY_PROMPTS_DEFAULT["reporte_semanal"] ?? "",
+  "skill_prompt.general": SKILL_PROMPT_GENERAL_DEFAULT,
+  "skill_prompt.content_qa": SKILL_PROMPT_CONTENT_QA_DEFAULT,
+  "skill_prompt.admin_support": SKILL_PROMPT_ADMIN_SUPPORT_DEFAULT,
   activation_welcome_message: ACTIVATION_WELCOME_DEFAULT,
   opt_out_footer: OPT_OUT_FOOTER_DEFAULT,
   report_schedule: REPORT_SCHEDULE_DEFAULT,

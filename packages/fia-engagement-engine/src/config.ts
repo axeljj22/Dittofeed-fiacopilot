@@ -124,6 +124,9 @@ export const config = {
       .split(",").map((s) => s.trim().toLowerCase()).filter(Boolean),
     // Max group replies per group per hour (anti-loop / anti-spam).
     groupReplyMaxPerHour: parseInt(optionalEnv("GROUP_REPLY_MAX_PER_HOUR", "6"), 10),
+    // Sofía 2.0 — skill router. OFF (default) = byte-for-byte v1 behavior; ON routes inbound DMs to a
+    // skill (general | content_qa | admin_support) and logs the decision. Flip to "true" to enable.
+    skillsRouterEnabled: optionalEnv("SKILLS_ROUTER_ENABLED", "") === "true",
   },
 
   // Scheduler cron expressions
