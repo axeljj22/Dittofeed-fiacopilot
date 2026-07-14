@@ -239,11 +239,16 @@ export const SKILL_PROMPT_ACCOUNTABILITY_DEFAULT = `
 
 [SKILL: SEGUIMIENTO] La persona pregunta por su avance o pide seguimiento. Usá los datos de progreso del contexto (cápsulas completadas, en curso, próxima). Devolvé una lectura corta y motivadora de cómo viene y UNA próxima acción concreta (la cápsula/paso que sigue). No la regañes si está atrasada: invitala con calidez. No expliques el contenido en sí, enfocate en el avance.`;
 
+export const SKILL_PROMPT_SALES_DEFAULT = `
+
+[SKILL: VENTAS] La persona muestra interés en un programa o pregunta cómo sumarse. Tu objetivo: mostrar el valor de forma natural según su negocio y sus dolores, sin presionar. NUNCA des precios ni planes concretos (eso lo maneja el equipo). Si hay interés real de avanzar, usá la herramienta para escalar a un humano (que un asesor lo contacte) en vez de prometer que "alguien lo va a llamar".`;
+
 export const SKILL_PROMPT_DEFAULTS: Record<string, string> = {
   general: SKILL_PROMPT_GENERAL_DEFAULT,
   content_qa: SKILL_PROMPT_CONTENT_QA_DEFAULT,
   accountability: SKILL_PROMPT_ACCOUNTABILITY_DEFAULT,
   admin_support: SKILL_PROMPT_ADMIN_SUPPORT_DEFAULT,
+  sales: SKILL_PROMPT_SALES_DEFAULT,
 };
 
 /** The system-prompt addendum for a skill (editable via engine_config 'skill_prompt.<key>'). */
@@ -349,6 +354,7 @@ export const CONFIG_DEFAULTS: Record<string, string> = {
   "skill_prompt.content_qa": SKILL_PROMPT_CONTENT_QA_DEFAULT,
   "skill_prompt.accountability": SKILL_PROMPT_ACCOUNTABILITY_DEFAULT,
   "skill_prompt.admin_support": SKILL_PROMPT_ADMIN_SUPPORT_DEFAULT,
+  "skill_prompt.sales": SKILL_PROMPT_SALES_DEFAULT,
   sofia_grounding_rules_tools: SOFIA_GROUNDING_RULES_TOOLS_DEFAULT,
   activation_welcome_message: ACTIVATION_WELCOME_DEFAULT,
   opt_out_footer: OPT_OUT_FOOTER_DEFAULT,

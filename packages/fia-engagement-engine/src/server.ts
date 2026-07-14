@@ -1422,6 +1422,21 @@ function showMsg(text, ok) {
     return;
   }
 
+  // GET /api/observability/routing?days=7 — skill-router decision stats (admin only)
+  if (url.startsWith("/api/observability/routing") && method === "GET") {
+    if (!requireAdminAuth(req, res)) return;
+    try {
+      const days = parseInt(new URL(req.url ?? "", "http://x").searchParams.get("days") ?? "7", 10);
+      const { getRoutingStats } = await import("./db/supabase");
+      const data = await getRoutingStats(Number.isFinite(days) ? days : 7);
+      jsonResponse(res, 200, { data });
+    } catch (error) {
+      logger.error({ error }, "Failed to fetch routing stats");
+      jsonResponse(res, 500, { error: "Failed to fetch routing stats" });
+    }
+    return;
+  }
+
   // ─── Program profiles (Sofía 2.0 — data-driven audience resolution) ───
 
   // GET /api/program-profiles — list all profiles (admin only)

@@ -66,6 +66,28 @@ export const SKILL_DEFAULTS: Skill[] = [
     ],
   },
   {
+    key: "sales",
+    name: "Ventas",
+    routerDescription:
+      "La persona (lead o no) muestra interés en un programa, pregunta cómo sumarse/anotarse, o pide info comercial de una formación que NO cursa. Foco en mostrar valor y escalar a un asesor humano.",
+    exampleUtterances: [
+      "cuánto sale FIA Ventas",
+      "cómo me anoto",
+      "quiero sumarme a la próxima cohorte",
+      "me interesa el programa",
+      "qué planes tienen",
+    ],
+    contextLoaders: ["profile"],
+    tools: ["escalate_to_human"],
+    requiresProgram: false,
+    priority: 90,
+    keywords: [
+      "precio", "cuánto sale", "cuanto sale", "cuánto cuesta", "cuanto cuesta", "cuánto vale", "cuanto vale",
+      "quiero anotarme", "cómo me anoto", "como me anoto", "cómo me sumo", "como me sumo", "inscribir",
+      "inscripción", "inscripcion", "planes", "comprar", "contratar", "me interesa", "quiero sumarme", "próxima cohorte",
+    ],
+  },
+  {
     key: "admin_support",
     name: "Soporte administrativo",
     routerDescription:

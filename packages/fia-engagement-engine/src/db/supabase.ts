@@ -391,6 +391,52 @@ export async function setReminderStatus(id: string, status: "sent" | "cancelled"
   }
 }
 
+// ─── Routing observability (Phase 5) ───
+
+export interface RoutingStats {
+  total: number;
+  bySkill: Record<string, number>;
+  bySource: Record<string, number>;
+  avgConfidence: number | null;
+}
+
+/**
+ * Aggregates the skill-router decisions logged on outbound conversation rows over the last `days`.
+ * Returns zeros (never throws) when the column/table is unavailable.
+ */
+export async function getRoutingStats(days = 7): Promise<RoutingStats> {
+  const empty: RoutingStats = { total: 0, bySkill: {}, bySource: {}, avgConfidence: null };
+  try {
+    const since = new Date(Date.now() - days * 86_400_000).toISOString();
+    const { data, error } = await getSupabaseClient()
+      .from("sofia_conversations")
+      .select("metadata")
+      .eq("direction", "out")
+      .gte("created_at", since)
+      .limit(5000);
+    if (error || !Array.isArray(data)) return empty;
+
+    const bySkill: Record<string, number> = {};
+    const bySource: Record<string, number> = {};
+    let total = 0;
+    let confSum = 0;
+    let confCount = 0;
+    for (const row of data as Array<{ metadata: Record<string, unknown> | null }>) {
+      const m = row.metadata ?? {};
+      const skill = m["skill"];
+      if (typeof skill !== "string") continue; // only rows the router touched
+      total++;
+      bySkill[skill] = (bySkill[skill] ?? 0) + 1;
+      const src = typeof m["router_source"] === "string" ? (m["router_source"] as string) : "unknown";
+      bySource[src] = (bySource[src] ?? 0) + 1;
+      if (typeof m["confidence"] === "number") { confSum += m["confidence"] as number; confCount++; }
+    }
+    return { total, bySkill, bySource, avgConfidence: confCount ? confSum / confCount : null };
+  } catch {
+    return empty;
+  }
+}
+
 /**
  * Builds a map from path_id → { name, total, isPaid, programSlug }
  * by joining all capsules with the paths list.

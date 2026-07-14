@@ -209,6 +209,20 @@ created_at)`. Extender `sofia_pending_actions.action_type` con `'escalation'`, `
 
 ---
 
+## Activación en producción (feature flags)
+
+Todo lo nuevo (Fases 1-4) está detrás de flags apagados. Fase 0 (perfiles) ya está activa. Para prender:
+
+1. **Router de skills** — env del container: `SKILLS_ROUTER_ENABLED=true`. Recomendado: primero con la
+   whitelist piloto (`PILOT_WHITELIST_PHONES`) para probar con tráfico real, luego global.
+2. **Tool use** — además: `SOFIA_TOOLS_ENABLED=true` (requiere el router ON). Verificá en vivo que Codex
+   responda con function calls (el endpoint es no oficial; el parser está testeado pero la integración
+   real solo se ve con tráfico). Si algo falla, degrada solo a la cadena normal.
+3. Reiniciar el container (o re-deploy) para tomar el nuevo env. Verificá `GET /health` (gitSha) y
+   `GET /api/observability/routing?days=1` para ver las decisiones del router.
+
+Apagar cualquier flag revierte esa capa a v1 sin deploy de código.
+
 ## Flujo por fase (para cada una)
 1. Implementar código (tolerante a migración ausente).
 2. `yarn workspace fia-engagement-engine check` (o `node node_modules/typescript/bin/tsc --build ...` en Windows).
