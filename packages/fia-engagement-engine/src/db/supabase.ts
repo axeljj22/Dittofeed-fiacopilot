@@ -329,6 +329,68 @@ export function invalidateSkillRowsCache(): void {
   _skillRowsCacheExpiry = 0;
 }
 
+// ─── Sofía reminders (Phase 4, schedule_reminder tool) ───
+
+export interface SofiaReminder {
+  id: string;
+  user_id: string;
+  message: string;
+  due_at: string;
+  status: string;
+  created_by: string | null;
+  created_at: string;
+  sent_at: string | null;
+}
+
+/** Inserts a one-shot reminder. Returns false (never throws) when the table is absent. */
+export async function insertReminder(userId: string, message: string, dueAtIso: string, createdBy: string): Promise<boolean> {
+  try {
+    const { error } = await getSupabaseClient()
+      .from("sofia_reminders")
+      .insert({ user_id: userId, message, due_at: dueAtIso, created_by: createdBy });
+    if (error) {
+      logger.warn({ error: error.message }, "insertReminder failed");
+      return false;
+    }
+    return true;
+  } catch (error) {
+    logger.warn({ error: (error as Error).message }, "insertReminder threw");
+    return false;
+  }
+}
+
+/** Pending reminders due at/before `nowIso`. Returns [] (never throws) when the table is absent. */
+export async function getDueReminders(nowIso: string, limit = 20): Promise<SofiaReminder[]> {
+  try {
+    const { data, error } = await getSupabaseClient()
+      .from("sofia_reminders")
+      .select("*")
+      .eq("status", "pending")
+      .lte("due_at", nowIso)
+      .order("due_at", { ascending: true })
+      .limit(limit);
+    if (error) {
+      logger.warn({ error: error.message }, "getDueReminders failed");
+      return [];
+    }
+    return (data ?? []) as SofiaReminder[];
+  } catch (error) {
+    logger.warn({ error: (error as Error).message }, "getDueReminders threw");
+    return [];
+  }
+}
+
+export async function setReminderStatus(id: string, status: "sent" | "cancelled" | "failed"): Promise<void> {
+  try {
+    await getSupabaseClient()
+      .from("sofia_reminders")
+      .update({ status, ...(status === "sent" ? { sent_at: new Date().toISOString() } : {}) })
+      .eq("id", id);
+  } catch (error) {
+    logger.warn({ error: (error as Error).message, id }, "setReminderStatus threw");
+  }
+}
+
 /**
  * Builds a map from path_id → { name, total, isPaid, programSlug }
  * by joining all capsules with the paths list.

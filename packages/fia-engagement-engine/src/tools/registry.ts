@@ -6,12 +6,15 @@ import {
   getStudentProgressTool,
   getAdminLinksTool,
 } from "./definitions/readTools";
+import { scheduleReminderTool, escalateToHumanTool } from "./definitions/writeTools";
 
 const ALL_TOOLS: ToolDef[] = [
   searchCapsulesTool,
   searchKnowledgeTool,
   getStudentProgressTool,
   getAdminLinksTool,
+  scheduleReminderTool,
+  escalateToHumanTool,
 ];
 
 const BY_KEY = new Map<string, ToolDef>(ALL_TOOLS.map((t) => [t.key, t]));

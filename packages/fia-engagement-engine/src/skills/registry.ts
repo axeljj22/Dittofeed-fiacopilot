@@ -16,7 +16,7 @@ export const SKILL_DEFAULTS: Skill[] = [
       "Conversación general, small talk, dudas amplias, o cualquier cosa que no encaje claramente en otra skill. Es el fallback por defecto.",
     exampleUtterances: ["hola", "gracias", "cómo estás", "qué es FIA", "contame más"],
     contextLoaders: ["profile"],
-    tools: [],
+    tools: ["escalate_to_human"],
     requiresProgram: false,
     priority: 50,
     keywords: [],
@@ -56,7 +56,7 @@ export const SKILL_DEFAULTS: Skill[] = [
       "cuántas cápsulas llevo",
     ],
     contextLoaders: ["profile", "progress"],
-    tools: ["get_student_progress"],
+    tools: ["get_student_progress", "schedule_reminder"],
     requiresProgram: false,
     priority: 105,
     keywords: [
@@ -81,7 +81,7 @@ export const SKILL_DEFAULTS: Skill[] = [
       "dónde está el calendario",
     ],
     contextLoaders: ["admin_links"],
-    tools: ["get_admin_links"],
+    tools: ["get_admin_links", "escalate_to_human"],
     requiresProgram: false,
     priority: 110,
     keywords: [

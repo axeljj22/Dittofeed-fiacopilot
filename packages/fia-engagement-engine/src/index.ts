@@ -17,7 +17,7 @@ import { logger } from "./logger";
 import { startServer } from "./server";
 import { runWeeklyReport, runAgenticaPurchaseAlerts } from "./orchestrator";
 import { retryFailedMessages } from "./senders/whatsapp";
-import { rescheduleWeeklyReport, rescheduleInternalReport } from "./reportScheduler";
+import { rescheduleWeeklyReport, rescheduleInternalReport, scheduleRemindersTick } from "./reportScheduler";
 import { classifyRecentConversations } from "./jobs/classifyConversations";
 
 async function startScheduler(): Promise<void> {
@@ -28,6 +28,9 @@ async function startScheduler(): Promise<void> {
 
   // Internal staff control report — Sunday PM (ART), to the control group
   await rescheduleInternalReport();
+
+  // Sofía reminders tick (Phase 4) — every 5 min; no-op unless schedule_reminder created any.
+  scheduleRemindersTick();
 
   // Retry failed messages — every 30 minutes (set CRON_RETRY_FAILED to never-fire to disable)
   cron.schedule(config.cron.retryFailed, async () => {

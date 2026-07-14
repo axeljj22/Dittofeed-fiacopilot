@@ -4,8 +4,9 @@
  * Returns the final text, or null when Codex is unavailable / errors — the caller then DEGRADES to the
  * normal generation chain (which injects context), so Sofía never goes silent because of tools.
  *
- * Phase 3 is READ-ONLY: only mode==='read' tools run here. Write tools (Phase 4) go through an
- * approval gate, not this loop.
+ * Read tools run freely. The Phase 4 write tools bound here are intentionally low-risk (self-reminder,
+ * team notification) and self-guard; the tool descriptions instruct the model to confirm with the user
+ * first. High-risk mutations (e.g. creating CRM/auth records) are deliberately NOT registered as tools.
  */
 import { logger } from "../logger";
 import { generateWithCodexTools } from "./codexGenerator";
@@ -23,7 +24,7 @@ export async function runToolLoop(opts: {
   toolKeys: string[];
   ctx: ToolContext;
 }): Promise<string | null> {
-  const tools = getToolsForKeys(opts.toolKeys).filter((t) => t.mode === "read");
+  const tools = getToolsForKeys(opts.toolKeys);
   if (tools.length === 0) return null;
 
   const codexTools = buildCodexToolDefs(

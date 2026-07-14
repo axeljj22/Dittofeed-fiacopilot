@@ -146,6 +146,8 @@ export const config = {
     // Poll for new FIA Agéntica self-paced purchases → alert the internal group.
     // Every 10 minutes (low volume; set to "0 0 31 2 *" to disable).
     agenticaAlerts: optionalEnv("CRON_AGENTICA_ALERTS", "*/10 * * * *"),
+    // Send due Sofía reminders (Phase 4). Every 5 minutes. No-op when there are none.
+    reminders: optionalEnv("CRON_REMINDERS", "*/5 * * * *"),
   },
 
   // Classify inbound conversations (AI labeling for the observability dashboard) — daily 6 AM
