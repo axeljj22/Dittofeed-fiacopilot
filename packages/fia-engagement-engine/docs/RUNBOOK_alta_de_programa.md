@@ -43,6 +43,12 @@ fila `slug` (tier_match NULL) como catch-all.
 
 ### 3. Aplicar y verificar
 - Aplicá el SQL: `node scripts/apply-migration.mjs <archivo.sql>` (desde el repo de FIA Copilot).
+- **REGLA: toda tabla `sofia_*` nueva nace con RLS.** El SQL de creación debe incluir
+  `ALTER TABLE <tabla> ENABLE ROW LEVEL SECURITY;` + `CREATE POLICY "Allow service role full access"
+  ON <tabla> FOR ALL TO service_role USING (true) WITH CHECK (true);` — ojo con el rol: es
+  `service_role`, NO `authenticated`. Sin RLS la tabla queda leíble y **escribible** por cualquiera
+  con la anon key pública. Pasó en las migraciones 010/011/012/014 y en el rol de la 009;
+  corregido en la 016. El engine entra con service_role, que pasa por arriba de RLS: no rompe nada.
 - La cache del engine refresca sola en ≤5 min. Para forzar: reiniciá el container o esperá.
 - Verificá: `GET /api/program-profiles` (con `Authorization: Bearer <ADMIN_API_TOKEN>`).
 
