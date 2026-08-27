@@ -1705,7 +1705,12 @@ export async function searchKnowledge(
         filter_programs: programs,
       });
       if (!error && Array.isArray(data)) {
-        return (data as KnowledgeEntry[]).filter((e) => (e.similarity ?? 0) >= KNOWLEDGE_MIN_SIMILARITY);
+        // Fase 1: dejar rastro de las similitudes CRUDAS, antes del corte. Sin esto no se
+        // puede mover el umbral con datos — solo a ojo.
+        const crudas = (data as KnowledgeEntry[]).map((e) => e.similarity ?? 0);
+        const pasan = (data as KnowledgeEntry[]).filter((e) => (e.similarity ?? 0) >= KNOWLEDGE_MIN_SIMILARITY);
+        void import("../diagnostics").then((d) => d.anotarBusqueda("semantico", crudas)).catch(() => {});
+        return pasan;
       }
       logger.warn({ error: error?.message }, "match_knowledge RPC failed — keyword fallback");
     } catch (error) {
@@ -1714,6 +1719,9 @@ export async function searchKnowledge(
   }
 
   // 2) Keyword fallback over the cached set (no embeddings/RPC available).
+  // Fase 1: este camino da resultados DISTINTOS al semantico. Dejar rastro de cuando se usa
+  // es lo que explica "misma pregunta, respuesta distinta a los 4 minutos".
+  void import("../diagnostics").then((d) => d.anotarBusqueda("palabras", [])).catch(() => {});
   const all = await getKnowledge();
   const scoped = all.filter((e) => !e.program_slug || !programs || programs.includes(e.program_slug));
   const tokens = [...new Set(normalizeForSearch(q).split(/\s+/).filter((t) => t.length >= 4))];

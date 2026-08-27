@@ -619,21 +619,37 @@ export async function processGroupMessage(msg: IncomingGroupMessage): Promise<vo
   }
 
   // Respond only when mentioned.
-  if (!mentioned) return;
+  const { registrarSilencio, registrarRespuesta, leerUltimaBusqueda } = await import("../diagnostics");
+  const askerPhone = String(msg.senderJid ?? "").replace(/@.*/, "");
+  if (!mentioned) {
+    await registrarSilencio("no_etiquetada", { conversationId, groupJid, askerPhone, textoEntrante: text });
+    return;
+  }
   if (groupRateLimited(groupJid)) {
     logger.warn({ groupJid }, "Group reply rate-limited — skipping");
+    await registrarSilencio("rate_limit", { conversationId, groupJid, askerPhone, textoEntrante: text });
     return;
   }
 
   // Context: the group's mapped student wins; else the sender (if registered).
+  // Fase 1: dejar registrado de DONDE salio el sujeto. Es la causa raiz A —
+  // este mismo id sirve para "quien pregunta" y para "de quien es la pregunta".
   const contextUserId = group?.student_user_id ?? senderProfileId;
+  const subjectOrigin: "grupo" | "quien_pregunta" | "ninguno" =
+    group?.student_user_id ? "grupo" : senderProfileId ? "quien_pregunta" : "ninguno";
   const segment = contextUserId ? await getUserSegment(contextUserId) : null;
   const groupHistory = conversationId ? await getGroupHistory(conversationId, 12) : [];
 
   const reply = await generateGroupReply({ contextUserId, segment, senderName, senderRole: senderMember?.role ?? null, incomingText: text, groupHistory, conversationId });
   if (!reply) {
     logger.warn({ groupJid }, "No group reply generated — staying silent");
+    await registrarSilencio("sin_respuesta", { conversationId, groupJid, askerPhone, subjectUserId: contextUserId, subjectOrigin, textoEntrante: text });
     return;
+  }
+  {
+    const b = leerUltimaBusqueda();
+    await registrarRespuesta({ conversationId, groupJid, askerPhone, subjectUserId: contextUserId, subjectOrigin,
+      motorBusqueda: b.motor, fragmentos: b.similitudes.filter((x) => x >= 0.25).length, similitudes: b.similitudes, textoEntrante: text });
   }
 
   const { evolutionManager } = await import("./whatsappEvolution");
