@@ -25,6 +25,13 @@ export const searchCapsulesTool: ToolDef = {
   handler: async (ctx, args) => {
     const q = String(args["query"] ?? "").trim();
     if (!q) return "Sin consulta.";
+    // "Sin alcance" y "busqué y no encontré nada" son dos cosas distintas, y devolver el
+    // mismo texto para las dos hace que Sofía diga "no encontré nada en tu programa" a
+    // alguien que no cursa ningún programa. Suena a que el contenido no existe, cuando lo
+    // que pasa es que esa persona no tiene acceso.
+    if (!ctx.scopedSlugs || !ctx.scopedSlugs.length) {
+      return "Esta persona no tiene ningún programa asignado, así que no hay contenido de clases para buscar. Respondé con lo que sepas en general, sin inventar contenido de clases.";
+    }
     const hits = await searchCapsuleContent(q, ctx.scopedSlugs);
     const out = formatCapsuleContent(hits);
     return out || "No encontré contenido relevante en las cápsulas del programa del alumno.";

@@ -1842,16 +1842,34 @@ export async function searchCapsuleContent(
   const embedding = await embedText(q);
   if (!embedding) return [];
 
-  // Search the capsule chunks DIRECTLY (chunk-level similarity is reliable). Scope to the user's
-  // program path(s) when known; otherwise search all tracks (p_path_id=null). This avoids the
+  // Search the capsule chunks DIRECTLY (chunk-level similarity is reliable). This avoids the
   // fragile "route by data-source name" step, which discarded valid hits whose terms (skills,
   // claude.md, n8n) didn't resemble the generic source name.
-  let targets: Array<{ pathId: string | null; name: string }> = [{ pathId: null, name: "Contenido del programa" }];
-  if (programSlugs && programSlugs.length) {
-    const paths = await getLearningPaths();
-    const matched = paths.filter((p) => p.program_slug && programSlugs.includes(p.program_slug));
-    if (matched.length) targets = matched.map((p) => ({ pathId: p.id, name: p.name }));
+  //
+  // ── ALCANCE: se cierra, no se abre ──────────────────────────────────────────
+  //
+  // Sin programa conocido, esto buscaba en TODOS los tracks (p_path_id = null). No era un
+  // caso de borde: `__lead__` y `__pro__` tienen `knowledgeScope: []` A PROPÓSITO —no cursan
+  // ningún programa— y son la enorme mayoría de los perfiles. O sea que a un lead le podía
+  // llegar, dentro del prompt, contenido de FIA Empresas o de un track corporativo de un
+  // cliente. `[]` significa "ningún programa", y traducirlo a "todos" era la intención dada
+  // vuelta.
+  //
+  // Ahora: sin alcance no se busca contenido de clases. Sofía sigue respondiendo con la base
+  // de conocimiento general, que es justamente lo que le corresponde a alguien que no cursa.
+  if (!programSlugs || !programSlugs.length) return [];
+
+  const paths = await getLearningPaths();
+  const matched = paths.filter((p) => p.program_slug && programSlugs.includes(p.program_slug));
+  if (!matched.length) {
+    // Tenía alcance pero ningún path activo coincide (un programa desactivado, un slug que
+    // cambió). Antes esto caía en "buscá en todos": un fallo de scoping ENSANCHABA el
+    // acceso. Un error de configuración tiene que dejar a Sofía sin datos, nunca con datos
+    // de más.
+    logger.warn({ programSlugs }, "searchCapsuleContent: ningún learning_path activo coincide con el alcance; no se busca contenido de clases");
+    return [];
   }
+  const targets: Array<{ pathId: string | null; name: string }> = matched.map((p) => ({ pathId: p.id, name: p.name }));
 
   const results = await Promise.all(
     targets.map(async (t) => ({
@@ -1893,7 +1911,22 @@ export function formatCapsuleContent(hits: CapsuleSourceHit[]): string {
       if (meta.sofia_notes) lines.push(`Notas: ${meta.sofia_notes.trim()}`);
       if (meta.skool_url) lines.push(`Link de la clase: ${meta.skool_url}`);
 
-      lines.push("Fragmentos de transcripción:");
+      // Una cápsula indexada SOLO por su ficha (objetivo/entregable/acción) no tiene el
+      // contenido cargado. Antes llegaba al prompt bajo el mismo rótulo "Fragmentos de
+      // transcripción" que una clase entera, y Sofía respondía como si la tuviera.
+      //
+      // Es la forma de falla que hay que evitar en todo este sistema: un dato que falta
+      // convertido en una respuesta que suena bien. Acá se rotula para que pueda decir la
+      // verdad — la clase existe, el contenido todavía no está.
+      const soloFicha = chunks.every((c) => c.source === "metadata");
+      if (soloFicha) {
+        lines.push(
+          "⚠️ CONTENIDO NO CARGADO. De esta clase sólo está la ficha, no la clase en sí. " +
+            "Podés confirmar que existe y de qué trata, pero NO tenés su contenido:",
+        );
+      } else {
+        lines.push("Fragmentos de transcripción:");
+      }
       for (const chunk of chunks) {
         lines.push(`  • ${chunk.content.slice(0, 600).trim()}`);
       }
@@ -1904,7 +1937,21 @@ export function formatCapsuleContent(hits: CapsuleSourceHit[]): string {
     return `${hit.sourceName}:\n${capsuleBlocks.join("\n\n")}`;
   });
 
-  return `\n\nCONTENIDO DEL PROGRAMA (clases con semana, resumen y fragmentos de transcripción). Usá esto para responder con precisión: indicá semana, número de clase y link si los tenés. Los fragmentos son audio transcripto — a veces cortados —, sintetizá la respuesta en lugar de copiar textual:\n${sections.join("\n\n")}`;
+  // Si la coincidencia MÁS FUERTE es una clase sin contenido, el alumno está preguntando
+  // justo por ésa. Decirlo arriba de todo, y no sólo dentro del bloque de esa clase, es lo
+  // que evita que la instrucción se pierda entre cinco clases vecinas que sí tienen
+  // transcripción: contra evidencia abundante, una regla enterrada al final no compite.
+  const todos = hits.flatMap((h) => h.chunks);
+  const mejor = todos.reduce<CapsuleChunkResult | null>(
+    (a, c) => (a === null || (c.similarity ?? 0) > (a.similarity ?? 0) ? c : a), null);
+  const avisoArriba =
+    mejor?.source === "metadata"
+      ? `\n\n⚠️ ATENCIÓN: la clase que MÁS se parece a la pregunta es "${mejor.capsule_title}", y de ésa todavía NO tenemos el contenido cargado (sólo la ficha). Decíselo así: que la clase existe, de qué trata según su ficha, y que el contenido todavía no está cargado. NO contestes su pregunta con el contenido de las otras clases que aparecen abajo — son parecidas, no son la que preguntó.`
+      : "";
+
+  return `${avisoArriba}\n\nCONTENIDO DEL PROGRAMA (clases con semana, resumen y fragmentos de transcripción). Usá esto para responder con precisión: indicá semana, número de clase y link si los tenés. Los fragmentos son audio transcripto — a veces cortados —, sintetizá la respuesta en lugar de copiar textual.
+
+REGLA SOBRE LO QUE NO TENÉS: si una clase viene marcada "⚠️ CONTENIDO NO CARGADO", decí que esa clase existe y de qué trata, y aclarale que todavía no tenés su contenido cargado. NO respondas usando otra clase parecida como si fuera esa, y NO inventes lo que se dijo en ella. Que la clase justa aparezca sin contenido es información útil para el alumno: es la respuesta correcta a "¿dimos esto?".:\n${sections.join("\n\n")}`;
 }
 
 // ─── Knowledge-gap analytics (what students ask vs. what we can answer) ──────

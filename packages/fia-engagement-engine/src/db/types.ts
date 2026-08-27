@@ -188,6 +188,17 @@ export interface CapsuleChunkResult {
   skool_url: string | null;
   chunk_index: number;
   content: string;
+  /**
+   * De dónde salió el texto del chunk.
+   *
+   * `metadata` significa que la clase EXISTE pero su contenido no está cargado: lo único
+   * indexado es su ficha (objetivo, entregable, acción). Distinguirlo importa porque sin
+   * este dato Sofía trata una ficha de dos líneas igual que una clase entera y contesta con
+   * la misma seguridad en los dos casos.
+   *
+   * `null` en chunks anteriores al 2026-08-27, que no tienen el origen registrado.
+   */
+  source: "content_md" | "transcript" | "metadata" | null;
   similarity: number;
 }
 
