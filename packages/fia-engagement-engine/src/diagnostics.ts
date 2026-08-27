@@ -2,109 +2,86 @@
  * Fase 1 — instrumentacion. NO cambia ninguna decision: solo deja rastro.
  *
  * Existe porque 4 de las 5 causas de que Sofia responda mal son invisibles desde la base:
- * hoy `sofia_conversations` guarda lo que entra y lo que sale, y nada de lo que pasa en el
- * medio. Sin esto, cualquier arreglo se evalua por sensacion.
+ * hoy solo se guarda lo que entra y lo que sale, y nada de lo que pasa en el medio.
  *
- * Se escribe en `metadata`, que ya es JSONB — no hace falta migracion.
+ * DOS DECISIONES DE DISENO, las dos por errores de la primera version:
+ *
+ * 1. Escribe en `sofia_diagnostics`, tabla propia. La v1 escribia en `sofia_conversations`
+ *    y esas filas entraban al prompt del modelo como si fueran mensajes de Sofia, ademas
+ *    de romper `truncatedThreads` — la metrica que mide justo el sintoma que vinimos a
+ *    arreglar. Una tabla aparte no puede contaminar ninguna ventana de contexto.
+ *
+ * 2. El rastro de la busqueda viaja por AsyncLocalStorage, no por una variable de modulo.
+ *    La v1 usaba un global "para no cambiar la firma de searchKnowledge". Entre que se
+ *    escribe y se lee hay una llamada al LLM de varios segundos: con dos conversaciones
+ *    simultaneas, la fila de una quedaba estampada con los numeros de la otra. Justo bajo
+ *    carga, que es cuando estos datos importan.
  */
-import { logConversation } from "./db/supabase";
+import { getSupabaseClient } from "./db/supabase";
+import { leerRastro } from "./diagnosticsContext";
 import { logger } from "./logger";
 
-/** Por que Sofia no contesto. */
 export type MotivoSilencio =
-  | "no_etiquetada"        // la nombraron pero no la @etiquetaron
-  | "rate_limit"           // tope de respuestas por hora del grupo
-  | "sin_respuesta"        // el generador no devolvio nada
-  | "mensaje_vacio"        // texto sin contenido util
-  | "grupo_no_registrado"; // el grupo no esta en el roster
+  | "no_etiquetada"
+  | "rate_limit"
+  | "sin_respuesta"
+  | "mensaje_vacio"
+  | "grupo_no_registrado";
 
-export interface RastroDecision {
-  conversationId?: string;
-  groupJid?: string;
-  /** Quien escribio (telefono normalizado). */
-  askerPhone?: string;
-  /** El id que Sofia uso como sujeto de la respuesta. */
+export interface Rastro {
+  conversationId?: string | null;
+  groupJid?: string | null;
+  askerPhone?: string | null;
+  askerLid?: string | null;
   subjectUserId?: string | null;
-  /** De donde salio ese sujeto: del grupo o del que pregunto. */
   subjectOrigin?: "grupo" | "quien_pregunta" | "ninguno";
-  /** Que motor de busqueda se uso de verdad. */
-  motorBusqueda?: "semantico" | "palabras" | "ninguno";
-  /** Cuantos fragmentos pasaron el umbral. */
-  fragmentos?: number;
-  /** Similitudes crudas, para poder mover el umbral con datos y no a ojo. */
-  similitudes?: number[];
   textoEntrante?: string;
 }
 
+const UMBRAL = 0.25; // el mismo corte que aplica searchKnowledge
+
 /**
- * Registra que Sofia decidio CALLARSE, con el motivo.
- * Hoy esto no existe: cuando no contesta, no queda rastro. Por eso el sintoma que reporto
- * Axel —"no responde cuando la llaman"— era imposible de medir.
+ * Escribe una fila de diagnostico. NO se debe esperar con `await` en el camino de la
+ * respuesta: `logConversation` no tiene timeout, y colgarse escribiendo un dato de
+ * diagnostico demoraria el mensaje al usuario. Se llama con `void`.
  */
-export async function registrarSilencio(motivo: MotivoSilencio, rastro: RastroDecision): Promise<void> {
+async function escribir(fila: Record<string, unknown>): Promise<void> {
   try {
-    await logConversation({
-      conversation_id: rastro.conversationId,
-      user_id: rastro.subjectUserId ?? null,
-      direction: "out",
-      kind: "silenced",
-      body: `[sin respuesta: ${motivo}]`,
-      status: "skipped",
-      metadata: {
-        fase1: true,
-        motivo,
-        group_jid: rastro.groupJid ?? null,
-        asker_phone: rastro.askerPhone ?? null,
-        subject_user_id: rastro.subjectUserId ?? null,
-        subject_origin: rastro.subjectOrigin ?? null,
-        texto: (rastro.textoEntrante ?? "").slice(0, 300),
-      },
-    });
+    const { error } = await getSupabaseClient().from("sofia_diagnostics").insert(fila);
+    if (error) logger.warn({ error }, "no se pudo escribir sofia_diagnostics");
   } catch (e) {
-    // La instrumentacion NUNCA puede romper el flujo: si falla, se pierde el dato y ya.
-    logger.warn({ e, motivo }, "no se pudo registrar el silencio");
+    logger.warn({ e }, "escribir diagnostico tiro");
   }
+}
+
+/** Registra que Sofia decidio CALLARSE, con el motivo. */
+export function registrarSilencio(motivo: MotivoSilencio, r: Rastro): void {
+  void escribir({
+    group_jid: r.groupJid ?? null,
+    conversation_id: r.conversationId ?? null,
+    asker_phone: r.askerPhone ?? null,
+    asker_lid: r.askerLid ?? null,
+    subject_user_id: r.subjectUserId ?? null,
+    subject_origin: r.subjectOrigin ?? null,
+    motivo_silencio: motivo,
+    texto: (r.textoEntrante ?? "").slice(0, 300),
+  });
 }
 
 /** Registra COMO se armo una respuesta: sujeto, motor de busqueda y calidad de los hits. */
-export async function registrarRespuesta(rastro: RastroDecision): Promise<void> {
-  try {
-    await logConversation({
-      conversation_id: rastro.conversationId,
-      user_id: rastro.subjectUserId ?? null,
-      direction: "out",
-      kind: "diagnostico",
-      body: "[fase 1: como se armo la respuesta]",
-      status: "skipped",
-      metadata: {
-        fase1: true,
-        group_jid: rastro.groupJid ?? null,
-        asker_phone: rastro.askerPhone ?? null,
-        subject_user_id: rastro.subjectUserId ?? null,
-        subject_origin: rastro.subjectOrigin ?? null,
-        motor_busqueda: rastro.motorBusqueda ?? null,
-        fragmentos: rastro.fragmentos ?? 0,
-        similitudes: (rastro.similitudes ?? []).slice(0, 10),
-        texto: (rastro.textoEntrante ?? "").slice(0, 300),
-      },
-    });
-  } catch (e) {
-    logger.warn({ e }, "no se pudo registrar el diagnostico de respuesta");
-  }
-}
-
-/**
- * Guarda que motor de busqueda se uso en la ultima consulta del proceso.
- * Es un modulo suelto y no un parametro nuevo a proposito: asi `searchKnowledge` no cambia
- * de firma, y la Fase 1 no toca ninguna llamada existente.
- */
-let ultimaBusqueda: { motor: "semantico" | "palabras" | "ninguno"; similitudes: number[] } = {
-  motor: "ninguno",
-  similitudes: [],
-};
-export function anotarBusqueda(motor: "semantico" | "palabras" | "ninguno", similitudes: number[] = []): void {
-  ultimaBusqueda = { motor, similitudes };
-}
-export function leerUltimaBusqueda(): { motor: "semantico" | "palabras" | "ninguno"; similitudes: number[] } {
-  return ultimaBusqueda;
+export function registrarRespuesta(r: Rastro): void {
+  const b = leerRastro();
+  void escribir({
+    group_jid: r.groupJid ?? null,
+    conversation_id: r.conversationId ?? null,
+    asker_phone: r.askerPhone ?? null,
+    asker_lid: r.askerLid ?? null,
+    subject_user_id: r.subjectUserId ?? null,
+    subject_origin: r.subjectOrigin ?? null,
+    motivo_silencio: null,
+    motor_busqueda: b.motor,
+    fragmentos: b.similitudes.filter((x) => x >= UMBRAL).length,
+    similitudes: b.similitudes.slice(0, 10),
+    texto: (r.textoEntrante ?? "").slice(0, 300),
+  });
 }

@@ -549,7 +549,16 @@ export async function syncGroupMembers(groupJid: string): Promise<string | null>
  * Handle a group message: ALWAYS log it (observe), and reply ONLY when Sofía is mentioned.
  * Reply context = the group's mapped student (if any) else the sender's profile.
  */
+/**
+ * Envuelve el manejo del mensaje en su propio contexto de rastro (Fase 1).
+ * Sin esto, `anotarBusqueda` no tiene donde escribir y el diagnostico sale vacio.
+ */
 export async function processGroupMessage(msg: IncomingGroupMessage): Promise<void> {
+  const { conRastro } = await import("../diagnosticsContext");
+  return conRastro(() => procesarMensajeDeGrupo(msg));
+}
+
+async function procesarMensajeDeGrupo(msg: IncomingGroupMessage): Promise<void> {
   const { groupJid, senderJid, text } = msg;
   // Group events identify people by @lid (linked-id), not phone.
   const senderIsLid = senderJid.includes("@lid");
@@ -619,15 +628,17 @@ export async function processGroupMessage(msg: IncomingGroupMessage): Promise<vo
   }
 
   // Respond only when mentioned.
-  const { registrarSilencio, registrarRespuesta, leerUltimaBusqueda } = await import("../diagnostics");
-  const askerPhone = String(msg.senderJid ?? "").replace(/@.*/, "");
+  const { registrarSilencio, registrarRespuesta } = await import("../diagnostics");
+  // Reusa la distincion que este archivo ya hace arriba: en grupos WhatsApp identifica por
+  // @lid, no por telefono. Guardarlos mezclados hace que un join contra profiles matchee mal.
+  const rastroQuien = { askerPhone: senderIsLid ? null : senderDigits, askerLid: senderIsLid ? senderDigits : null };
   if (!mentioned) {
-    await registrarSilencio("no_etiquetada", { conversationId, groupJid, askerPhone, textoEntrante: text });
+    registrarSilencio("no_etiquetada", { conversationId, groupJid, ...rastroQuien, textoEntrante: text });
     return;
   }
   if (groupRateLimited(groupJid)) {
     logger.warn({ groupJid }, "Group reply rate-limited — skipping");
-    await registrarSilencio("rate_limit", { conversationId, groupJid, askerPhone, textoEntrante: text });
+    registrarSilencio("rate_limit", { conversationId, groupJid, ...rastroQuien, textoEntrante: text });
     return;
   }
 
@@ -643,14 +654,10 @@ export async function processGroupMessage(msg: IncomingGroupMessage): Promise<vo
   const reply = await generateGroupReply({ contextUserId, segment, senderName, senderRole: senderMember?.role ?? null, incomingText: text, groupHistory, conversationId });
   if (!reply) {
     logger.warn({ groupJid }, "No group reply generated — staying silent");
-    await registrarSilencio("sin_respuesta", { conversationId, groupJid, askerPhone, subjectUserId: contextUserId, subjectOrigin, textoEntrante: text });
+    registrarSilencio("sin_respuesta", { conversationId, groupJid, ...rastroQuien, subjectUserId: contextUserId, subjectOrigin, textoEntrante: text });
     return;
   }
-  {
-    const b = leerUltimaBusqueda();
-    await registrarRespuesta({ conversationId, groupJid, askerPhone, subjectUserId: contextUserId, subjectOrigin,
-      motorBusqueda: b.motor, fragmentos: b.similitudes.filter((x) => x >= 0.25).length, similitudes: b.similitudes, textoEntrante: text });
-  }
+  registrarRespuesta({ conversationId, groupJid, ...rastroQuien, subjectUserId: contextUserId, subjectOrigin, textoEntrante: text });
 
   const { evolutionManager } = await import("./whatsappEvolution");
   const result = await evolutionManager.sendMessage(groupJid, reply);
