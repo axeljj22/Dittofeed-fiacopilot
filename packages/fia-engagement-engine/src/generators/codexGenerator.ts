@@ -115,7 +115,18 @@ async function getValidAuth(): Promise<CodexAuth | null> {
   if (!auth) return null;
 
   if (isTokenExpired(auth)) {
-    auth = await refreshToken(auth);
+    // Re-leer el archivo ANTES de renovar: no somos el único agente que lo usa. Victoria
+    // comparte este mismo auth.json, y su proceso es corto (lee de disco cada vez) mientras
+    // que acá el auth queda cacheado en memoria desde que arrancó el contenedor.
+    //
+    // Sin esto, el primero que renueva rota el refresh_token y deja al otro con uno viejo en
+    // la mano: el segundo intenta renovar con un token ya inválido, falla, y se cae al
+    // proveedor de respaldo sin que nadie entienda por qué. Con el contenedor levantado
+    // hace días, el cache es justamente lo más desactualizado que hay.
+    invalidateCodexAuthCache();
+    const desdeDisco = loadAuth();
+    if (desdeDisco && !isTokenExpired(desdeDisco)) return desdeDisco;
+    auth = await refreshToken(desdeDisco ?? auth);
   }
 
   return auth;
