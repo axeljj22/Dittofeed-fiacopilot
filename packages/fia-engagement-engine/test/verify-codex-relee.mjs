@@ -15,7 +15,8 @@ import path from "node:path";
 const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-relee-"));
 const archivo = path.join(dir, "auth.json");
 process.env.CODEX_AUTH_FILE = archivo;
-delete process.env.OPENAI_API_KEY;   // sin fallback pago: si Codex falla, se tiene que ver
+delete process.env.OPENAI_API_KEY;      // sin respaldos: si Codex falla, se tiene que ver
+delete process.env.OPENROUTER_API_KEY;
 // `config` exige estas tres al importarse. Valores de mentira: el test no toca Supabase ni el engine.
 process.env.SUPABASE_URL ??= "http://supabase.invalid";
 process.env.SUPABASE_SERVICE_ROLE_KEY ??= "test";
