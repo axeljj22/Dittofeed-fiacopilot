@@ -39,8 +39,20 @@ export const config = {
     transcribeApiKey: optionalEnv("OPENAI_WHISPER_API_KEY", "") || optionalEnv("OPENAI_API_KEY", ""),
     transcribeModel: optionalEnv("OPENAI_TRANSCRIBE_MODEL", "whisper-1"),
     maxAudioSeconds: parseInt(optionalEnv("MAX_AUDIO_SECONDS", "300"), 10),
-    // Chat model used as the generation fallback when Codex (ChatGPT OAuth) is down/expired.
-    chatModel: optionalEnv("OPENAI_CHAT_MODEL", "gpt-4o-mini"),
+  },
+
+  // OpenRouter — el respaldo de generación cuando Codex (ChatGPT OAuth) no está disponible.
+  // Reemplaza al chat de OpenAI por decisión de Axel (15-sep): «Sofía no debería tener API de
+  // OpenAI, su fallback debería ser OpenRouter». Sin clave, no hay respaldo y se loguea.
+  openrouter: {
+    apiKey: optionalEnv("OPENROUTER_API_KEY", ""),
+    // Varios modelos, en orden: OpenRouter pasa al siguiente si uno falla o está saturado. Los
+    // gratuitos comparten un pool entre todos sus usuarios y se saturan seguido —el 15-sep el primero
+    // devolvió 429 en la prueba real—, así que uno solo no alcanza para un respaldo. Orden elegido con
+    // prueba real ese día: nex-n2.5-pro contestó bien en español; nemotron quedó afuera porque muestra
+    // su razonamiento en inglés, que en un WhatsApp a un alumno es peor que no contestar.
+    models: optionalEnv("OPENROUTER_MODELS", optionalEnv("OPENROUTER_MODEL", "nex-agi/nex-n2.5-pro:free,google/gemma-4-31b-it:free,nex-agi/nex-n2.5-mini:free"))
+      .split(",").map((m) => m.trim()).filter(Boolean),
   },
 
   // Google Gemini — message generation (3rd fallback after Codex + Claude)

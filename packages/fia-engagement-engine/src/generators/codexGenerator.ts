@@ -171,37 +171,48 @@ function parseSSEText(sseBody: string): string | null {
 }
 
 /**
- * Fallback generator via the OpenAI Chat Completions API (uses OPENAI_API_KEY). Kicks in when
- * Codex (ChatGPT OAuth) is unavailable/expired, so Sofía never goes silent. Returns null if no
- * key or on failure (caller then tries its own next fallback / template).
+ * Respaldo de generación por OpenRouter, cuando Codex (ChatGPT OAuth) no está disponible.
+ *
+ * Antes era la API de OpenAI (pago por token, con OPENAI_API_KEY). Axel, 15-sep: «Sofía no
+ * debería tener API de OpenAI, su fallback debería ser OpenRouter». OpenRouter expone la misma
+ * forma de Chat Completions, así que el cambio es de endpoint y de clave, no de lógica. Sin
+ * OPENROUTER_API_KEY no hay respaldo: devuelve null y el llamador sigue con su propio plan B.
  */
-async function generateWithOpenAIChat(
+async function generateWithOpenRouter(
   systemPrompt: string,
   userMessage: string,
   history: Array<{ role: "user" | "assistant"; content: string }> = [],
 ): Promise<string | null> {
-  if (!config.openai.apiKey) return null;
+  if (!config.openrouter.apiKey) return null;
   try {
     const messages = [
       { role: "system", content: systemPrompt },
       ...history.map((m) => ({ role: m.role, content: m.content })),
       { role: "user", content: userMessage },
     ];
-    const resp = await fetch("https://api.openai.com/v1/chat/completions", {
+    const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
       method: "POST",
-      headers: { Authorization: `Bearer ${config.openai.apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify({ model: config.openai.chatModel, messages, max_tokens: 600, temperature: 0.7 }),
+      headers: {
+        Authorization: `Bearer ${config.openrouter.apiKey}`,
+        "Content-Type": "application/json",
+        "X-Title": "Sofia FIA",
+      },
+      body: JSON.stringify({
+        // `models` (en plural) activa el ruteo de OpenRouter: si el primero falla, prueba el siguiente.
+        models: config.openrouter.models,
+        messages, max_tokens: 600, temperature: 0.7,
+      }),
     });
     if (!resp.ok) {
-      logger.warn({ status: resp.status, body: (await resp.text()).slice(0, 200) }, "OpenAI chat fallback failed");
+      logger.warn({ status: resp.status, body: (await resp.text()).slice(0, 200) }, "OpenRouter fallback failed");
       return null;
     }
     const data = (await resp.json()) as { choices?: Array<{ message?: { content?: string } }> };
     const text = data.choices?.[0]?.message?.content?.trim();
-    if (text) logger.info("Generated via OpenAI chat fallback (Codex unavailable)");
+    if (text) logger.info("Generated via OpenRouter fallback (Codex unavailable)");
     return text || null;
   } catch (error) {
-    logger.warn({ error: (error as Error).message }, "OpenAI chat fallback error");
+    logger.warn({ error: (error as Error).message }, "OpenRouter fallback error");
     return null;
   }
 }
@@ -212,7 +223,7 @@ export async function generateWithCodexConversation(
   newMessage: string,
 ): Promise<string | null> {
   const auth = await getValidAuth();
-  if (!auth) return generateWithOpenAIChat(systemPrompt, newMessage, history);
+  if (!auth) return generateWithOpenRouter(systemPrompt, newMessage, history);
 
   const headers: Record<string, string> = {
     Authorization: `Bearer ${auth.tokens.access_token}`,
@@ -245,20 +256,20 @@ export async function generateWithCodexConversation(
 
     if (!resp.ok) {
       const text = await resp.text();
-      logger.error({ status: resp.status, body: text.slice(0, 300) }, "Codex conversation API error — OpenAI fallback");
-      return generateWithOpenAIChat(systemPrompt, newMessage, history);
+      logger.error({ status: resp.status, body: text.slice(0, 300) }, "Codex conversation API error — OpenRouter fallback");
+      return generateWithOpenRouter(systemPrompt, newMessage, history);
     }
 
     const sseText = await resp.text();
     const text = parseSSEText(sseText);
     if (!text) {
-      logger.error({ preview: sseText.slice(0, 200) }, "No text in Codex conversation SSE response — OpenAI fallback");
-      return generateWithOpenAIChat(systemPrompt, newMessage, history);
+      logger.error({ preview: sseText.slice(0, 200) }, "No text in Codex conversation SSE response — OpenRouter fallback");
+      return generateWithOpenRouter(systemPrompt, newMessage, history);
     }
     return text;
   } catch (error) {
-    logger.error({ error }, "Codex conversation API call failed — OpenAI fallback");
-    return generateWithOpenAIChat(systemPrompt, newMessage, history);
+    logger.error({ error }, "Codex conversation API call failed — OpenRouter fallback");
+    return generateWithOpenRouter(systemPrompt, newMessage, history);
   }
 }
 
@@ -311,8 +322,8 @@ export async function generateWithCodex(
 ): Promise<string | null> {
   const auth = await getValidAuth();
   if (!auth) {
-    logger.debug("Codex auth not found — OpenAI fallback");
-    return generateWithOpenAIChat(systemPrompt, userMessage);
+    logger.debug("Codex auth not found — OpenRouter fallback");
+    return generateWithOpenRouter(systemPrompt, userMessage);
   }
 
   const headers: Record<string, string> = {
@@ -343,19 +354,19 @@ export async function generateWithCodex(
 
     if (!resp.ok) {
       const text = await resp.text();
-      logger.error({ status: resp.status, body: text.slice(0, 300) }, "Codex API error — OpenAI fallback");
-      return generateWithOpenAIChat(systemPrompt, userMessage);
+      logger.error({ status: resp.status, body: text.slice(0, 300) }, "Codex API error — OpenRouter fallback");
+      return generateWithOpenRouter(systemPrompt, userMessage);
     }
 
     const sseText = await resp.text();
     const text = parseSSEText(sseText);
     if (!text) {
-      logger.error({ preview: sseText.slice(0, 200) }, "No text in Codex SSE response — OpenAI fallback");
-      return generateWithOpenAIChat(systemPrompt, userMessage);
+      logger.error({ preview: sseText.slice(0, 200) }, "No text in Codex SSE response — OpenRouter fallback");
+      return generateWithOpenRouter(systemPrompt, userMessage);
     }
     return text;
   } catch (error) {
-    logger.error({ error }, "Codex API call failed — OpenAI fallback");
-    return generateWithOpenAIChat(systemPrompt, userMessage);
+    logger.error({ error }, "Codex API call failed — OpenRouter fallback");
+    return generateWithOpenRouter(systemPrompt, userMessage);
   }
 }
