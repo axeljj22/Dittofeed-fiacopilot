@@ -110,12 +110,34 @@ async function refreshToken(auth: CodexAuth): Promise<CodexAuth | null> {
   }
 }
 
+/**
+ * El token vigente, renovándolo si hace falta — pero RELEYENDO EL ARCHIVO antes de renovar.
+ *
+ * `auth.json` lo comparten Sofía, Victoria, el runtime de agentes y el Content Worker, y cada
+ * renovación puede ROTAR el refresh_token. La versión anterior leía el archivo una sola vez al
+ * arrancar y lo guardaba en memoria para siempre: si otro consumidor renovaba primero, Sofía
+ * seguía con el refresh_token viejo, su renovación fallaba, y se quedaba sin modelo. Detectado el
+ * 15-sep con la credencial a cinco días de vencer, justo antes de un viaje de Axel.
+ *
+ * Los otros consumidores (`codex.mjs`, `content_core/codex.py`) ya releían antes de renovar; esto
+ * alinea a Sofía con esa regla. Y si la renovación falla igual, se relee una vez más: otro
+ * proceso pudo haber renovado en el mismo segundo.
+ */
 async function getValidAuth(): Promise<CodexAuth | null> {
   let auth = loadAuth();
   if (!auth) return null;
 
   if (isTokenExpired(auth)) {
-    auth = await refreshToken(auth);
+    _cachedAuth = null;
+    const enDisco = loadAuth();
+    if (enDisco && !isTokenExpired(enDisco)) return enDisco;
+
+    auth = await refreshToken(enDisco ?? auth);
+    if (!auth) {
+      _cachedAuth = null;
+      const otraVez = loadAuth();
+      if (otraVez && !isTokenExpired(otraVez)) return otraVez;
+    }
   }
 
   return auth;
